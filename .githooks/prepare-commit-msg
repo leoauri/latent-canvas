@@ -1,0 +1,5 @@
+#!/bin/sh
+# Append the human prompts behind the staged changes to the commit message.
+# See scripts/commit_prompts.py. Skip with SKIP_PROMPT_HOOK=1.
+root=$(git rev-parse --show-toplevel)
+uv run --quiet "$root/scripts/commit_prompts.py" prepare "$@" || true

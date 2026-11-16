@@ -1,5 +1,5 @@
 // `@live/runtime`: what the bootstrap offers to live modules.
-//   import { vfs, loader, persist, env, logs } from '@live/runtime';
+//   import { vfs, loader, persist, env, logs, chatLog } from '@live/runtime';
 import { signal } from '@preact/signals';
 import { readLog, onLog, record, reportError, formatValue } from './errors.js';
 import { VFS } from './vfs.js';
@@ -13,6 +13,20 @@ const persisted = (globalThis.__redaw_persist ||= new Map());
 export function persist(key, initial) {
   if (!persisted.has(key)) persisted.set(key, signal(typeof initial === 'function' ? initial() : initial));
   return persisted.get(key);
+}
+
+/**
+ * Append a chat turn to .redaw/chat.jsonl via the dev server, where the commit hook finds
+ * the human prompts behind each commit. role 'human' for typed prompts, 'agent' for replies.
+ * A no-op in a static build.
+ */
+export function chatLog(role, text) {
+  if (!import.meta.env.DEV || !text?.trim()) return;
+  fetch('/__live/chat-log', {
+    method: 'POST',
+    headers: { 'x-redaw': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({ role, text }),
+  }).catch(() => {});
 }
 
 export function createRuntime({ vfs, loader, env }) {
@@ -39,6 +53,7 @@ export function createRuntime({ vfs, loader, env }) {
     loader,
     env,
     persist,
+    chatLog,
     vfsVersion, // read .value inside a component to re-render on VFS changes
     runScript,
     logs: { read: readLog, on: onLog, record, reportError, format: formatValue },

@@ -3,6 +3,7 @@
 //   GET    /__live/files          -> { files: [{ path, mtime, source }] }
 //   PUT    /__live/files/<path>   body = file text  -> { mtime }
 //   DELETE /__live/files/<path>   -> { ok: true }
+//   POST   /__live/chat-log       body = { role, text } -> appended to .redaw/chat.jsonl (read by the commit hook)
 //   ws event "live:change"         { path, mtime, source | null }  (disk edits from your editor)
 //
 // In a production build the same file list is inlined via `virtual:live-bundle`, so the
@@ -17,6 +18,7 @@ const TEXT_EXT = /\.(jsx?|tsx?|mjs|css|json|md|txt|html|svg)$/i;
 
 export default function livePlugin({ dir = 'live' } = {}) {
   let root;
+  let chatLogPath;
   let isBuild = false;
 
   // Resolve a client-supplied path and make sure it stays inside the live root,
@@ -67,6 +69,7 @@ export default function livePlugin({ dir = 'live' } = {}) {
     name: 'redaw-live',
     configResolved(cfg) {
       root = path.resolve(cfg.root, dir);
+      chatLogPath = path.resolve(cfg.root, '.redaw', 'chat.jsonl');
       isBuild = cfg.command === 'build';
     },
     resolveId(id) { if (id === VIRTUAL_ID) return RESOLVED_ID; },
@@ -77,18 +80,39 @@ export default function livePlugin({ dir = 'live' } = {}) {
       return `export default ${JSON.stringify(files)};`;
     },
     configureServer(server) {
-      server.middlewares.use('/__live/files', async (req, res) => {
-        const send = (code, body) => {
-          res.statusCode = code;
-          res.setHeader('content-type', 'application/json');
-          res.end(JSON.stringify(body));
-        };
+      const sender = (res) => (code, body) => {
+        res.statusCode = code;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(body));
+      };
+      // Cheap CSRF guard: a custom header forces a CORS preflight for foreign origins,
+      // and browsers tell us when a request is cross-site.
+      const guard = (req, send) => {
+        if (req.headers['x-redaw'] !== '1') return send(403, { error: 'missing x-redaw header' }), false;
+        const site = req.headers['sec-fetch-site'];
+        if (site && site !== 'same-origin' && site !== 'none') return send(403, { error: 'cross-site' }), false;
+        return true;
+      };
+
+      server.middlewares.use('/__live/chat-log', async (req, res) => {
+        const send = sender(res);
         try {
-          // Cheap CSRF guard: a custom header forces a CORS preflight for foreign origins,
-          // and browsers tell us when a request is cross-site.
-          if (req.headers['x-redaw'] !== '1') return send(403, { error: 'missing x-redaw header' });
-          const site = req.headers['sec-fetch-site'];
-          if (site && site !== 'same-origin' && site !== 'none') return send(403, { error: 'cross-site' });
+          if (!guard(req, send)) return;
+          if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+          const { role, text } = JSON.parse(await readBody(req));
+          if (typeof role !== 'string' || typeof text !== 'string') return send(400, { error: 'expected { role, text }' });
+          await fs.mkdir(path.dirname(chatLogPath), { recursive: true });
+          await fs.appendFile(chatLogPath, JSON.stringify({ ts: new Date().toISOString(), role, text }) + '\n', 'utf8');
+          send(200, { ok: true });
+        } catch (err) {
+          send(400, { error: String(err.message || err) });
+        }
+      });
+
+      server.middlewares.use('/__live/files', async (req, res) => {
+        const send = sender(res);
+        try {
+          if (!guard(req, send)) return;
 
           const rel = (req.url || '/').split('?')[0].replace(/^\//, '');
           if (req.method === 'GET' && !rel) return send(200, { files: await listFiles() });

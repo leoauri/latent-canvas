@@ -1,6 +1,6 @@
 // Chat state. Signals come from persist(), so they survive reloads of any chat module —
 // a running agent turn (old module instance) and the re-rendered UI (new instance) share them.
-import { persist } from '@live/runtime';
+import { persist, chatLog } from '@live/runtime';
 
 const load = (key, fallback) => {
   try {
@@ -32,6 +32,14 @@ export const chat = {
 export function pushMessage(message) {
   chat.messages.value = [...chat.messages.value, message];
   save('redaw.chat.messages', chat.messages.value);
+  logTurn(message);
+}
+
+// Typed prompts arrive as string content; arrays from the user role are tool results.
+function logTurn({ role, content }) {
+  if (role === 'user' && typeof content === 'string') chatLog('human', content);
+  else if (role === 'assistant' && Array.isArray(content))
+    chatLog('agent', content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'));
 }
 
 export function resetChat() {

@@ -12,6 +12,25 @@ npm run dev
 Without a key in `.env`, the chat asks for one and stores it in the browser. That is also
 how a static `npm run build` works.
 
+## Commit messages
+
+Hooks append the human prompts behind each commit to its message, verbatim. Sonnet picks the
+prompts that contributed to the staged diff from:
+
+- Claude Code transcripts of this repo;
+- the page chat, which the dev server logs to `.redaw/chat.jsonl` (gitignored).
+
+Prompts whose work is still uncommitted are carried over in `.git/commit-prompts/` and
+offered again at the next commit. Agent decisions are summarised only when the prompts alone
+don't explain a change. Enable the hooks once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+They need `claude` and `uv` on the PATH. They never block a commit, and `SKIP_PROMPT_HOOK=1`
+turns them off for one commit.
+
 ## Layout
 
 ```

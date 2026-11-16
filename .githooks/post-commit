@@ -1,0 +1,4 @@
+#!/bin/sh
+# Keep prompts whose work is still uncommitted for the next commit (see scripts/commit_prompts.py).
+root=$(git rev-parse --show-toplevel)
+uv run --quiet "$root/scripts/commit_prompts.py" commit || true
