@@ -13,7 +13,7 @@ export default function Timeline() {
       <Playhead />
       <div class="timeline-hud">
         {sel
-          ? `${sel.length} samples × ${sel.dim} dims @ ${sel.rate} Hz · ${duration(sel).toFixed(2)} s · starts ${sel.t.toFixed(2)} s`
+          ? `${sel.length} samples × ${sel.dim} dims @ ${sel.rate} Hz · ${duration(sel).toFixed(2)} s`
           : 'Double-click: new clip · Shift+drag: new layer · Drag: move · Click: place playhead · Space: play · Pinch: zoom'}
       </div>
     </div>

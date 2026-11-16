@@ -1,6 +1,12 @@
 .timeline {
   --timeline-select: #4c8dff;
   --playhead: #ff5a36;
+  /* A white canvas in both themes. */
+  --bg: #ffffff;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  color-scheme: light;
+  background: var(--bg);
   position: relative;
   height: 100%;
   overflow: hidden;
@@ -43,15 +49,6 @@
 .playhead-cue {
   opacity: 0.3;
 }
-.playhead-label {
-  position: absolute;
-  top: 18px;
-  left: 5px;
-  font: 11px system-ui, sans-serif;
-  color: var(--playhead);
-  white-space: nowrap;
-}
-
 /* ---- layers ---- */
 .layers {
   position: absolute;

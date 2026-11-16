@@ -1,10 +1,10 @@
-// Infinite canvas over time. Touchpad: two-finger scroll pans, pinch zooms the time axis.
+// Infinite blank canvas over time. Touchpad: two-finger scroll pans, pinch zooms both axes.
 // Mouse: wheel pans (shift for horizontal), ctrl+wheel zooms, middle-drag pans.
 // Drag clips to move them, double-click empty space for a new clip, Delete removes the selection.
 // Clicks on empty space bubble to the container (the playhead uses them); clicks on clips don't.
 import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
-import { view, panBy, zoomAt, xToTime, screenToWorldY } from './view.js';
+import { view, panBy, zoomAt, xToTime, worldToScreenY, screenToWorldY } from './view.js';
 import { clips, selectedId, CLIP_HEIGHT, duration, randomClip, addClip, updateClip, removeClip, bringToFront } from './clips.js';
 
 const HIT_PAD = 3; // px of slack around the 10px lines
@@ -51,16 +51,6 @@ function bitmap(clip) {
   return c;
 }
 
-function niceStep(minSeconds) {
-  const p = 10 ** Math.floor(Math.log10(minSeconds));
-  for (const m of [1, 2, 5]) if (m * p >= minSeconds) return m * p;
-  return 10 * p;
-}
-function formatTime(t, step) {
-  const dec = Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
-  return (Math.abs(t) < step / 2 ? 0 : t).toFixed(dec) + 's';
-}
-
 const isTyping = (el) => !!el?.closest?.('input, textarea, select, button, [contenteditable]');
 
 export default function TimelineCanvas() {
@@ -80,48 +70,16 @@ export default function TimelineCanvas() {
       const sel = selectedId.value;
       const css = getComputedStyle(canvas);
       const color = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
-      const bg = color('--bg', '#fff'), fg = color('--fg', '#111'), muted = color('--muted', '#888');
-      const grid = color('--border', '#ddd'), accent = color('--timeline-select', '#4c8dff');
+      const bg = color('--bg', '#fff'), fg = color('--fg', '#111'), accent = color('--timeline-select', '#4c8dff');
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 
-      // Negative time is shaded.
-      const xZero = -v.t0 * v.pps;
-      if (xZero > 0) {
-        ctx.globalAlpha = 0.35;
-        ctx.fillStyle = grid;
-        ctx.fillRect(0, 0, Math.min(xZero, w), h);
-        ctx.globalAlpha = 1;
-      }
-
-      // Time grid: major lines >= 90px apart with labels, minor fifths when they fit.
-      const step = niceStep(90 / v.pps);
-      const lines = (s, alpha) => {
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = grid;
-        ctx.beginPath();
-        for (let i = Math.ceil(v.t0 / s), end = Math.floor((v.t0 + w / v.pps) / s); i <= end; i++) {
-          const x = Math.round((i * s - v.t0) * v.pps) + 0.5;
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, h);
-        }
-        ctx.stroke();
-      };
-      ctx.lineWidth = 1;
-      if ((step / 5) * v.pps >= 12) lines(step / 5, 0.45);
-      lines(step, 1);
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = muted;
-      ctx.font = '11px system-ui, sans-serif';
-      for (let i = Math.ceil(v.t0 / step), end = Math.floor((v.t0 + w / v.pps) / step); i <= end; i++)
-        ctx.fillText(formatTime(i * step, step), Math.round((i * step - v.t0) * v.pps) + 4, 12);
-
       // Clips: only the visible sample range is drawn, nearest-neighbour when zoomed in so
       // individual samples (and so the clip's sample rate) are visible.
       for (const c of clips.value) {
-        const x = (c.t - v.t0) * v.pps, y = c.y - v.y0;
+        const x = (c.t - v.t0) * v.pps, y = worldToScreenY(c.y, v);
         const pxPerSample = v.pps / c.rate, cw = c.length * pxPerSample;
         if (x > w || x + cw < 0 || y > h || y + CLIP_HEIGHT < 0) continue;
         const s0 = Math.max(0, Math.floor(-x / pxPerSample));
@@ -149,7 +107,7 @@ export default function TimelineCanvas() {
       const v = view.value, list = clips.value;
       for (let i = list.length - 1; i >= 0; i--) {
         const c = list[i];
-        const x = (c.t - v.t0) * v.pps, y = c.y - v.y0, cw = Math.max(2, duration(c) * v.pps);
+        const x = (c.t - v.t0) * v.pps, y = worldToScreenY(c.y, v), cw = Math.max(2, duration(c) * v.pps);
         if (px >= x - HIT_PAD && px <= x + cw + HIT_PAD && py >= y - HIT_PAD && py <= y + CLIP_HEIGHT + HIT_PAD) return c;
       }
       return null;
@@ -163,7 +121,7 @@ export default function TimelineCanvas() {
       if (e.ctrlKey || e.metaKey) {
         // Touchpad pinch arrives as ctrl+wheel (Chrome, Firefox); clamp for mouse wheels.
         const dy = Math.max(-50, Math.min(50, e.deltaY * k));
-        zoomAt(local(e)[0], Math.exp(-dy * 0.01));
+        zoomAt(...local(e), Math.exp(-dy * 0.01));
       } else {
         panBy(e.deltaX * k, e.deltaY * k);
       }
@@ -173,7 +131,7 @@ export default function TimelineCanvas() {
     const onGestureStart = (e) => (e.preventDefault(), (gestureScale = 1));
     const onGestureChange = (e) => {
       e.preventDefault();
-      zoomAt(local(e)[0], e.scale / gestureScale);
+      zoomAt(...local(e), e.scale / gestureScale);
       gestureScale = e.scale;
     };
 
@@ -212,7 +170,7 @@ export default function TimelineCanvas() {
         return;
       }
       canvas.style.cursor = 'grabbing';
-      updateClip(drag.id, { t: drag.t + (e.clientX - drag.x) / view.value.pps, y: drag.cy + (e.clientY - drag.y) });
+      updateClip(drag.id, { t: drag.t + (e.clientX - drag.x) / view.value.pps, y: drag.cy + (e.clientY - drag.y) / view.value.ys });
     };
     const onPointerUp = () => {
       drag = null;
@@ -225,7 +183,7 @@ export default function TimelineCanvas() {
     const onDblClick = (e) => {
       const [px, py] = local(e);
       if (hit(px, py)) return;
-      const clip = randomClip({ t: xToTime(px), y: screenToWorldY(py) - CLIP_HEIGHT / 2 });
+      const clip = randomClip({ t: xToTime(px), y: screenToWorldY(py - CLIP_HEIGHT / 2) });
       addClip(clip);
       selectedId.value = clip.id;
     };

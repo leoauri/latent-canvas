@@ -92,9 +92,7 @@ export default function Playhead() {
   return (
     <div ref={ref} class="playhead-layer">
       {playing.value && <div class="playhead playhead-cue" style={{ transform: `translateX(${timeToX(cue.value, v)}px)` }} />}
-      <div class="playhead" style={{ transform: `translateX(${timeToX(time.value, v)}px)` }}>
-        <span class="playhead-label">{time.value.toFixed(2)}s</span>
-      </div>
+      <div class="playhead" style={{ transform: `translateX(${timeToX(time.value, v)}px)` }} />
     </div>
   );
 }
