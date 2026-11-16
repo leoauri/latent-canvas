@@ -51,3 +51,57 @@
   color: var(--playhead);
   white-space: nowrap;
 }
+
+/* ---- layers ---- */
+.layers {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.layer {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--layer);
+  /* Own colour + own hatch direction: overlaps show crossing hatches, not a blended colour. */
+  background:
+    repeating-linear-gradient(var(--hatch), color-mix(in oklch, var(--layer) 60%, transparent) 0 1px, transparent 1px 7px),
+    color-mix(in oklch, var(--layer) 7%, transparent);
+}
+.layer-selected {
+  border-width: 2.5px;
+  box-shadow: 0 0 0 1px var(--bg);
+}
+.layer-tab {
+  position: absolute;
+  top: 0;
+  transform: translateY(-100%);
+  padding: 0 6px;
+  border-radius: 4px 4px 0 0;
+  background: var(--layer);
+  color: #111;
+  font: 600 11px/16px system-ui, sans-serif;
+  white-space: nowrap;
+  cursor: move;
+  pointer-events: auto;
+}
+.layer-edge {
+  position: absolute;
+  pointer-events: auto;
+}
+.layer-edge-l, .layer-edge-r { top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+.layer-edge-l { left: -5px; }
+.layer-edge-r { right: -5px; }
+.layer-edge-t, .layer-edge-b { left: 0; right: 0; height: 8px; cursor: ns-resize; }
+.layer-edge-t { top: -5px; }
+.layer-edge-b { bottom: -5px; }
+.layer-edge-tl, .layer-edge-tr, .layer-edge-bl, .layer-edge-br { width: 10px; height: 10px; border-radius: 2px; }
+.layer-edge-tl { left: -6px; top: -6px; cursor: nwse-resize; }
+.layer-edge-br { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.layer-edge-tr { right: -6px; top: -6px; cursor: nesw-resize; }
+.layer-edge-bl { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.layer-selected .layer-edge-tl, .layer-selected .layer-edge-tr,
+.layer-selected .layer-edge-bl, .layer-selected .layer-edge-br {
+  background: var(--layer);
+  box-shadow: 0 0 0 1px var(--bg);
+}
