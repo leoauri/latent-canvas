@@ -58,6 +58,7 @@ export default function TimelineCanvas() {
 
   useEffect(() => {
     const canvas = ref.current;
+    const host = canvas.parentElement;
     const ctx = canvas.getContext('2d');
     let w = 0, h = 0, dpr = 1, frame = 0, hoverId = null, drag = null, suppressClick = false;
 
@@ -129,6 +130,7 @@ export default function TimelineCanvas() {
     // Safari sends pinch as gesture events instead.
     let gestureScale = 1;
     const onGestureStart = (e) => (e.preventDefault(), (gestureScale = 1));
+    const onGestureEnd = (e) => e.preventDefault();
     const onGestureChange = (e) => {
       e.preventDefault();
       zoomAt(...local(e), e.scale / gestureScale);
@@ -195,9 +197,12 @@ export default function TimelineCanvas() {
     };
 
     const listeners = [
-      [canvas, 'wheel', onWheel, { passive: false }],
-      [canvas, 'gesturestart', onGestureStart],
-      [canvas, 'gesturechange', onGestureChange],
+      // Pan/zoom on the whole timeline, not just the canvas: overlays above it (layer tabs and
+      // edges) would otherwise let pinches through to browser zoom and stall scrolling.
+      [host, 'wheel', onWheel, { passive: false }],
+      [host, 'gesturestart', onGestureStart],
+      [host, 'gesturechange', onGestureChange],
+      [host, 'gestureend', onGestureEnd],
       [canvas, 'pointerdown', onPointerDown],
       [canvas, 'pointermove', onPointerMove],
       [canvas, 'pointerup', onPointerUp],
