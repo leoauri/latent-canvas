@@ -3,7 +3,7 @@
 // pointer events through, so clips underneath stay draggable and the playhead placeable.
 import { useEffect, useRef } from 'preact/hooks';
 import { useSignal, effect } from '@preact/signals';
-import { view, timeToX, xToTime, screenToWorldY } from './view.js';
+import { view, timeToX, xToTime, worldToScreenY, screenToWorldY } from './view.js';
 import { selectedId as selectedClipId } from './clips.js';
 import {
   layers, selectedLayerId, addLayer, updateLayer, removeLayer, bringLayerToFront, selectLayer,
@@ -38,8 +38,9 @@ function startDrag(e, layer, mode) {
   bringLayerToFront(layer.id);
   const s = layer, px0 = e.clientX, py0 = e.clientY;
   track((ev) => {
-    const pps = view.value.pps;
-    const dt = (ev.clientX - px0) / pps, dy = ev.clientY - py0, minDur = MIN_WIDTH_PX / pps;
+    const { pps, ys } = view.value;
+    const dt = (ev.clientX - px0) / pps, dy = (ev.clientY - py0) / ys;
+    const minDur = MIN_WIDTH_PX / pps, minH = MIN_LAYER_HEIGHT / ys;
     if (mode === 'move') return updateLayer(s.id, { t: s.t + dt, y: s.y + dy });
     const p = {};
     if (mode.includes('l')) {
@@ -48,10 +49,10 @@ function startDrag(e, layer, mode) {
     }
     if (mode.includes('r')) p.dur = Math.max(minDur, s.dur + dt);
     if (mode.includes('t')) {
-      p.y = Math.min(s.y + dy, s.y + s.h - MIN_LAYER_HEIGHT);
+      p.y = Math.min(s.y + dy, s.y + s.h - minH);
       p.h = s.y + s.h - p.y;
     }
-    if (mode.includes('b')) p.h = Math.max(MIN_LAYER_HEIGHT, s.h + dy);
+    if (mode.includes('b')) p.h = Math.max(minH, s.h + dy);
     updateLayer(s.id, p);
   });
 }
@@ -86,7 +87,7 @@ export default function Layers() {
         },
         () => {
           const l = layers.value.find((x) => x.id === layer.id);
-          if (l && (l.dur * view.value.pps < MIN_WIDTH_PX || l.h < MIN_LAYER_HEIGHT)) removeLayer(l.id);
+          if (l && (l.dur * view.value.pps < MIN_WIDTH_PX || l.h * view.value.ys < MIN_LAYER_HEIGHT)) removeLayer(l.id);
         },
       );
     };
@@ -141,7 +142,7 @@ export default function Layers() {
             <div
               key={l.id}
               class={`layer${l.id === sel ? ' layer-selected' : ''}`}
-              style={{ left: px(left), top: px(l.y - v.y0), width: px(right - left), height: px(l.h), '--layer': layerColor(l), '--hatch': `${l.hatch}deg` }}
+              style={{ left: px(left), top: px(worldToScreenY(l.y, v)), width: px(right - left), height: px(l.h * v.ys), '--layer': layerColor(l), '--hatch': `${l.hatch}deg` }}
             >
               <div
                 class="layer-tab"

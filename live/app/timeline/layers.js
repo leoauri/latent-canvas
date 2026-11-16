@@ -4,7 +4,7 @@
 import { persist } from '@live/runtime';
 import { selectedId as selectedClipId } from './clips.js';
 
-export const MIN_LAYER_HEIGHT = 12; // px
+export const MIN_LAYER_HEIGHT = 12; // on-screen px, at any zoom
 
 /**
  * @typedef {object} Layer
@@ -12,8 +12,8 @@ export const MIN_LAYER_HEIGHT = 12; // px
  * @property {string} name
  * @property {number} t     start time, seconds
  * @property {number} dur   duration, seconds
- * @property {number} y     world y of the top edge, px
- * @property {number} h     height, px
+ * @property {number} y     world y of the top edge (px at vertical scale 1)
+ * @property {number} h     height in world y units (scales with zoom, unlike clip lines)
  * @property {number} hue   OKLCH hue, degrees
  * @property {number} hatch hatch angle, degrees
  */
