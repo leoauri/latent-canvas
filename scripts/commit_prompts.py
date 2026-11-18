@@ -17,11 +17,14 @@ State lives in .git/commit-prompts/: pending.json is the carried-over set plus t
 cursor; prepare writes next.json, and post-commit promotes it, so an aborted commit
 changes nothing.
 
-Fails open: on any error the message is left as it is. Skip with SKIP_PROMPT_HOOK=1.
+prepare aborts the commit on any error (missing `claude`, a failed Sonnet call, …), so a
+broken setup doesn't go unnoticed. Rebases, cherry-picks and reverts are skipped. Skip one
+commit with SKIP_PROMPT_HOOK=1.
 """
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -125,6 +128,12 @@ def collect(root, since):
 
 
 # ---- ledger
+
+
+def sequencer_in_progress():
+    """A rebase, cherry-pick or revert replaying existing commits, whose messages stay as they are."""
+    return any(Path(git("rev-parse", "--git-path", p).strip()).exists()
+               for p in ("rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"))
 
 
 def state_dir():
@@ -244,7 +253,7 @@ def uncommitted_changes():
 def prepare(msg_file, source):
     sd = state_dir()
     (sd / "next.json").unlink(missing_ok=True)  # a stale proposal from an aborted commit
-    if os.environ.get("SKIP_PROMPT_HOOK") or source in ("merge", "squash", "commit"):
+    if os.environ.get("SKIP_PROMPT_HOOK") or source in ("merge", "squash", "commit") or sequencer_in_progress():
         return
     msg_path = Path(msg_file)
     message = msg_path.read_text()
@@ -270,6 +279,8 @@ def prepare(msg_file, source):
 
     data = {"prompt_ids": [], "keep_ids": [], "decisions": []}
     if prompts:
+        if not shutil.which("claude"):
+            raise RuntimeError("`claude` (Claude Code CLI) not found on PATH")
         print(f"commit-prompts: asking Sonnet about {len(prompts)} prompt(s)…", file=sys.stderr)
         draft = "\n".join(l for l in message.splitlines() if not l.startswith("#"))
         data = ask_sonnet(diff, uncommitted_changes(), draft, prompts, agent)
@@ -302,11 +313,20 @@ def commit():
 
 
 if __name__ == "__main__":
+    cmd = sys.argv[1]
     try:
-        cmd = sys.argv[1]
         if cmd == "prepare":
             prepare(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
         elif cmd == "commit":
             commit()
-    except Exception as e:  # never block a commit
-        print(f"commit-prompts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
+    except Exception as e:
+        if cmd != "prepare":  # post-commit can't undo the commit anyway
+            print(f"commit-prompts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
+            sys.exit(0)
+        if isinstance(e, subprocess.CalledProcessError):
+            what = f"`{e.cmd[0]}` exited with status {e.returncode}\n{e.stderr or ''}"
+        else:
+            what = f"{type(e).__name__}: {e}"
+        print(f"commit-prompts: {what}".rstrip(), file=sys.stderr)
+        print("commit-prompts: commit aborted. Fix the above, or skip with SKIP_PROMPT_HOOK=1.", file=sys.stderr)
+        sys.exit(1)

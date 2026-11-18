@@ -23,14 +23,16 @@ prompts that contributed to the staged diff from:
 
 Prompts whose work is still uncommitted are carried over in `.git/commit-prompts/` and
 offered again at the next commit. Agent decisions are summarised only when the prompts alone
-don't explain a change. Enable the hooks once per clone:
+don't explain a change. `npm install` and `npm run dev` turn the hooks on (unless the clone
+already has a `core.hooksPath`); by hand:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-They need `claude` and `uv` on the PATH. They never block a commit, and `SKIP_PROMPT_HOOK=1`
-turns them off for one commit.
+They need `claude` and `uv` on the PATH. If the hook can't run (either is missing, or the
+Sonnet call fails), the commit is aborted with the reason; `SKIP_PROMPT_HOOK=1` skips it for
+one commit. Rebases, cherry-picks and reverts keep their messages untouched.
 
 ## Layout
 
