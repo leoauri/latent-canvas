@@ -1,16 +1,32 @@
-// Agent tools. The file tool is Anthropic's built-in text editor (the model is trained on
-// its exact schema); its writes go to the VFS buffer and only run after apply_changes.
+// Agent tools, as OpenAI-style function definitions. The file tool keeps the schema of the
+// common str_replace text editor; its writes go to the VFS buffer and only run after apply_changes.
 import { vfs, loader, logs, runScript } from '@live/runtime';
 
 const custom = (name, description, properties, required = []) => ({
-  name,
-  description,
-  eager_input_streaming: true,
-  input_schema: { type: 'object', properties, required, additionalProperties: false },
+  type: 'function',
+  function: { name, description, parameters: { type: 'object', properties, required, additionalProperties: false } },
 });
 
 export const tools = [
-  { type: 'text_editor_20250728', name: 'str_replace_based_edit_tool', max_characters: 60000 },
+  custom(
+    'str_replace_based_edit_tool',
+    'View, create and edit live files. Edits are buffered and only run after apply_changes.\n' +
+      '- view: a file (with line numbers; view_range [start, end], end -1 = to the end) or a directory listing (path "" = root).\n' +
+      '- create: write file_text to path, overwriting any existing file.\n' +
+      '- str_replace: replace old_str (must match exactly once, whitespace included) with new_str.\n' +
+      '- insert: insert insert_text after line insert_line (0 = at the top).',
+    {
+      command: { type: 'string', enum: ['view', 'create', 'str_replace', 'insert'] },
+      path: { type: 'string', description: 'Path relative to the live root, e.g. "app/Workspace.jsx"' },
+      view_range: { type: 'array', items: { type: 'integer' }, description: 'view: [start, end], 1-based' },
+      file_text: { type: 'string', description: 'create: full file contents' },
+      old_str: { type: 'string', description: 'str_replace: exact text to replace' },
+      new_str: { type: 'string', description: 'str_replace: replacement text' },
+      insert_line: { type: 'integer', description: 'insert: line after which to insert' },
+      insert_text: { type: 'string', description: 'insert: text to insert' },
+    },
+    ['command', 'path'],
+  ),
   custom(
     'list_modules',
     'Module map of the live file system: every file with its load state, imports (live deps and packages), importers, exports, and buffered (unapplied) changes. Also lists bundled packages and recent applied transactions. Call this first to orient yourself.',
@@ -74,7 +90,7 @@ export const tools = [
 const ok = (id, content) => ({ type: 'tool_result', tool_use_id: id, content });
 const fail = (id, content) => ({ type: 'tool_result', tool_use_id: id, content, is_error: true });
 
-// Eager input streaming means the API no longer validates custom tool inputs: check them.
+// Compatible servers rarely enforce the schemas: check inputs before running anything.
 function validate(input, spec) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return 'input must be an object';
   for (const [key, type] of Object.entries(spec)) {

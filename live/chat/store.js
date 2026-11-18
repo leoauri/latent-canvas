@@ -17,13 +17,15 @@ export const save = (key, value) => {
 };
 
 export const chat = {
-  /** Anthropic.Beta.BetaMessageParam[], the API transcript (append-only). */
+  /** The transcript as block-shaped messages (append-only); agent.js converts it for the API. */
   messages: persist('chat.messages', () => load('redaw.chat.messages', [])),
   /** Snapshot of the assistant message currently streaming, or null. */
   draft: persist('chat.draft', null),
   running: persist('chat.running', false),
   error: persist('chat.error', null),
-  effort: persist('chat.effort', () => load('redaw.chat.effort', 'high')),
+  effort: persist('chat.effort', () => load('redaw.chat.effort', 'default')),
+  /** Model override; empty means the configured default (OPENAI_MODEL). */
+  model: persist('chat.model', () => load('redaw.chat.model', '')),
   apiKey: persist('chat.apiKey', () => load('redaw.apiKey', '')),
   controller: persist('chat.controller', null),
   collapsed: persist('chat.collapsed', () => load('redaw.chat.collapsed', false)),

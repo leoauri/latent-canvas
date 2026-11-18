@@ -5,12 +5,10 @@ import * as preact from 'preact';
 import * as preactHooks from 'preact/hooks';
 import * as preactJsxRuntime from 'preact/jsx-runtime';
 import * as signals from '@preact/signals';
-import * as anthropic from '@anthropic-ai/sdk';
 
 export const vendor = {
   preact,
   'preact/hooks': preactHooks,
   'preact/jsx-runtime': preactJsxRuntime,
   '@preact/signals': signals,
-  '@anthropic-ai/sdk': anthropic,
 };

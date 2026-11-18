@@ -3,9 +3,12 @@ import livePlugin from './vite/live-plugin.js';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const apiKey = env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY;
-  // Any Anthropic-compatible endpoint (gateway, regional host, local mock). May include a path prefix.
-  const baseURL = (env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const get = (k) => env[k] || process.env[k];
+  const apiKey = get('OPENAI_API_KEY');
+  // Any OpenAI-compatible endpoint, up to and including the version segment (OpenAI, OpenRouter,
+  // Ollama, vLLM, LM Studio, a gateway…). Requests go to `${baseURL}/chat/completions`.
+  const baseURL = (get('OPENAI_BASE_URL') || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const model = get('OPENAI_MODEL') || 'gpt-5';
 
   return {
     plugins: [livePlugin({ dir: 'live' })],
@@ -14,16 +17,17 @@ export default defineConfig(({ mode }) => {
       __REDAW_PROXY__: JSON.stringify(Boolean(apiKey)),
       // Not secret: the page calls it directly when no key is configured for the proxy.
       __REDAW_BASE_URL__: JSON.stringify(baseURL),
+      __REDAW_MODEL__: JSON.stringify(model),
     },
     server: {
-      // The key stays on the dev server; the page talks to /__anthropic.
+      // The key stays on the dev server; the page talks to /__llm.
       proxy: apiKey
         ? {
-            '/__anthropic': {
+            '/__llm': {
               target: baseURL,
               changeOrigin: true,
-              rewrite: (p) => p.replace(/^\/__anthropic/, ''),
-              headers: { 'x-api-key': apiKey },
+              rewrite: (p) => p.replace(/^\/__llm/, ''),
+              headers: { Authorization: `Bearer ${apiKey}` },
             },
           }
         : undefined,

@@ -14,7 +14,7 @@ installErrorCapture();
 
 const ENTRY = 'main.jsx';
 const isDev = import.meta.env.DEV;
-const env = { dev: isDev, proxy: isDev && __REDAW_PROXY__, baseURL: __REDAW_BASE_URL__, entry: ENTRY };
+const env = { dev: isDev, proxy: isDev && __REDAW_PROXY__, baseURL: __REDAW_BASE_URL__, model: __REDAW_MODEL__, entry: ENTRY };
 
 const loader = new Loader({ vendor, entry: ENTRY });
 let runtime;

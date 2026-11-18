@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.8.0",
     "@preact/signals": "^2.11.4",
     "es-module-lexer": "^3.0.5",
     "idb-keyval": "^6.3.0",

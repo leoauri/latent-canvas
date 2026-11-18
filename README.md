@@ -1,15 +1,16 @@
 # redaw
 
-A page that is live-programmed from inside itself: an in-page Claude agent edits the
+A page that is live-programmed from inside itself: an in-page LLM agent (any OpenAI-compatible API) edits the
 page's own modules through a chat panel, and the chat is one of those modules.
 
 ```sh
 npm install
-cp .env.example .env   # set ANTHROPIC_API_KEY (only the dev proxy reads it), optionally ANTHROPIC_BASE_URL
+cp .env.example .env   # set OPENAI_API_KEY (only the dev proxy reads it), optionally OPENAI_BASE_URL / OPENAI_MODEL
 npm run dev
 ```
 
-Without a key in `.env`, the chat asks for one and stores it in the browser. That is also
+Without a key in `.env`, the page calls the endpoint directly with a key from the chat
+settings, stored in the browser (or none, for local servers like Ollama). That is also
 how a static `npm run build` works.
 
 ## Commit messages

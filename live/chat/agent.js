@@ -1,24 +1,33 @@
-// The agent loop: a streaming manual tool-use loop over the Messages API.
-// The transcript is append-only (thinking blocks are passed back unchanged), which keeps
-// prompt caching and preserved thinking working across turns.
-import Anthropic from '@anthropic-ai/sdk';
+// The agent loop: a streaming manual tool-use loop over an OpenAI-compatible Chat Completions API.
+// The transcript is stored as content blocks (text, thinking, tool_use / tool_result) so the UI
+// and the chat log stay provider-neutral; toWire() converts it to Chat Completions messages.
 import { env } from '@live/runtime';
 import { tools, runTool } from './tools.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage } from './store.js';
 
-export const MODEL = 'claude-opus-5-5';
 const MAX_STEPS = 60;
+export const EFFORTS = ['default', 'low', 'medium', 'high'];
 
-function makeClient() {
-  if (env.proxy) {
-    // Dev server proxies /__anthropic and adds the key from .env; the placeholder never leaves the page.
-    return new Anthropic({ baseURL: `${location.origin}/__anthropic`, apiKey: 'via-dev-proxy', dangerouslyAllowBrowser: true });
+class APIError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
   }
+}
+
+function endpoint() {
+  if (env.proxy) {
+    // Dev server proxies /__llm and adds the key from .env; no key ever reaches the page.
+    return { url: `${location.origin}/__llm/chat/completions`, headers: {} };
+  }
+  // Without a key the request goes out unauthenticated (fine for local servers such as Ollama);
+  // a server that needs one answers 401, which is reported as an authentication failure.
   const apiKey = chat.apiKey.value;
-  if (!apiKey)
-    throw new Error('No API key. Put ANTHROPIC_API_KEY in .env and restart `npm run dev`, or paste a key in the chat settings.');
-  return new Anthropic({ apiKey, baseURL: env.baseURL, dangerouslyAllowBrowser: true });
+  return {
+    url: `${env.baseURL}/chat/completions`,
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+  };
 }
 
 export async function sendMessage(text) {
@@ -29,12 +38,12 @@ export async function sendMessage(text) {
   chat.controller.value = controller;
   chat.running.value = true;
   try {
-    await loop(makeClient(), controller.signal);
+    await loop(endpoint(), controller.signal);
   } catch (err) {
     if (controller.signal.aborted) chat.error.value = 'Stopped.';
-    else if (err instanceof Anthropic.AuthenticationError) chat.error.value = 'Authentication failed: check the API key.';
-    else if (err instanceof Anthropic.RateLimitError) chat.error.value = 'Rate limited: try again in a moment.';
-    else if (err instanceof Anthropic.APIError) chat.error.value = `API error ${err.status}: ${err.message}`;
+    else if (err instanceof APIError && err.status === 401) chat.error.value = 'Authentication failed: check the API key.';
+    else if (err instanceof APIError && err.status === 429) chat.error.value = 'Rate limited: try again in a moment.';
+    else if (err instanceof APIError) chat.error.value = `API error ${err.status}: ${err.message}`;
     else chat.error.value = String(err?.message || err);
   } finally {
     chat.draft.value = null;
@@ -47,58 +56,51 @@ export function stop() {
   chat.controller.value?.abort();
 }
 
-async function loop(client, signal) {
+async function loop(target, signal) {
   let jsonRetries = 0;
   for (let step = 0; step < MAX_STEPS; step++) {
-    const stream = client.beta.messages.stream(
-      {
-        model: MODEL,
-        max_tokens: 64000,
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default', // on a safety refusal, the API retries on a fallback model in the same call
-        thinking: { type: 'adaptive', display: 'summarized' },
-        output_config: { effort: chat.effort.value },
-        cache_control: { type: 'ephemeral' }, // caches the growing transcript prefix
-        system: systemPrompt(),
-        tools,
-        messages: chat.messages.value,
-      },
-      { signal },
-    );
-
-    let frame = 0;
-    stream.on('streamEvent', (_event, snapshot) => {
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        chat.draft.value = { ...snapshot, content: snapshot.content.map((b) => ({ ...b })) };
-      });
-    });
+    const body = {
+      model: chat.model.value || env.model,
+      stream: true,
+      messages: [{ role: 'system', content: systemPrompt() }, ...toWire(chat.messages.value)],
+      tools,
+    };
+    if (EFFORTS.includes(chat.effort.value) && chat.effort.value !== 'default') body.reasoning_effort = chat.effort.value;
 
     let message;
+    let frame = 0;
     try {
-      message = await stream.finalMessage();
-      jsonRetries = 0;
-    } catch (err) {
-      // With eager input streaming, unparseable tool JSON rejects here; re-issue that case only.
-      if (signal.aborted || err instanceof Anthropic.APIError || jsonRetries++ >= 2) throw err;
-      console.warn('agent: tool input was not parseable JSON, re-issuing the turn');
-      continue;
+      message = await streamCompletion(target, body, signal, (snapshot) => {
+        if (frame) return;
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          chat.draft.value = snapshot();
+        });
+      });
     } finally {
       cancelAnimationFrame(frame);
       chat.draft.value = null;
     }
 
+    const uses = message.content.filter((b) => b.type === 'tool_use');
+    const badJson = uses.some((u) => u.input === undefined);
+    if (badJson && message.stop_reason !== 'max_tokens' && jsonRetries++ < 2) {
+      console.warn('agent: tool input was not parseable JSON, re-issuing the turn');
+      continue;
+    }
+    jsonRetries = 0;
+    for (const u of uses) u.input ??= {};
+
     pushMessage({ role: 'assistant', content: message.content });
 
     if (message.stop_reason === 'refusal') {
-      chat.error.value = `The model declined${message.stop_details?.category ? ` (${message.stop_details.category})` : ''}.`;
+      chat.error.value = `The model declined${message.refusal ? `: ${message.refusal}` : ''}.`;
       return;
     }
-    if (message.stop_reason === 'pause_turn') continue;
-
-    const uses = message.content.filter((b) => b.type === 'tool_use');
-    if (!uses.length) return;
+    if (!uses.length) {
+      if (message.stop_reason === 'max_tokens') chat.error.value = 'The reply hit the output token limit.';
+      return;
+    }
 
     const results = [];
     for (const use of uses) {
@@ -106,14 +108,126 @@ async function loop(client, signal) {
         results.push({ type: 'tool_result', tool_use_id: use.id, content: 'Cancelled by the user.', is_error: true });
       } else if (message.stop_reason === 'max_tokens') {
         // A truncated input can still look valid; never run it.
-        results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'Output hit max_tokens, so this tool input was truncated and not run. Retry with smaller edits.' });
+        results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'Output hit the token limit, so this tool input was truncated and not run. Retry with smaller edits.' });
       } else {
         results.push(await runTool(use));
       }
     }
-    // Every tool_use gets its result in one user message, even when stopping.
+    // Every tool_use gets its result, even when stopping.
     pushMessage({ role: 'user', content: results });
     if (signal.aborted) throw new DOMException('aborted', 'AbortError');
   }
   chat.error.value = `Stopped after ${MAX_STEPS} steps.`;
+}
+
+// ---- streaming ---------------------------------------------------------------------------
+
+/** POSTs a streaming chat completion and assembles it into a block-shaped assistant message. */
+async function streamCompletion(target, body, signal, onUpdate) {
+  const res = await fetch(target.url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...target.headers },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    let detail = await res.text().catch(() => '');
+    try {
+      detail = JSON.parse(detail).error?.message || detail;
+    } catch {}
+    throw new APIError(res.status, detail || res.statusText);
+  }
+
+  let reasoning = '';
+  let text = '';
+  let refusal = '';
+  let finish = null;
+  const calls = []; // by index: { id, name, args }
+
+  const blocks = (final) => {
+    const out = [];
+    if (reasoning) out.push({ type: 'thinking', thinking: reasoning });
+    if (text) out.push({ type: 'text', text });
+    for (const c of calls.filter(Boolean)) {
+      let input;
+      try {
+        input = c.args ? JSON.parse(c.args) : {};
+      } catch {
+        input = final ? undefined : { partial: c.args };
+      }
+      out.push({ type: 'tool_use', id: c.id, name: c.name, input });
+    }
+    return out;
+  };
+
+  const handle = (chunk) => {
+    if (chunk.error) throw new APIError(chunk.error.code || 500, chunk.error.message || JSON.stringify(chunk.error));
+    const choice = chunk.choices?.[0];
+    if (!choice) return;
+    const d = choice.delta || {};
+    if (d.reasoning_content) reasoning += d.reasoning_content; // DeepSeek, vLLM, llama.cpp
+    else if (typeof d.reasoning === 'string') reasoning += d.reasoning; // OpenRouter, Ollama
+    if (d.content) text += d.content;
+    if (d.refusal) refusal += d.refusal;
+    for (const tc of d.tool_calls || []) {
+      const i = tc.index ?? calls.length;
+      const c = (calls[i] ??= { id: '', name: '', args: '' });
+      if (tc.id) c.id = tc.id;
+      if (tc.function?.name) c.name += tc.function.name;
+      if (tc.function?.arguments) c.args += tc.function.arguments;
+    }
+    if (choice.finish_reason) finish = choice.finish_reason;
+  };
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = '';
+  outer: for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += value;
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') break outer;
+      handle(JSON.parse(data));
+      onUpdate(() => ({ role: 'assistant', content: blocks(false) }));
+    }
+  }
+
+  calls.forEach((c, i) => c && !c.id && (c.id = `call_${Date.now().toString(36)}_${i}`));
+  const stop_reason =
+    refusal || finish === 'content_filter' ? 'refusal' : finish === 'length' ? 'max_tokens' : calls.length ? 'tool_use' : 'end_turn';
+  return { content: blocks(true), stop_reason, refusal };
+}
+
+// ---- transcript -> Chat Completions messages -----------------------------------------------
+
+function toWire(messages) {
+  const out = [];
+  for (const { role, content } of messages) {
+    if (typeof content === 'string') {
+      out.push({ role, content });
+      continue;
+    }
+    if (role === 'assistant') {
+      // Reasoning is display-only; most servers reject or ignore it on input.
+      const text = content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      const calls = content
+        .filter((b) => b.type === 'tool_use')
+        .map((b) => ({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } }));
+      if (!text && !calls.length) continue;
+      out.push({ role: 'assistant', content: text || null, ...(calls.length && { tool_calls: calls }) });
+    } else {
+      for (const b of content) {
+        if (b.type === 'tool_result') {
+          const body = typeof b.content === 'string' ? b.content : (b.content || []).map((c) => c.text ?? '').join('\n');
+          out.push({ role: 'tool', tool_call_id: b.tool_use_id, content: b.is_error ? `ERROR: ${body}` : body });
+        } else if (b.type === 'text') out.push({ role: 'user', content: b.text });
+      }
+    }
+  }
+  return out;
 }

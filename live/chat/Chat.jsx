@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import { vfs, env, vfsVersion } from '@live/runtime';
 import { chat, resetChat, save } from './store.js';
-import { sendMessage, stop, MODEL } from './agent.js';
+import { sendMessage, stop, EFFORTS } from './agent.js';
 import './chat.css';
 
 export default function Chat() {
@@ -45,34 +45,44 @@ function Header() {
   return (
     <header class="chat-header">
       <strong>Agent</strong>
-      <span class="chat-model">{MODEL}</span>
+      <span class="chat-model">{chat.model.value || env.model}</span>
       <select
         value={chat.effort.value}
-        title="effort"
+        title="reasoning effort (default: not sent)"
         onChange={(e) => {
           chat.effort.value = e.currentTarget.value;
           save('redaw.chat.effort', chat.effort.value);
         }}
       >
-        {['low', 'medium', 'high', 'xhigh', 'max'].map((e) => (
+        {EFFORTS.map((e) => (
           <option value={e}>{e}</option>
         ))}
       </select>
-      {!env.proxy && <button onClick={() => (showSettings.value = !showSettings.value)}>Key</button>}
+      <button onClick={() => (showSettings.value = !showSettings.value)}>Settings</button>
       <button onClick={resetChat} disabled={chat.running.value} title="Start a new conversation">
         New
       </button>
       {showSettings.value && (
         <div class="chat-settings">
           <input
-            type="password"
-            placeholder="Anthropic API key (stored in this browser)"
-            value={chat.apiKey.value}
+            placeholder={`Model (default ${env.model})`}
+            value={chat.model.value}
             onInput={(e) => {
-              chat.apiKey.value = e.currentTarget.value.trim();
-              save('redaw.apiKey', chat.apiKey.value);
+              chat.model.value = e.currentTarget.value.trim();
+              save('redaw.chat.model', chat.model.value);
             }}
           />
+          {!env.proxy && (
+            <input
+              type="password"
+              placeholder={`API key for ${env.baseURL} (stored in this browser)`}
+              value={chat.apiKey.value}
+              onInput={(e) => {
+                chat.apiKey.value = e.currentTarget.value.trim();
+                save('redaw.apiKey', chat.apiKey.value);
+              }}
+            />
+          )}
         </div>
       )}
     </header>
@@ -199,8 +209,6 @@ function Block({ block, result, streaming }) {
         </details>
       );
     }
-    case 'fallback':
-      return <div class="blk-note">Continued on {block.to?.model} after a refusal.</div>;
     default:
       return null;
   }
