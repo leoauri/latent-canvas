@@ -56,32 +56,8 @@
   overflow: hidden;
   pointer-events: none;
 }
-.layer {
-  position: absolute;
-  box-sizing: border-box;
-  border: 1.5px solid var(--layer);
-  /* Own colour + own hatch direction: overlaps show crossing hatches, not a blended colour. */
-  background:
-    repeating-linear-gradient(var(--hatch), color-mix(in oklch, var(--layer) 60%, transparent) 0 1px, transparent 1px 7px),
-    color-mix(in oklch, var(--layer) 7%, transparent);
-}
-.layer-selected {
-  border-width: 2.5px;
-  box-shadow: 0 0 0 1px var(--bg);
-}
-.layer-tab {
-  position: absolute;
-  top: 0;
-  transform: translateY(-100%);
-  padding: 0 6px;
-  border-radius: 4px 4px 0 0;
-  background: var(--layer);
-  color: #111;
-  font: 600 11px/16px system-ui, sans-serif;
-  white-space: nowrap;
-  cursor: move;
-  pointer-events: auto;
-}
+.mask-box { position: absolute; box-sizing: border-box; }
+.mask-selected { outline: 1px dashed var(--layer); }
 .layer-edge {
   position: absolute;
   pointer-events: auto;
@@ -97,8 +73,8 @@
 .layer-edge-br { right: -6px; bottom: -6px; cursor: nwse-resize; }
 .layer-edge-tr { right: -6px; top: -6px; cursor: nesw-resize; }
 .layer-edge-bl { left: -6px; bottom: -6px; cursor: nesw-resize; }
-.layer-selected .layer-edge-tl, .layer-selected .layer-edge-tr,
-.layer-selected .layer-edge-bl, .layer-selected .layer-edge-br {
+.mask-selected .layer-edge-tl, .mask-selected .layer-edge-tr,
+.mask-selected .layer-edge-bl, .mask-selected .layer-edge-br {
   background: var(--layer);
   box-shadow: 0 0 0 1px var(--bg);
 }

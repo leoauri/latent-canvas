@@ -1,12 +1,10 @@
-// Per-layer config: a parameter panel (shown while hovering a layer's name, pinned by clicking it),
-// inline renaming, and the layer function (layerFunc.js): agent-written source whose meta declares
-// the parameters and their widgets, rendered here. Each layer has a chat bubble leading to the last
-// chat that modified its function; chats opened from it are scoped "layer:<id>", and the agent gets
-// layer tools via chat/extensions.js.
-import { useRef, useLayoutEffect } from 'preact/hooks';
+// Per stack layer config: name, parameter panel and the layer function (layerFunc.js): agent-written
+// source whose meta declares the parameters and their widgets, rendered here. Each layer has a chat
+// bubble leading to the last chat that modified its function; chats opened from it are scoped
+// "layer:<id>", and the agent gets layer tools via chat/extensions.js.
 import { Component } from 'preact';
-import { persist } from '@live/runtime';
-import { layers, updateLayer } from './layers.js';
+import { stack, updateStackLayer, stackLayerById, LAYER_TYPES } from './stack.js';
+import { masksOf } from '../timeline/layers.js';
 import { compileLayerFunc, widgetOf, paramValues, WIDGET_NAMES } from './layerFunc.js';
 import { registerExtension } from '../../chat/extensions.js';
 import { chat, windows, findSession, newSession, openSession, scopeRunning } from '../../chat/store.js';
@@ -14,31 +12,6 @@ import './layerConfig.css';
 
 export const layerScope = (id) => `layer:${id}`;
 const scopeLayerId = (scope) => (scope?.startsWith('layer:') ? scope.slice(6) : null);
-const layerById = (id) => layers.value.find((l) => l.id === id);
-
-// ---- panel visibility ----------------------------------------------------------------------
-
-export const hoveredLayerId = persist('layerConfig.hovered', null);
-export const pinnedLayerIds = persist('layerConfig.pinned', () => []);
-export const renamingLayerId = persist('layerConfig.renaming', null);
-
-let hideTimer = 0;
-export function hoverLayer(id) {
-  clearTimeout(hideTimer);
-  hoveredLayerId.value = id;
-}
-/** Hides after a short delay, so the pointer can travel from the name onto the panel. */
-export function unhoverLayer() {
-  clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => (hoveredLayerId.value = null), 180);
-}
-export function togglePin(id) {
-  const p = pinnedLayerIds.value;
-  pinnedLayerIds.value = p.includes(id) ? p.filter((x) => x !== id) : [...p, id];
-}
-export const panelVisible = (id) => hoveredLayerId.value === id || pinnedLayerIds.value.includes(id);
-
-// ---- chats ---------------------------------------------------------------------------------
 
 /** The last chat that modified the layer function, else the latest chat about the layer, else a new one. */
 export function openLayerChat(l) {
@@ -50,7 +23,7 @@ export function openLayerChat(l) {
 
 const stopEvent = (e) => e.stopPropagation();
 
-function ChatBubble({ layer: l }) {
+export function ChatBubble({ layer: l }) {
   const scope = layerScope(l.id);
   const running = scopeRunning(scope) || !!(l.funcChat && findSession(l.funcChat)?.running.value);
   const has = !!l.funcChat || chat.index.value.some((c) => c.scope === scope);
@@ -80,52 +53,6 @@ function ChatBubble({ layer: l }) {
   );
 }
 
-function NameInput({ layer: l, autoFocus, onDone, ...rest }) {
-  const ref = useRef(null);
-  useLayoutEffect(() => {
-    if (autoFocus) ref.current?.select();
-  }, [autoFocus]);
-  return (
-    <input
-      ref={ref}
-      value={l.name}
-      spellcheck={false}
-      onPointerDown={stopEvent}
-      onClick={stopEvent}
-      onDblClick={stopEvent}
-      onInput={(e) => updateLayer(l.id, { name: e.currentTarget.value })}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur();
-      }}
-      onBlur={() => {
-        if (!l.name.trim()) updateLayer(l.id, { name: 'Untitled layer' });
-        onDone?.();
-      }}
-      {...rest}
-    />
-  );
-}
-
-/** Contents of a layer's tab: its name (double-click renames) and its chat bubble. */
-export function LayerTabContent({ layer: l }) {
-  const renaming = renamingLayerId.value === l.id;
-  return (
-    <>
-      {renaming ? (
-        <NameInput layer={l} autoFocus class="layer-rename" size={Math.max(4, l.name.length + 1)} onDone={() => (renamingLayerId.value = null)} />
-      ) : (
-        <span class="layer-name" onDblClick={(e) => (e.stopPropagation(), (renamingLayerId.value = l.id))} title="Hover: parameters · Click: pin · Double-click: rename · Drag: move">
-          {l.name}
-        </span>
-      )}
-      <ChatBubble layer={l} />
-    </>
-  );
-}
-
-// ---- parameter panel -----------------------------------------------------------------------
-
 /** Agent-written widgets may throw; keep that inside the panel row. */
 class WidgetBoundary extends Component {
   state = { error: null };
@@ -140,7 +67,7 @@ class WidgetBoundary extends Component {
 function ParamRow({ layer: l, name, param: p, value }) {
   const { desc, widget, label, ...props } = p;
   const Widget = widgetOf(p);
-  const onChange = (v) => updateLayer(l.id, { paramValues: { ...l.paramValues, [name]: v } });
+  const onChange = (v) => updateStackLayer(l.id, { paramValues: { ...l.paramValues, [name]: v } });
   return (
     <div class="layer-param" title={desc}>
       <span class="layer-param-name">{label ?? name}</span>
@@ -151,29 +78,23 @@ function ParamRow({ layer: l, name, param: p, value }) {
   );
 }
 
-export function LayerPanel({ layer: l, left }) {
-  const pinned = pinnedLayerIds.value.includes(l.id);
+/** Details of a stack layer, shown under its card: name, params, function. */
+export function LayerDetails({ layer: l }) {
   const compiled = compileLayerFunc(l.func);
   const params = Object.entries(compiled?.meta?.params ?? {});
   const values = paramValues(l);
   const funcChatEntry = l.funcChat && chat.index.value.find((c) => c.id === l.funcChat);
   return (
-    <div
-      class={`layer-panel${pinned ? ' layer-panel-pinned' : ''}`}
-      style={{ left: `${left}px` }}
-      onPointerEnter={() => hoverLayer(l.id)}
-      onPointerLeave={unhoverLayer}
-      onPointerDown={stopEvent}
-      onClick={stopEvent}
-      onDblClick={stopEvent}
-      onWheel={stopEvent}
-    >
-      <div class="layer-panel-head">
-        <NameInput layer={l} class="layer-panel-name" title="Layer name" />
-        <button class="layer-panel-pin" onClick={() => togglePin(l.id)} title={pinned ? 'Unpin panel' : 'Pin panel open'}>
-          {pinned ? 'Unpin' : 'Pin'}
-        </button>
-      </div>
+    <div class="layer-panel" onPointerDown={stopEvent} onClick={stopEvent} onDblClick={stopEvent} onKeyDown={stopEvent}>
+      <input
+        class="layer-panel-name"
+        value={l.name}
+        spellcheck={false}
+        title="Layer name"
+        onInput={(e) => updateStackLayer(l.id, { name: e.currentTarget.value })}
+        onBlur={() => !l.name.trim() && updateStackLayer(l.id, { name: LAYER_TYPES[l.type].label })}
+        onKeyDown={(e) => (e.key === 'Enter' || e.key === 'Escape') && e.currentTarget.blur()}
+      />
       {compiled?.meta?.desc && <p class="layer-panel-desc">{compiled.meta.desc}</p>}
       {compiled?.error && <p class="layer-panel-error">Function error: {compiled.error}</p>}
       {!l.func && <p class="layer-panel-empty">No function yet. Use the chat bubble to have an agent write one.</p>}
@@ -210,7 +131,18 @@ function describeLayer(l) {
     c?.meta &&
     Object.fromEntries(Object.entries(c.meta.params).map(([n, { widget, ...p }]) => [n, { ...p, widget: widgetOf(p).name || 'custom' }]));
   return JSON.stringify(
-    { id: l.id, name: l.name, t: l.t, dur: l.dur, y: l.y, h: l.h, desc: c?.meta?.desc ?? null, params: params ?? null, values: paramValues(l), error: c?.error ?? null, func: l.func ?? null },
+    {
+      id: l.id,
+      name: l.name,
+      type: l.type,
+      index: stack.value.indexOf(l),
+      masks: masksOf(l.id).map(({ t, dur, y, h }) => ({ t, dur, y, h })),
+      desc: c?.meta?.desc ?? null,
+      params: params ?? null,
+      values: paramValues(l),
+      error: c?.error ?? null,
+      func: l.func ?? null,
+    },
     null,
     2,
   );
@@ -228,16 +160,16 @@ function resolveLayer(ref, ctx) {
   if (ref == null || ref === '') {
     const id = scopeLayerId(ctx.session?.scope?.value);
     if (!id) throw new Error('This chat is not linked to a layer: pass `layer` (id or name).');
-    const l = layerById(id);
+    const l = stackLayerById(id);
     if (!l) throw new Error(`The linked layer ${id} has been deleted.`);
     return l;
   }
-  const byId = layerById(ref);
+  const byId = stackLayerById(ref);
   if (byId) return byId;
   const key = String(ref).trim().toLowerCase();
-  const hits = layers.value.filter((l) => l.name.trim().toLowerCase() === key);
+  const hits = stack.value.filter((l) => l.name.trim().toLowerCase() === key);
   if (hits.length === 1) return hits[0];
-  const all = layers.value.map((l) => `"${l.name}" (${l.id})`).join(', ') || 'none';
+  const all = stack.value.map((l) => `"${l.name}" (${l.id})`).join(', ') || 'none';
   if (hits.length > 1) throw new Error(`Several layers are named "${ref}"; pass an id: ${hits.map((l) => l.id).join(', ')}`);
   throw new Error(`No layer "${ref}". Layers: ${all}`);
 }
@@ -256,7 +188,7 @@ function setLayerFunction(input, ctx) {
   if (c.error) throw new Error(`Not saved: ${c.error}`);
   const kept = Object.fromEntries(Object.entries(l.paramValues ?? {}).filter(([n]) => n in c.meta.params));
   const linked = !ctx.session?.scope?.value && linkChat(l, ctx);
-  updateLayer(l.id, { func: input.code, paramValues: kept, funcUpdated: Date.now(), funcChat: ctx.session?.id ?? l.funcChat ?? null });
+  updateStackLayer(l.id, { func: input.code, paramValues: kept, funcUpdated: Date.now(), funcChat: ctx.session?.id ?? l.funcChat ?? null });
   return `Saved the function of layer "${l.name}" (${l.id}): ${Object.keys(c.meta.params).length} params, values kept for ${Object.keys(kept).join(', ') || 'none'}.${linked ? ' This chat is now linked to the layer.' : ''}`;
 }
 
@@ -275,29 +207,31 @@ const FORMAT = `A layer function is JS source of ONE expression evaluating to { 
 \`\`\`
 - Each param: desc, widget (a preact component), default, plus props passed to the widget (e.g. min/max/step, placeholder, label for the row title). The panel renders the widget with { ...props, value, onChange, default }.
 - In scope: the default widgets ${WIDGET_NAMES.join(', ')} (Knob and Slider take min/max/step; NumberInput min/max/step; TextInput placeholder), plus preact's h and Fragment for custom widgets, e.g. ({ value, onChange }) => h('input', { type: 'checkbox', checked: value, onChange: (e) => onChange(e.currentTarget.checked) }). No JSX, no imports.
-- The user's values survive edits for params whose name you keep. app/timeline/layerFunc.js exports runLayer(layer, ctx) to call transform.
+- The user's values survive edits for params whose name you keep. app/stack/layerFunc.js exports runLayer(layer, ctx) to call transform.
 
 Tips for writing layer functions:
+- Layers live in the layer stack (app/stack/stack.js): a back-to-front pipeline, data flows from index 0 towards the front. Each layer has a type (audio-in, latent, operator, audio-out).
+- A layer operates only inside its masks (app/timeline/layers.js: rectangles in time × world y with layerId; operatesAt(layerId, t, y) tests a point; no masks = everywhere).
 - What ctx contains is defined by the callers of runLayer. Find them before writing a transform (in eval_js: vfs.list().filter((p) => /runLayer\\(/.test(vfs.read(p)))). If there are none, nothing applies layers yet: pick a minimal ctx contract, say so in the layer's desc and tell the user that wiring it up is a separate app change.
-- Data shapes are documented in the typedefs at the top of app/timeline/clips.js (clips of latent vectors, helper sampleAt) and app/timeline/layers.js (layer geometry in time and world y; layersAt finds the layers at a point). Read them rather than assuming.
-- Test a transform with chosen values without touching the user's: modules('app/timeline/layerFunc.js').runLayer({ ...layer, paramValues: { … } }, ctx) in eval_js, with the layer from modules('app/timeline/layers.js').layers.value.`;
+- Data shapes are documented in the typedefs at the top of app/timeline/clips.js (clips of latent vectors, helper sampleAt), app/stack/stack.js and app/timeline/layers.js. Read them rather than assuming.
+- Test a transform with chosen values without touching the user's: modules('app/stack/layerFunc.js').runLayer({ ...layer, paramValues: { … } }, ctx) in eval_js, with the layer from modules('app/stack/stack.js').stack.value.`;
 
 const unregister = registerExtension('layers', {
   label: (scope) => {
     const id = scopeLayerId(scope);
     if (!id) return null;
-    return `Layer · ${layerById(id)?.name ?? 'deleted'}`;
+    return `Layer · ${stackLayerById(id)?.name ?? 'deleted'}`;
   },
   prompt: (scope) => {
     const id = scopeLayerId(scope);
     if (!id)
-      return `# Timeline layers
-Layers on the timeline carry agent-written functions with parameters (tools: get_layers, set_layer_function, link_chat_to_layer; layers can be addressed by id or name). When the user asks you to work on a specific layer from this general chat, call link_chat_to_layer first so this conversation is filed under that layer (set_layer_function also links an unlinked chat automatically).
+      return `# Layer stack
+Layers in the layer stack carry agent-written functions with parameters (tools: get_layers, set_layer_function, link_chat_to_layer; layers can be addressed by id or name). When the user asks you to work on a specific layer from this general chat, call link_chat_to_layer first so this conversation is filed under that layer (set_layer_function also links an unlinked chat automatically).
 ${FORMAT}`;
-    const l = layerById(id);
+    const l = stackLayerById(id);
     if (!l) return `# Layer chat\nThis chat was about layer ${id}, which has been deleted.`;
     return `# Layer chat
-This chat belongs to the timeline layer "${l.name}" (id ${l.id}). The user wants to work on this layer's function and parameters; tools default to this layer. Layer state when this step started:
+This chat belongs to the stack layer "${l.name}" (id ${l.id}). The user wants to work on this layer's function and parameters; tools default to this layer. Layer state when this step started:
 \`\`\`json
 ${describeLayer(l)}
 \`\`\`
@@ -306,8 +240,8 @@ ${FORMAT}
   },
   tools: [
     {
-      def: tool('get_layers', 'Current timeline layers with their meta, parameter values and function source, as JSON. Pass layer (id or name) for one layer.', { layer: { type: 'string', description: 'Layer id or name' } }),
-      run: (input) => (input.layer ? describeLayer(resolveLayer(input.layer, {})) : `[${layers.value.map(describeLayer).join(',\n')}]`),
+      def: tool('get_layers', 'Current stack layers (back to front) with their masks, meta, parameter values and function source, as JSON. Pass layer (id or name) for one layer.', { layer: { type: 'string', description: 'Layer id or name' } }),
+      run: (input) => (input.layer ? describeLayer(resolveLayer(input.layer, {})) : `[${stack.value.map(describeLayer).join(',\n')}]`),
     },
     {
       def: tool(
@@ -328,7 +262,7 @@ ${FORMAT}
       run: (input, ctx) => {
         const l = resolveLayer(input.layer, ctx);
         if (!linkChat(l, ctx)) throw new Error('No chat session to link.');
-        updateLayer(l.id, { funcChat: l.funcChat ?? ctx.session.id });
+        updateStackLayer(l.id, { funcChat: l.funcChat ?? ctx.session.id });
         return `This chat is now linked to layer "${l.name}" (${l.id}).`;
       },
     },
@@ -336,6 +270,5 @@ ${FORMAT}
 });
 
 export function dispose() {
-  clearTimeout(hideTimer);
   unregister();
 }

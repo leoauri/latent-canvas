@@ -1,6 +1,7 @@
 import TimelineCanvas from './TimelineCanvas.jsx';
 import Layers from './Layers.jsx';
 import Playhead from './Playhead.jsx';
+import LayerStack from '../stack/LayerStack.jsx';
 import { clips, selectedId, duration } from './clips.js';
 import './timeline.css';
 
@@ -11,6 +12,7 @@ export default function Timeline() {
       <TimelineCanvas />
       <Layers />
       <Playhead />
+      <LayerStack />
       <div class="timeline-hud">
         {sel
           ? `${sel.length} samples × ${sel.dim} dims @ ${sel.rate} Hz · ${duration(sel).toFixed(2)} s`

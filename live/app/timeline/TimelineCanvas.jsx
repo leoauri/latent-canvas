@@ -6,6 +6,8 @@ import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { view, panBy, zoomAt, xToTime, worldToScreenY, screenToWorldY } from './view.js';
 import { clips, selectedId, CLIP_HEIGHT, duration, randomClip, addClip, updateClip, removeClip, bringToFront } from './clips.js';
+import { layers as masks } from './layers.js';
+import { stack, activeLayer, activeLayerId, highlightedLayerId, stackLayerColor } from '../stack/stack.js';
 
 const HIT_PAD = 3; // px of slack around the 10px lines
 
@@ -77,8 +79,33 @@ export default function TimelineCanvas() {
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 
-      // Clips: only the visible sample range is drawn, nearest-neighbour when zoomed in so
-      // individual samples (and so the clip's sample rate) are visible.
+      // Back to front through the stack: clips at the (backmost) latent recording layer, each
+      // layer's masks as one shaded area, so only layers in front of the clips shade them.
+      const layersBack = stack.value;
+      const clipsAt = layersBack.findIndex((l) => l.type === 'latent');
+      const focus = highlightedLayerId.value ?? activeLayer()?.id;
+      if (clipsAt === -1) drawClips(v);
+      for (const l of layersBack) {
+        if (l === layersBack[clipsAt]) drawClips(v);
+        drawMasks(l, v, l.id === focus);
+      }
+
+      // Hover/selection outlines stay on top of all shading.
+      for (const c of clips.value) {
+        if (c.id !== sel && c.id !== hoverId) continue;
+        const x = (c.t - v.t0) * v.pps, y = worldToScreenY(c.y, v), cw = c.length * (v.pps / c.rate);
+        const left = Math.max(x, -4), right = Math.min(x + Math.max(2, cw), w + 4);
+        ctx.globalAlpha = c.id === sel ? 1 : 0.6;
+        ctx.strokeStyle = c.id === sel ? accent : fg;
+        ctx.lineWidth = c.id === sel ? 2 : 1;
+        ctx.strokeRect(left - 1, y - 1, right - left + 2, CLIP_HEIGHT + 2);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Clips: only the visible sample range is drawn, nearest-neighbour when zoomed in so
+    // individual samples (and so the clip's sample rate) are visible.
+    function drawClips(v) {
       for (const c of clips.value) {
         const x = (c.t - v.t0) * v.pps, y = worldToScreenY(c.y, v);
         const pxPerSample = v.pps / c.rate, cw = c.length * pxPerSample;
@@ -89,15 +116,22 @@ export default function TimelineCanvas() {
           ctx.imageSmoothingEnabled = pxPerSample < 1;
           ctx.drawImage(bitmap(c), s0, 0, s1 - s0, 1, x + s0 * pxPerSample, y, Math.max(2, (s1 - s0) * pxPerSample), CLIP_HEIGHT);
         }
-        if (c.id === sel || c.id === hoverId) {
-          const left = Math.max(x, -4), right = Math.min(x + Math.max(2, cw), w + 4);
-          ctx.globalAlpha = c.id === sel ? 1 : 0.6;
-          ctx.strokeStyle = c.id === sel ? accent : fg;
-          ctx.lineWidth = c.id === sel ? 2 : 1;
-          ctx.strokeRect(left - 1, y - 1, right - left + 2, CLIP_HEIGHT + 2);
-          ctx.globalAlpha = 1;
-        }
       }
+    }
+
+    // One path per layer, filled once: overlapping masks merge into a single evenly shaded area.
+    function drawMasks(l, v, focused) {
+      const own = masks.value.filter((m) => m.layerId === l.id);
+      if (!own.length) return;
+      ctx.beginPath();
+      for (const m of own) {
+        const x0 = Math.max(-50, (m.t - v.t0) * v.pps), x1 = Math.min(w + 50, (m.t + m.dur - v.t0) * v.pps);
+        if (x1 > x0) ctx.rect(x0, worldToScreenY(m.y, v), x1 - x0, m.h * v.ys);
+      }
+      ctx.globalAlpha = focused ? 0.22 : 0.1;
+      ctx.fillStyle = stackLayerColor(l);
+      ctx.fill('nonzero');
+      ctx.globalAlpha = 1;
     }
 
     const local = (e) => {
@@ -227,7 +261,7 @@ export default function TimelineCanvas() {
 
     // Redraw whenever the view, the clips or the selection change.
     const stopEffect = effect(() => {
-      view.value, clips.value, selectedId.value;
+      view.value, clips.value, selectedId.value, stack.value, masks.value, highlightedLayerId.value, activeLayerId.value;
       schedule();
     });
     // Theme changes (light/dark) change the CSS colours.

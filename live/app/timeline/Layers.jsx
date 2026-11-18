@@ -1,23 +1,20 @@
-// Layer overlay. Shift+drag on the timeline draws a new layer; drag a layer's tab to move it,
-// its edges/corners to resize it; Delete removes the selected layer. Layer interiors let
-// pointer events through, so clips underneath stay draggable and the playhead placeable.
+// Mask editing overlay (the shading itself is drawn in stack order by TimelineCanvas.jsx).
+// Shift+drag draws a mask on the active
+// stack layer; Alt+drag inside one of its masks moves it; its edges/corners resize; Delete removes the
+// selected mask. Mask interiors let pointer events through, so clips stay draggable.
 import { useEffect, useRef } from 'preact/hooks';
 import { useSignal, effect } from '@preact/signals';
 import { view, timeToX, xToTime, worldToScreenY, screenToWorldY } from './view.js';
 import { selectedId as selectedClipId } from './clips.js';
-import {
-  layers, selectedLayerId, addLayer, updateLayer, removeLayer, bringLayerToFront, selectLayer,
-  layerColor, MIN_LAYER_HEIGHT,
-} from './layers.js';
-import { LayerTabContent, LayerPanel, hoverLayer, unhoverLayer, togglePin, panelVisible } from './LayerConfig.jsx';
+import { layers, selectedLayerId, addLayer, updateLayer, removeLayer, selectLayer, MIN_LAYER_HEIGHT } from './layers.js';
+import { activeLayer, stackLayerColor } from '../stack/stack.js';
 
 const MIN_WIDTH_PX = 6;
-const OFFSCREEN = 50; // px: layers extending past the viewport are clipped this far outside it
+const OFFSCREEN = 50; // px: masks extending past the viewport are clipped this far outside it
 const EDGES = ['l', 'r', 't', 'b', 'tl', 'tr', 'bl', 'br'];
 
 const isTyping = (el) => !!el?.closest?.('input, textarea, select, button, [contenteditable]');
 
-/** Follow a pointer until release. */
 function track(onMove, onEnd) {
   const up = () => {
     window.removeEventListener('pointermove', onMove);
@@ -30,14 +27,13 @@ function track(onMove, onEnd) {
   window.addEventListener('pointercancel', up);
 }
 
-/** Move (mode 'move') or resize (mode = edges, e.g. 'tl') a layer by dragging. */
-function startDrag(e, layer, mode) {
+/** Move (mode 'move') or resize (mode = edges, e.g. 'tl') a mask by dragging. */
+function startDrag(e, mask, mode) {
   if (e.button !== 0) return;
   e.preventDefault();
   e.stopPropagation();
-  selectLayer(layer.id);
-  bringLayerToFront(layer.id);
-  const s = layer, px0 = e.clientX, py0 = e.clientY;
+  selectLayer(mask.id);
+  const s = mask, px0 = e.clientX, py0 = e.clientY;
   track((ev) => {
     const { pps, ys } = view.value;
     const dt = (ev.clientX - px0) / pps, dy = (ev.clientY - py0) / ys;
@@ -61,18 +57,14 @@ function startDrag(e, layer, mode) {
 const px = (n) => `${n}px`; // Preact 11 no longer appends px to numeric styles
 const stop = (e) => e.stopPropagation(); // handle clicks must not place the playhead
 
-// A click on the tab pins its panel, unless the pointer moved (then it was a drag).
-let tabDown = null;
-const onTabPointerDown = (e, l) => {
-  tabDown = { x: e.clientX, y: e.clientY };
-  startDrag(e, l, 'move');
-};
-const onTabClick = (e, l) => {
-  e.stopPropagation();
-  if (e.target.closest('input, button')) return;
-  if (tabDown && Math.hypot(e.clientX - tabDown.x, e.clientY - tabDown.y) < 4) togglePin(l.id);
-  tabDown = null;
-};
+/** Screen rect of a mask clipped to just beyond the viewport, or null when offscreen. */
+function screenRect(m, v, w) {
+  const x = timeToX(m.t, v);
+  const left = Math.max(x, -OFFSCREEN);
+  const right = Math.min(x + m.dur * v.pps, w + OFFSCREEN);
+  if (right <= left) return null;
+  return { left, top: worldToScreenY(m.y, v), width: right - left, height: m.h * v.ys };
+}
 
 export default function Layers() {
   const ref = useRef(null);
@@ -82,26 +74,37 @@ export default function Layers() {
     const el = ref.current;
     const host = el.parentElement;
     let suppressClick = false;
+    const local = (e) => {
+      const r = host.getBoundingClientRect();
+      return { t: xToTime(e.clientX - r.left), y: screenToWorldY(e.clientY - r.top) };
+    };
 
-    // Shift+drag anywhere on the timeline draws a new layer. Capture phase, so the clip
-    // canvas never sees this gesture.
+    // Capture phase, so the clip canvas never sees these gestures.
     const onPointerDownCapture = (e) => {
-      if (!e.shiftKey || e.button !== 0) return;
+      if (e.button !== 0 || !(e.shiftKey || e.altKey) || e.target.closest('.stack')) return;
+      const owner = activeLayer();
+      if (!owner) return;
+      const p = local(e);
+      if (e.altKey) {
+        const hit = layers.value.findLast((m) => m.layerId === owner.id && p.t >= m.t && p.t <= m.t + m.dur && p.y >= m.y && p.y <= m.y + m.h);
+        if (!hit) return;
+        suppressClick = true;
+        e.stopImmediatePropagation();
+        return startDrag(e, hit, 'move');
+      }
       e.preventDefault();
       e.stopImmediatePropagation();
       suppressClick = true;
-      const r = host.getBoundingClientRect();
-      const t0 = xToTime(e.clientX - r.left), y0 = screenToWorldY(e.clientY - r.top);
-      const layer = addLayer({ t: t0, y: y0, dur: 0, h: 0 });
-      selectLayer(layer.id);
+      const mask = addLayer({ t: p.t, y: p.y, dur: 0, h: 0, layerId: owner.id });
+      selectLayer(mask.id);
       track(
         (ev) => {
-          const t1 = xToTime(ev.clientX - r.left), y1 = screenToWorldY(ev.clientY - r.top);
-          updateLayer(layer.id, { t: Math.min(t0, t1), dur: Math.abs(t1 - t0), y: Math.min(y0, y1), h: Math.abs(y1 - y0) });
+          const q = local(ev);
+          updateLayer(mask.id, { t: Math.min(p.t, q.t), dur: Math.abs(q.t - p.t), y: Math.min(p.y, q.y), h: Math.abs(q.y - p.y) });
         },
         () => {
-          const l = layers.value.find((x) => x.id === layer.id);
-          if (l && (l.dur * view.value.pps < MIN_WIDTH_PX || l.h * view.value.ys < MIN_LAYER_HEIGHT)) removeLayer(l.id);
+          const m = layers.value.find((x) => x.id === mask.id);
+          if (m && (m.dur * view.value.pps < MIN_WIDTH_PX || m.h * view.value.ys < MIN_LAYER_HEIGHT)) removeLayer(m.id);
         },
       );
     };
@@ -110,7 +113,6 @@ export default function Layers() {
       suppressClick = false;
       e.stopImmediatePropagation();
     };
-    // Pointer down that reached the timeline itself (not a layer handle): deselect.
     const onPointerDown = () => selectLayer(null);
     const onKeyDown = (e) => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLayerId.value && !isTyping(e.target)) {
@@ -123,7 +125,6 @@ export default function Layers() {
     host.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKeyDown);
 
-    // Selecting a clip deselects the layer.
     const stopEffect = effect(() => {
       if (selectedClipId.value) selectedLayerId.value = null;
     });
@@ -143,35 +144,26 @@ export default function Layers() {
   const v = view.value;
   const w = width.value;
   const sel = selectedLayerId.value;
+  const active = activeLayer();
+  const masks = layers.value;
+
+  const handles = active ? masks.filter((m) => m.layerId === active.id) : [];
+
   return (
-    <div ref={ref} class="layers">
+    <div ref={ref} class="layers" style={{ '--layer': active ? stackLayerColor(active) : 'transparent' }}>
       {w > 0 &&
-        layers.value.map((l) => {
-          const x = timeToX(l.t, v);
-          // Clip to just beyond the viewport: at deep zoom a layer can be millions of px wide.
-          const left = Math.max(x, -OFFSCREEN);
-          const right = Math.min(x + l.dur * v.pps, w + OFFSCREEN);
-          if (right <= left) return null;
+        handles.map((m) => {
+          const r = screenRect(m, v, w);
+          if (!r) return null;
           return (
             <div
-              key={l.id}
-              class={`layer${l.id === sel ? ' layer-selected' : ''}`}
-              style={{ left: px(left), top: px(worldToScreenY(l.y, v)), width: px(right - left), height: px(l.h * v.ys), '--layer': layerColor(l), '--hatch': `${l.hatch}deg` }}
+              key={m.id}
+              class={`mask-box${m.id === sel ? ' mask-selected' : ''}`}
+              style={{ left: px(r.left), top: px(r.top), width: px(r.width), height: px(r.height) }}
             >
-              <div
-                class="layer-tab"
-                style={{ left: px(Math.max(0, -left)) }} // keep the name visible when the start is offscreen
-                onPointerDown={(e) => !e.target.closest('input, button') && onTabPointerDown(e, l)}
-                onPointerEnter={() => hoverLayer(l.id)}
-                onPointerLeave={unhoverLayer}
-                onClick={(e) => onTabClick(e, l)}
-              >
-                <LayerTabContent layer={l} />
-              </div>
               {EDGES.map((edge) => (
-                <div key={edge} class={`layer-edge layer-edge-${edge}`} onPointerDown={(e) => startDrag(e, l, edge)} onClick={stop} />
+                <div key={edge} class={`layer-edge layer-edge-${edge}`} onPointerDown={(e) => startDrag(e, m, edge)} onClick={stop} />
               ))}
-              {panelVisible(l.id) && <LayerPanel layer={l} left={Math.max(0, -left)} />}
             </div>
           );
         })}
