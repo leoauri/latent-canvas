@@ -133,6 +133,20 @@
   margin: 4px 0;
 }
 .blk-text code { background: var(--code-bg); padding: 0 3px; border-radius: 3px; }
+.blk-text pre code { background: none; padding: 0; }
+.blk-md { white-space: normal; }
+.blk-md > :first-child { margin-top: 0; }
+.blk-md > :last-child { margin-bottom: 0; }
+.blk-md p, .blk-md ul, .blk-md ol, .blk-md blockquote, .blk-md table { margin: 0 0 6px; }
+.blk-md ul, .blk-md ol { padding-left: 20px; }
+.blk-md li > p { margin: 0; }
+.blk-md h1, .blk-md h2, .blk-md h3, .blk-md h4, .blk-md h5, .blk-md h6 { font-size: 1em; margin: 10px 0 4px; }
+.blk-md h1, .blk-md h2 { font-size: 1.15em; }
+.blk-md blockquote { border-left: 3px solid var(--border); padding-left: 8px; color: var(--muted); }
+.blk-md a { color: inherit; text-decoration: underline; }
+.blk-md hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.blk-md table { border-collapse: collapse; display: block; overflow-x: auto; }
+.blk-md th, .blk-md td { border: 1px solid var(--border); padding: 2px 6px; text-align: left; }
 .blk-thinking, .blk-tool { margin: 4px 0; color: var(--muted); }
 .blk-thinking > div { font-style: italic; padding-left: 10px; }
 .blk-tool summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

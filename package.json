@@ -12,6 +12,7 @@
     "@preact/signals": "^2.11.4",
     "es-module-lexer": "^3.0.5",
     "idb-keyval": "^6.3.0",
+    "markdown-it": "^15.0.3",
     "preact": "^11.2.0",
     "sucrase": "^3.35.1"
   },

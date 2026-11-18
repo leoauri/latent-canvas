@@ -1,5 +1,6 @@
 import { useRef, useLayoutEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
+import MarkdownIt from 'markdown-it';
 import { vfs, env, vfsVersion } from '@live/runtime';
 import {
   chat,
@@ -483,18 +484,15 @@ function Block({ block, result, streaming }) {
 const resultText = (r) =>
   typeof r.content === 'string' ? r.content : (r.content || []).map((c) => c.text ?? `[${c.type}]`).join('\n');
 
-// Minimal formatting: fenced code blocks and inline code; everything else as text.
+// html: false escapes raw HTML in model output; markdown-it also rejects javascript:/vbscript: links.
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+const defaultLinkOpen = md.renderer.rules.link_open ?? ((t, i, o, e, self) => self.renderToken(t, i, o));
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  tokens[idx].attrSet('target', '_blank');
+  tokens[idx].attrSet('rel', 'noopener noreferrer');
+  return defaultLinkOpen(tokens, idx, options, env, self);
+};
+
 function Text({ text }) {
-  const parts = text.split(/```[\w-]*\n?/);
-  return (
-    <div class="blk-text">
-      {parts.map((p, i) =>
-        i % 2 ? (
-          <pre key={i}>{p}</pre>
-        ) : (
-          <span key={i}>{p.split(/(`[^`\n]+`)/).map((s, j) => (j % 2 ? <code key={j}>{s.slice(1, -1)}</code> : s))}</span>
-        ),
-      )}
-    </div>
-  );
+  return <div class="blk-text blk-md" dangerouslySetInnerHTML={{ __html: md.render(text) }} />;
 }
