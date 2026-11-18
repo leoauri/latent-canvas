@@ -2,12 +2,12 @@ import { useRef, useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import {
   stack, LAYER_TYPES, typeColor, stackLayerColor, insertLayer, moveLayer, removeStackLayer,
-  activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, stackLayerById,
+  activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, togglePassThrough, stackLayerById,
 } from './stack.js';
 import { readDrop, attachModel, runtimes } from './models.js';
 import { recordings } from './recorder.js';
 import { layers as masks } from '../timeline/layers.js';
-import { ChatBubble, LayerDetails } from './LayerConfig.jsx';
+import { LayerDetails } from './LayerConfig.jsx';
 import './stack.css';
 
 const DRAG_SLOP = 4;
@@ -21,6 +21,7 @@ export default function LayerStack() {
   /** An OS file drag over the stack: { overId } (the card under it), else null. */
   const fileDrag = useSignal(null);
   const dropError = useSignal(null);
+  const holdHeight = useSignal(null);
   const root = useRef(null);
   const list = useRef(null);
 
@@ -79,6 +80,8 @@ export default function LayerStack() {
       drag.value = null;
       if (ev.type === 'pointercancel') return;
       if (!d.started) {
+        // Bottom-anchored: a smaller details panel would shrink the stack out from under the pointer.
+        if (hover.value && root.current) holdHeight.value = root.current.getBoundingClientRect().height;
         if (d.kind === 'new') (activeLayerId.value = insertLayer(d.type).id), (paletteOpen.value = false);
         else activeLayerId.value = d.id;
         return;
@@ -155,20 +158,29 @@ export default function LayerStack() {
           <span class="stack-text">
             <span class="stack-name">{l.name}</span>
             <span class="stack-io">
-              {layerIo(l, runtimes.value[l.id]?.model)} · {maskCount[l.id] ? `${maskCount[l.id]} mask${maskCount[l.id] > 1 ? 's' : ''}` : 'unmasked'}
+              {[layerIo(l, runtimes.value[l.id]?.model), maskCount[l.id] ? `${maskCount[l.id]} mask${maskCount[l.id] > 1 ? 's' : ''}` : 'unmasked'].filter(Boolean).join(' · ')}
             </span>
           </span>
           {l.type === 'latent' && (
-            <button
-              class={`stack-arm${l.armed ? ' stack-arm-on' : ''}${recordings.value[l.id] ? ' stack-arm-rec' : ''}`}
-              title={recordings.value[l.id] ? 'Recording' : l.armed ? 'Armed: records while playing. Click to disarm' : 'Arm: record the latent stream reaching this layer while playing'}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => toggleArm(l.id)}
-            >
-              ●
-            </button>
+            <>
+              <button
+                class={`stack-thru${l.passThrough !== false ? ' stack-thru-on' : ''}`}
+                title={l.passThrough !== false ? 'Pass-through on: the latents reaching this layer go on, beside its clips. Click to turn off' : 'Pass-through off: only its clips go on. Click to turn on'}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => togglePassThrough(l.id)}
+              >
+                ⇡
+              </button>
+              <button
+                class={`stack-arm${l.armed ? ' stack-arm-on' : ''}${recordings.value[l.id] ? ' stack-arm-rec' : ''}`}
+                title={recordings.value[l.id] ? 'Recording' : l.armed ? 'Armed: records while playing. Click to disarm' : 'Arm: record the latent stream reaching this layer while playing'}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => toggleArm(l.id)}
+              >
+                ●
+              </button>
+            </>
           )}
-          <ChatBubble layer={l} />
           <button
             class="stack-remove"
             title="Remove layer and its masks"
@@ -187,9 +199,13 @@ export default function LayerStack() {
     <div
       ref={root}
       class={`stack${expanded ? ' stack-expanded' : ''}`}
-      style={{ '--layer': active ? stackLayerColor(active) : undefined }}
+      style={{
+        '--layer': active ? stackLayerColor(active) : undefined,
+        minHeight: expanded && holdHeight.value ? `${holdHeight.value}px` : undefined,
+        boxSizing: 'border-box',
+      }}
       onPointerEnter={(e) => e.pointerType === 'mouse' && (hover.value = true)}
-      onPointerLeave={(e) => e.pointerType === 'mouse' && (hover.value = false)}
+      onPointerLeave={(e) => e.pointerType === 'mouse' && ((hover.value = false), (holdHeight.value = null))}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={() => !expanded && (pinned.value = true)}
       onDragEnter={onDragOver}

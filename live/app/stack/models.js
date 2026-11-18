@@ -80,13 +80,26 @@ export function producedKind(l) {
     const rt = runtimes.value[l.id];
     return rt?.status === 'ready' ? rt.model.output.kind : null;
   }
-  // Armed, it records what reaches it and lets it pass; else it plays its clips.
-  if (l.type === 'latent') return playing.value && !l.armed ? 'latent' : null;
+  // A latent layer sends its clips while playing, and with pass-through on (the default) also the
+  // latents reaching it. Recording (armed) is separate: it records what reaches it either way.
+  if (l.type === 'latent') {
+    if (playing.value) return 'latent';
+    if (l.passThrough === false) return null;
+    const src = producerBehind(l);
+    return src && producedKind(src) === 'latent' ? 'latent' : null;
+  }
   return null;
 }
-/** The nearest layer behind `l` that makes a stream, or null. */
+/**
+ * The nearest layer behind `l` that makes a stream, or null. Layers that make none let streams
+ * pass, except a latent layer with pass-through off: nothing from behind it gets through.
+ */
 export function producerBehind(l) {
-  for (let i = stack.value.indexOf(l) - 1; i >= 0; i--) if (producedKind(stack.value[i])) return stack.value[i];
+  for (let i = stack.value.indexOf(l) - 1; i >= 0; i--) {
+    const s = stack.value[i];
+    if (producedKind(s)) return s;
+    if (s.type === 'latent' && s.passThrough === false) return null;
+  }
   return null;
 }
 
@@ -281,7 +294,13 @@ function consumerOf(l, src, kind) {
     // Every voice is added into the mix at its own time.
     return { handler: (msg) => mixers.get(l.id)?.push(msg.data, msg.start) };
   }
-  return null; // latent recording layers subscribe themselves (recorder.js)
+  if (l.type === 'latent') {
+    // Pass-through: the latents reaching it go on to the layers in front, beside its own clips
+    // (latentPlayback.js). Recording subscribes by itself (recorder.js).
+    if (kind !== 'latent' || l.passThrough === false) return null;
+    return { handler: (msg) => emit(l.id, msg) };
+  }
+  return null;
 }
 
 // Audio output layers each have a mixer while the stack holds them.
@@ -308,10 +327,9 @@ const stopWiring = effect(() => {
     const src = producerBehind(l);
     const kind = src ? producedKind(src) : null;
     next[l.id] = { sourceId: src?.id ?? null, kind, error: null };
-    if (l.type === 'latent') continue;
     const sub = subs.get(l.id);
-    // Rewire when the producer, or either side's model, changes.
-    const key = src ? `${src.id}:${kind}:${runtimes.value[src.id]?.ref.added ?? ''}:${runtimes.value[l.id]?.ref.added ?? ''}` : null;
+    // Rewire when the producer, either side's model, or a latent layer's pass-through changes.
+    const key = src ? `${src.id}:${kind}:${runtimes.value[src.id]?.ref.added ?? ''}:${runtimes.value[l.id]?.ref.added ?? ''}:${l.passThrough !== false}` : null;
     if (sub?.key === key) {
       next[l.id].error = sub.error;
       continue;

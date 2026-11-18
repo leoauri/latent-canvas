@@ -39,6 +39,7 @@ export function ChatBubble({ layer: l }) {
       onPointerDown={stopEvent}
       onClick={(e) => {
         e.stopPropagation();
+        e.preventDefault(); // inside a <summary>: open the chat, don't toggle the details
         openLayerChat(l);
       }}
     >
@@ -83,10 +84,6 @@ function ParamRow({ layer: l, name, param: p, value }) {
 
 /** Details of a stack layer, shown under its card: name, params, function. */
 export function LayerDetails({ layer: l }) {
-  const compiled = compileLayerFunc(l.func);
-  const params = Object.entries(compiled?.meta?.params ?? {});
-  const values = paramValues(l);
-  const funcChatEntry = l.funcChat && chat.index.value.find((c) => c.id === l.funcChat);
   return (
     <div class="layer-panel" onPointerDown={stopEvent} onClick={stopEvent} onDblClick={stopEvent} onKeyDown={stopEvent}>
       <input
@@ -102,6 +99,19 @@ export function LayerDetails({ layer: l }) {
       {l.type === 'operator' && <ModelPanel layer={l} />}
       {l.type === 'latent' && <RecordPanel layer={l} />}
       {l.type === 'audio-out' && <AudioOutPanel layer={l} />}
+      {l.type === 'operator' && <FunctionSection layer={l} />}
+    </div>
+  );
+}
+
+/** An operator's agent-written function: its description, parameters and source, and its chat. */
+function FunctionSection({ layer: l }) {
+  const compiled = compileLayerFunc(l.func);
+  const params = Object.entries(compiled?.meta?.params ?? {});
+  const values = paramValues(l);
+  const funcChatEntry = l.funcChat && chat.index.value.find((c) => c.id === l.funcChat);
+  return (
+    <>
       {compiled?.meta?.desc && <p class="layer-panel-desc">{compiled.meta.desc}</p>}
       {compiled?.error && <p class="layer-panel-error">Function error: {compiled.error}</p>}
       {!l.func && <p class="layer-panel-empty">No function yet. Use the chat bubble to have an agent write one.</p>}
@@ -117,7 +127,8 @@ export function LayerDetails({ layer: l }) {
           Function{' '}
           <span class="layer-func-meta">
             {l.func ? (l.funcUpdated ? new Date(l.funcUpdated).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '') : 'none yet'}
-          </span>
+          </span>{' '}
+          <ChatBubble layer={l} />
         </summary>
         {l.func && <pre class="layer-func-code">{l.func}</pre>}
         {l.funcChat && (
@@ -126,7 +137,7 @@ export function LayerDetails({ layer: l }) {
           </button>
         )}
       </details>
-    </div>
+    </>
   );
 }
 

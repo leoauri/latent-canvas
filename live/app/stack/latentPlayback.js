@@ -1,4 +1,4 @@
-// Latent playback: while the transport plays, every latent layer that is not armed streams the
+// Latent playback: while the transport plays, every latent layer (armed or not) streams the
 // latent frames of its clips under the playhead (app/stack/models.js routes them to the layers in
 // front, a decoder say). Frames go out on the audio context's clock, one per HOP samples: frame k
 // of a run is due when the context reaches frame start + k * HOP, and carries the clip's sample
@@ -11,7 +11,7 @@ import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
 import { stack } from './stack.js';
-import { emit, producedKind } from './models.js';
+import { emit } from './models.js';
 import { playing, time, cue } from '../timeline/Playhead.jsx';
 import { clips, CLIP_HEIGHT, duration, sampleAt } from '../timeline/clips.js';
 import { operatesAt } from '../timeline/layers.js';
@@ -56,11 +56,11 @@ function end(id) {
   runs.delete(id);
 }
 
-// A run per latent layer that produces (playing, not armed); a seek restarts it.
+// A run per latent layer while playing; a seek restarts it.
 const stopEffect = effect(() => {
   playing.value;
   const c = cue.value;
-  const want = new Set(stack.value.filter((l) => l.type === 'latent' && producedKind(l)).map((l) => l.id));
+  const want = new Set(playing.value ? stack.value.filter((l) => l.type === 'latent').map((l) => l.id) : []);
   for (const [id, run] of [...runs]) if (!want.has(id) || run.cue !== c) end(id);
   for (const id of want) if (!runs.has(id)) begin(id);
 });

@@ -164,5 +164,17 @@
 }
 .stack-arm:hover { opacity: 1; }
 .stack-arm-on { color: oklch(0.62 0.2 25); opacity: 1; }
+.stack-thru {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: pointer;
+}
+.stack-thru:hover { opacity: 1; }
+.stack-thru-on { color: var(--c); opacity: 1; font-weight: 700; }
 .stack-arm-rec { animation: stack-arm-blink 1s steps(2, start) infinite; }
 @keyframes stack-arm-blink { to { visibility: hidden; } }

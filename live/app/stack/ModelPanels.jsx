@@ -1,9 +1,8 @@
 // Detail panels: an operator layer's model (app/stack/models.js), a latent layer's recording
 // (app/stack/recorder.js) and an audio output layer's playback. Counters are not signals, so the panels re-render twice a second.
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { stackLayerById, toggleArm } from './stack.js';
+import { stackLayerById, toggleArm, togglePassThrough } from './stack.js';
 import { runtimes, links, warnings, detachModel, mixerStats } from './models.js';
-import { recordings, latentSourceOf } from './recorder.js';
 
 function useTick(ms = 500) {
   const [, set] = useState(0);
@@ -68,21 +67,19 @@ export function ModelPanel({ layer: l }) {
 }
 
 export function RecordPanel({ layer: l }) {
-  useTick();
-  const rec = recordings.value[l.id];
-  const src = latentSourceOf(l);
-  const rate = src && runtimes.value[src.id]?.model?.rate;
-  let text;
-  if (rec) text = `Recording ${src?.name ?? ''}: ${rate ? (rec.n / rate).toFixed(1) : rec.n} s${rec.missed ? `, ${rec.missed} frames missed` : ''}`;
-  else if (!src) text = l.armed ? 'No latents reach this layer: put an encoder behind it' : 'Plays its clips while playing (Space)';
-  else if (l.armed) text = `Records ${src.name} while playing (Space)`;
-  else text = `Plays its clips while playing · arm to record ${src.name} instead`;
+  const through = l.passThrough !== false;
   return (
     <div class="layer-param">
       <button class={l.armed ? 'audio-on' : ''} title="Record the latent stream reaching this layer while playing" onClick={() => toggleArm(l.id)}>
         {l.armed ? 'Armed' : 'Arm'}
       </button>
-      <span class="layer-panel-desc">{text}</span>
+      <button
+        class={through ? 'audio-on' : ''}
+        title="Let the latents reaching this layer go on to the layers in front, beside its clips. Off: only its clips go on"
+        onClick={() => togglePassThrough(l.id)}
+      >
+        Pass-through
+      </button>
     </div>
   );
 }

@@ -18,6 +18,7 @@ import { layers as masks, removeLayer as removeMask } from '../timeline/layers.j
  * @property {string} [inputDevice]  audio-in: chosen input deviceId (lib/audio.js); empty = default
  * @property {import('./models.js').ModelRef} [model]  operator: the model it runs (app/stack/models.js)
  * @property {boolean} [armed]  latent: records the latent stream reaching it while playing (app/stack/recorder.js)
+ * @property {boolean} [passThrough]  latent: false stops the latents reaching it going on to the layers in front (default on)
  * Masks (app/timeline/layers.js, field layerId) limit where a layer operates.
  */
 
@@ -62,9 +63,16 @@ export function insertLayer(type, index = stack.value.length) {
 
 /** What a layer's card says it does: its type's io, or the model it runs (`model`: its runtime's model, once loaded). */
 export function layerIo(l, model) {
+  if (l.type === 'latent') return '';
   if (l.type !== 'operator' || !l.model) return LAYER_TYPES[l.type].io;
   const kinds = model ? `${model.input.kind} → ${model.output.kind}` : 'loading';
   return `${kinds} · ${l.model.name}`;
+}
+
+/** Latent layers let the latents reaching them through (to the layers in front) unless this is off. */
+export function togglePassThrough(id) {
+  const l = stackLayerById(id);
+  if (l?.type === 'latent') updateStackLayer(id, { passThrough: l.passThrough === false ? undefined : false });
 }
 
 export function toggleArm(id) {
