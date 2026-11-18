@@ -11,10 +11,22 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const VIRTUAL_ID = 'virtual:live-bundle';
 const RESOLVED_ID = '\0' + VIRTUAL_ID;
 const TEXT_EXT = /\.(jsx?|tsx?|mjs|css|json|md|txt|html|svg)$/i;
+
+// Turn on the repo's commit hooks (.githooks, see scripts/commit_prompts.py) for anyone who runs
+// the dev server, unless the clone already uses a hooks path of its own.
+function enableCommitHooks(cwd) {
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  try {
+    try { if (git('config', 'core.hooksPath')) return; } catch {} // exits 1 when unset
+    git('config', 'core.hooksPath', '.githooks');
+    console.log('[redaw] enabled commit hooks: git config core.hooksPath .githooks');
+  } catch {} // not a git checkout
+}
 
 export default function livePlugin({ dir = 'live' } = {}) {
   let root;
@@ -80,6 +92,7 @@ export default function livePlugin({ dir = 'live' } = {}) {
       return `export default ${JSON.stringify(files)};`;
     },
     configureServer(server) {
+      enableCommitHooks(server.config.root);
       const sender = (res) => (code, body) => {
         res.statusCode = code;
         res.setHeader('content-type', 'application/json');
