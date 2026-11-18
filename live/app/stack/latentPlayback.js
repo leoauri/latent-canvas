@@ -1,8 +1,9 @@
 // Latent playback: while the transport plays, every latent layer (armed or not) streams the
 // latent frames of its clips under the playhead (app/stack/models.js routes them to the layers in
-// front, a decoder say). Frames go out on the audio context's clock, one per HOP samples: frame k
-// of a run is due when the context reaches frame start + k * HOP, and carries the clip's sample
-// at the playhead time t0 + k * HOP / sampleRate (held, at the clip's own rate).
+// front, a decoder say). Each clip sends its own samples at its own rate, each when the playhead
+// reaches it, with `rate` set to the clip's: consumers resample as they need (a model holds them,
+// models.js holdResample). A clip entered mid-sample (at the start, or after a seek) sends that
+// sample at once.
 // Every clip under the playhead inside the layer's masks (a layer without masks plays every clip)
 // is a voice of the stream, identified by the clip's id: the layers in front process each on its
 // own (a decoder decodes them in parallel) and an audio output sums them. Where there is no clip,
@@ -16,41 +17,38 @@ import { playing, time, cue } from '../timeline/Playhead.jsx';
 import { clips, CLIP_HEIGHT, duration, sampleAt } from '../timeline/clips.js';
 import { operatesAt } from '../timeline/layers.js';
 
-export const HOP = 1024; // audio samples per latent frame (the codec's)
 const TICK_MS = 5;
+const MAX_LAG = 0.5; // seconds behind after a stall: skip ahead instead of catching up
 
-/** layer id -> { start, t0, k, timer } */
+/** layer id -> { start, t0, at, last, timer, voices } */
 const runs = persist('latentPlayback.runs', () => new Map()).value;
-
-/** The latent frames layer `layerId` plays at time t: one { voice, data, dim, y } per clip there (y: the clip's middle). */
-export function framesAt(layerId, t) {
-  const out = [];
-  for (const c of clips.value) {
-    if (c.recording || t < c.t || t >= c.t + duration(c)) continue;
-    const y = c.y + CLIP_HEIGHT / 2;
-    if (!operatesAt(layerId, t, y)) continue;
-    out.push({ voice: c.id, data: sampleAt(c, Math.min(c.length - 1, Math.floor((t - c.t) * c.rate))), dim: c.dim, y });
-  }
-  return out;
-}
 
 function begin(id) {
   const ctx = audioContext();
   ctx.resume(); // Space is a user gesture: a context nothing has started yet can start here
-  const run = { start: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), cue: cue.peek(), k: 0, timer: 0, voices: new Set() };
+  const sr = ctx.sampleRate;
+  const run = { start: Math.round(ctx.currentTime * sr), t0: time.peek(), cue: cue.peek(), at: time.peek(), last: new Map(), timer: 0, voices: new Set() };
   run.timer = setInterval(() => {
-    const now = ctx.currentTime * ctx.sampleRate;
-    // Due frames, oldest first; after a stall of over half a second, skip ahead instead.
-    if (now - (run.start + run.k * HOP) > ctx.sampleRate / 2) run.k = Math.floor((now - run.start) / HOP);
-    while (run.start + run.k * HOP <= now) {
-      const start = run.start + run.k * HOP;
-      const t = run.t0 + (run.k * HOP) / ctx.sampleRate;
-      for (const f of framesAt(id, t)) {
-        run.voices.add(f.voice);
-        emit(id, { kind: 'latent', data: f.data, dim: f.dim, rate: ctx.sampleRate / HOP, start, voice: f.voice, t, y: f.y });
+    const now = run.t0 + (ctx.currentTime * sr - run.start) / sr;
+    if (now < run.at) return;
+    if (now - run.at > MAX_LAG) (run.at = now), run.last.clear();
+    const from = run.at;
+    for (const c of clips.value) {
+      if (c.recording || c.t + duration(c) <= from || c.t > now) continue;
+      const y = c.y + CLIP_HEIGHT / 2;
+      // From the sample under `from` (or the next after the last one sent), up to `now`.
+      let i = Math.max(Math.floor((from - c.t) * c.rate), (run.last.get(c.id) ?? -1) + 1, 0);
+      for (; i < c.length; i++) {
+        const ts = Math.max(c.t + i / c.rate, from);
+        if (ts > now) break;
+        run.last.set(c.id, i);
+        if (!operatesAt(id, ts, y)) continue;
+        run.voices.add(c.id);
+        const start = run.start + Math.round((ts - run.t0) * sr);
+        emit(id, { kind: 'latent', data: sampleAt(c, i), dim: c.dim, rate: c.rate, start, voice: c.id, t: ts, y });
       }
-      run.k++;
     }
+    run.at = now + 1e-9; // the next tick takes what comes after this one
   }, TICK_MS);
   runs.set(id, run);
 }

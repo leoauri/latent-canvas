@@ -246,6 +246,31 @@ function reblock(size, fn) {
 }
 
 /**
+ * Resamples a latent stream at any rate onto a grid of one unit per `hop` context frames, as a
+ * zero-order hold: a frame holds from its start for 1 / rate seconds, and every grid point in
+ * that span gets it, for fn(frame, start), once the context clock reaches the point. A gap of
+ * under a hop keeps the previous frame; a longer one restarts the grid at the next frame.
+ */
+function holdResample(hop, fn) {
+  const ctx = audioContext();
+  let next = null, held = null, until = 0;
+  const run = (to) => {
+    for (; held && next <= to && next < until; next += hop) fn(held, next);
+  };
+  const timer = setInterval(() => run(ctx.currentTime * ctx.sampleRate), 5);
+  const feed = ({ data, start, rate }) => {
+    if (next !== null && start - next <= hop) (until = Math.max(until, start)), run(start - 1);
+    else next = start;
+    held = data;
+    until = start + ctx.sampleRate / rate;
+    run(ctx.currentTime * ctx.sampleRate);
+  };
+  feed.stop = () => clearInterval(timer);
+  feed.busy = () => held !== null && next < until;
+  return feed;
+}
+
+/**
  * A model operator's input: one model voice per voice that reaches it (each stream decoded or
  * encoded on its own handler, in parallel), ended once that voice has sent nothing for a while.
  * `prepare(msg)` turns a message into units for the voice's push, or reports and returns null.
@@ -254,13 +279,13 @@ function modelVoices(l, model, prepare) {
   const voices = new Map(); // voice -> { voice, feed, last }
   const reap = setInterval(() => {
     const now = performance.now();
-    for (const [key, v] of voices) if (now - v.last > VOICE_IDLE_MS) (v.voice.end(), voices.delete(key));
+    for (const [key, v] of voices) if (now - v.last > VOICE_IDLE_MS && !v.feed.busy?.()) (v.voice.end(), v.feed.stop?.(), voices.delete(key));
   }, VOICE_IDLE_MS / 2);
   return {
     handler(msg) {
       if (msg.kind === 'flush') {
         // Their pending outputs are dropped with the voices; the layers in front flush too.
-        for (const key of msg.voices) voices.get(key)?.voice.end(), voices.delete(key);
+        for (const key of msg.voices) voices.get(key)?.voice.end(), voices.get(key)?.feed.stop?.(), voices.delete(key);
         return emit(l.id, msg);
       }
       if (msg.kind !== model.input.kind || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) return emit(l.id, msg);
@@ -285,7 +310,7 @@ function modelVoices(l, model, prepare) {
     },
     stop() {
       clearInterval(reap);
-      for (const v of voices.values()) v.voice.end();
+      for (const v of voices.values()) v.voice.end(), v.feed.stop?.();
       voices.clear();
     },
   };
@@ -301,10 +326,13 @@ function consumerOf(l, src, kind) {
     const dim = runtimes.value[src.id]?.model?.output.channels;
     if (dim !== undefined && dim !== model.input.channels) return { error: `the model takes ${model.input.channels}-d latents, ${src.name} makes ${dim}-d` };
     // From clips the width is per clip: frames of another width are skipped, and reported.
-    return modelVoices(l, model, (push) => (msg) => {
-      if (msg.dim === model.input.channels) return void push(msg.data, msg.start);
-      const text = `skipping ${msg.dim}-d frames from ${src.name}: the model takes ${model.input.channels}-d`;
-      if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
+    return modelVoices(l, model, (push) => {
+      const zoh = holdResample(model.hop, push);
+      return (msg) => {
+        if (msg.dim === model.input.channels) return zoh(msg);
+        const text = `skipping ${msg.dim}-d frames from ${src.name}: the model takes ${model.input.channels}-d`;
+        if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
+      };
     });
   }
   if (l.type === 'audio-out') {
