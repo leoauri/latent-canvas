@@ -22,30 +22,119 @@ export default function Chat() {
     if (m.role === 'user' && Array.isArray(m.content))
       for (const b of m.content) if (b.type === 'tool_result') results.set(b.tool_use_id, b);
 
+  const collapsed = chat.collapsed.value;
+  const r = clampRect(chat.rect.value);
+  const style = {
+    left: `${r.x}px`,
+    top: `${r.y}px`,
+    width: `${r.w}px`,
+    height: collapsed ? 'auto' : `${r.h}px`,
+  };
+
   return (
-    <aside class="chat">
+    <aside class={`chat${collapsed ? ' chat-collapsed' : ''}`} style={style}>
       <Header />
-      <Changes />
-      <div class="chat-list" ref={listRef}>
-        {messages.length === 0 && <p class="chat-empty">Ask for a change to this page, including this chat.</p>}
-        {messages.map((m, i) => (
-          <Message key={i} message={m} results={results} />
-        ))}
-        {draft && <Message message={draft} results={results} streaming />}
-        {chat.running.value && !draft && <div class="chat-pending">…</div>}
-      </div>
-      {chat.error.value && <div class="chat-error">{chat.error.value}</div>}
-      <Composer />
+      {!collapsed && (
+        <>
+          <Changes />
+          <div class="chat-list" ref={listRef}>
+            {messages.length === 0 && <p class="chat-empty">Ask for a change to this page, including this chat.</p>}
+            {messages.map((m, i) => (
+              <Message key={i} message={m} results={results} />
+            ))}
+            {draft && <Message message={draft} results={results} streaming />}
+            {chat.running.value && !draft && <div class="chat-pending">…</div>}
+          </div>
+          {chat.error.value && <div class="chat-error">{chat.error.value}</div>}
+          <Composer />
+          <div class="chat-resize chat-resize-sw" onPointerDown={(e) => startResize(e, 'sw')} />
+          <div class="chat-resize chat-resize-se" onPointerDown={(e) => startResize(e, 'se')} />
+        </>
+      )}
     </aside>
   );
 }
 
+const MIN_W = 280;
+const MIN_H = 200;
+const MARGIN = 16;
+
+function clampRect({ x, y, w, h }) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  w = Math.max(MIN_W, Math.min(w, vw - 2 * MARGIN));
+  h = Math.max(MIN_H, Math.min(h, vh - 2 * MARGIN));
+  x = x == null ? vw - w - MARGIN : Math.max(0, Math.min(x, vw - w));
+  y = y == null ? MARGIN : Math.max(0, Math.min(y, vh - 40));
+  return { x, y, w, h };
+}
+
+function track(e, onMove) {
+  e.preventDefault();
+  const start = clampRect(chat.rect.value);
+  const sx = e.clientX;
+  const sy = e.clientY;
+  const move = (ev) => (chat.rect.value = clampRect(onMove(start, ev.clientX - sx, ev.clientY - sy)));
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    save('redaw.chat.rect', chat.rect.value);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+}
+
+function startDrag(e) {
+  if (e.button !== 0 || e.target.closest('button, select, input, textarea, .chat-settings')) return;
+  track(e, (s, dx, dy) => ({ ...s, x: s.x + dx, y: s.y + dy }));
+}
+
+function startResize(e, dir) {
+  e.stopPropagation();
+  track(e, (s, dx, dy) =>
+    dir === 'sw' ? { ...s, x: s.x + Math.min(dx, s.w - MIN_W), w: s.w - dx, h: s.h + dy } : { ...s, w: s.w + dx, h: s.h + dy },
+  );
+}
+
+function toggleCollapsed() {
+  chat.collapsed.value = !chat.collapsed.value;
+  save('redaw.chat.collapsed', chat.collapsed.value);
+}
+
+const toolLabel = (name) => name.replace('str_replace_based_edit_tool', 'edit');
+
+function activity() {
+  if (!chat.running.value) return chat.error.value ? { kind: 'error', text: chat.error.value.split('\n')[0] } : { kind: 'idle', text: 'Idle' };
+  const blocks = chat.draft.value?.content;
+  if (blocks?.length) {
+    const b = blocks[blocks.length - 1];
+    if (b.type === 'thinking') return { kind: 'busy', text: 'Thinking…' };
+    if (b.type === 'text') return { kind: 'busy', text: 'Writing…' };
+    if (b.type === 'tool_use') return { kind: 'busy', text: `Preparing ${toolLabel(b.name)}…` };
+  }
+  const last = chat.messages.value[chat.messages.value.length - 1];
+  const use = last?.role === 'assistant' && Array.isArray(last.content) && last.content.findLast((b) => b.type === 'tool_use');
+  if (use) return { kind: 'busy', text: `Running ${toolLabel(use.name)}${use.input?.path ? ` ${use.input.path}` : ''}…` };
+  return { kind: 'busy', text: 'Waiting for model…' };
+}
+
 function Header() {
   const showSettings = useSignal(false);
+  const status = activity();
+  const collapsed = chat.collapsed.value;
   return (
-    <header class="chat-header">
+    <header class="chat-header" onPointerDown={startDrag} onDblClick={(e) => !e.target.closest('button, select, input') && toggleCollapsed()}>
       <strong>Agent</strong>
-      <span class="chat-model">{chat.model.value || env.model}</span>
+      <span class={`chat-status chat-status-${status.kind}`} title={status.text}>
+        <span class="chat-status-dot" />
+        {status.text}
+      </span>
+      <button class="chat-collapse" onClick={toggleCollapsed} title={collapsed ? 'Expand' : 'Collapse'}>
+        {collapsed ? '▾' : '▴'}
+      </button>
+      {!collapsed && (
+        <div class="chat-header-row">
+          <span class="chat-model">{chat.model.value || env.model}</span>
       <select
         value={chat.effort.value}
         title="reasoning effort (default: not sent)"
@@ -62,7 +151,9 @@ function Header() {
       <button onClick={resetChat} disabled={chat.running.value} title="Start a new conversation">
         New
       </button>
-      {showSettings.value && (
+        </div>
+      )}
+      {!collapsed && showSettings.value && (
         <div class="chat-settings">
           <input
             placeholder={`Model (default ${env.model})`}

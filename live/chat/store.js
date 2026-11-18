@@ -29,6 +29,8 @@ export const chat = {
   apiKey: persist('chat.apiKey', () => load('redaw.apiKey', '')),
   controller: persist('chat.controller', null),
   collapsed: persist('chat.collapsed', () => load('redaw.chat.collapsed', false)),
+  /** Floating panel geometry in px; null x/y means default (top-right). */
+  rect: persist('chat.rect', () => load('redaw.chat.rect', { x: null, y: null, w: 380, h: 560 })),
 };
 
 export function pushMessage(message) {
