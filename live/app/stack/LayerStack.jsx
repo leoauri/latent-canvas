@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import {
   stack, LAYER_TYPES, typeColor, stackLayerColor, insertLayer, moveLayer, removeStackLayer,
-  activeLayer, activeLayerId, highlightedLayerId,
+  activeLayer, activeLayerId, highlightedLayerId, openLayerIds, toggleLayerOpen, stackPinned,
 } from './stack.js';
 import { layers as masks } from '../timeline/layers.js';
 import { ChatBubble, LayerDetails } from './LayerConfig.jsx';
@@ -19,7 +19,7 @@ export default function LayerStack() {
   const root = useRef(null);
   const list = useRef(null);
 
-  const expanded = hover.value || pinned.value || !!drag.value;
+  const expanded = hover.value || pinned.value || stackPinned.value || !!drag.value;
   const layers = stack.value;
 
   useEffect(() => {
@@ -94,6 +94,7 @@ export default function LayerStack() {
       const l = layers[i - 1];
       const t = LAYER_TYPES[l.type];
       const moving = d?.started && d.kind === 'move' && d.id === l.id;
+      const open = openLayerIds.value.includes(l.id);
       rows.push(
         <div
           key={l.id}
@@ -104,6 +105,14 @@ export default function LayerStack() {
           onPointerEnter={() => (highlightedLayerId.value = l.id)}
           onPointerLeave={() => highlightedLayerId.value === l.id && (highlightedLayerId.value = null)}
         >
+          <button
+            class={`stack-disclose${open ? ' stack-disclose-open' : ''}`}
+            title={open ? 'Collapse details' : 'Expand details'}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => toggleLayerOpen(l.id)}
+          >
+            ▸
+          </button>
           <span class="stack-glyph">{t.glyph}</span>
           <span class="stack-text">
             <span class="stack-name">{l.name}</span>
@@ -122,7 +131,7 @@ export default function LayerStack() {
           </button>
         </div>,
       );
-      if (active?.id === l.id && !moving) rows.push(<LayerDetails key={`details-${l.id}`} layer={l} />);
+      if (open && !moving) rows.push(<LayerDetails key={`details-${l.id}`} layer={l} />);
     }
   }
 
@@ -141,6 +150,13 @@ export default function LayerStack() {
           <div class="stack-head">
             <span class="stack-title">Layers</span>
             <span class="stack-hint">front ↑</span>
+            <button
+              class={`stack-pin${stackPinned.value ? ' stack-pin-on' : ''}`}
+              title={stackPinned.value ? 'Unpin: collapse when the pointer leaves' : 'Pin: keep this panel open'}
+              onClick={() => (stackPinned.value = !stackPinned.value)}
+            >
+              ⚲
+            </button>
             <button
               class={`stack-add${paletteOpen.value ? ' stack-add-open' : ''}`}
               title="Add layer"
