@@ -16,6 +16,7 @@ import {
   showSession,
   newChatIn,
   queueOf,
+  composerTextOf,
 } from './store.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
 import { scopeLabel } from './extensions.js';
@@ -455,8 +456,25 @@ function Changes({ s }) {
 }
 
 function Composer({ s }) {
-  const text = useSignal('');
+  const text = composerTextOf(s);
   const queue = queueOf(s);
+  const area = useRef(null);
+  // Remounts (after any module swap) must not steal the user's focus or caret.
+  useLayoutEffect(() => {
+    const f = s.composerFocus;
+    if (f && !area.current.contains(document.activeElement)) {
+      area.current.focus();
+      area.current.setSelectionRange(f.start, f.end);
+    }
+  }, []);
+  const remember = (e) => {
+    const el = e.currentTarget;
+    s.composerFocus = { start: el.selectionStart, end: el.selectionEnd };
+  };
+  const forget = (e) => {
+    const el = e.currentTarget;
+    setTimeout(() => el.isConnected && (s.composerFocus = null));
+  };
   const submit = () => {
     const t = text.value.trim();
     if (s.running.value) {
@@ -503,14 +521,22 @@ function Composer({ s }) {
       }}
     >
       <textarea
+        ref={area}
         rows={3}
         value={text.value}
+        onFocus={remember}
+        onSelect={remember}
+        onKeyUp={remember}
+        onBlur={forget}
         placeholder={
           s.running.value
             ? 'Queue a message (Enter to queue, Shift+Enter for a new line)'
             : 'Message the agent (Enter to send, Shift+Enter for a new line)'
         }
-        onInput={(e) => (text.value = e.currentTarget.value)}
+        onInput={(e) => {
+          text.value = e.currentTarget.value;
+          remember(e);
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();

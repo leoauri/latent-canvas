@@ -102,6 +102,8 @@ export function getSession(id) {
 
 /** Messages waiting to be sent after the current turn. Added lazily: sessions may predate this field. */
 export const queueOf = (s) => (s.queue ??= signal([]));
+/** Unsent composer text; lives on the session so it survives module swaps and re-renders. */
+export const composerTextOf = (s) => (s.composerText ??= signal(''));
 
 export const findSession = (id) => sessions.get(id);
 export const runningSessions = () => [...sessions.values()].filter((s) => s.running.value);
