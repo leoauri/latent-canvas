@@ -6,7 +6,7 @@ import {
 } from './stack.js';
 import { readDrop, attachModel, runtimes } from './models.js';
 import { recordings } from './recorder.js';
-import { layers as masks } from '../timeline/layers.js';
+import { layers as masks, masked, isMasked, masksOf, maskTools, openMaskTools, closeMaskTools } from '../timeline/layers.js';
 import { LayerDetails } from './LayerConfig.jsx';
 import './stack.css';
 
@@ -133,8 +133,7 @@ export default function LayerStack() {
   const d = drag.value;
   const gap = d?.started ? d.gap : null;
   const active = activeLayer();
-  const maskCount = {};
-  for (const m of masks.value) maskCount[m.layerId] = (maskCount[m.layerId] ?? 0) + 1;
+  masked.value, masks.value; // re-render on mask changes
   // Front first on screen: render indices n-1..0, with gaps n..0 interleaved.
   const rows = [];
   for (let i = layers.length; i >= 0; i--) {
@@ -149,7 +148,7 @@ export default function LayerStack() {
           data-layer-id={l.id}
           class={`stack-card${moving ? ' stack-card-moving' : ''}${active?.id === l.id ? ' stack-card-active' : ''}${fileDrag.value?.overId === l.id ? ' stack-card-drop' : ''}`}
           style={{ '--c': stackLayerColor(l) }}
-          title="Click: select (Shift+drag on the canvas adds masks to it) · Drag: reorder"
+          title="Click: select · ◩: mask tools · Drag: reorder"
           onPointerDown={(e) => expanded && startDrag(e, { kind: 'move', id: l.id, type: l.type })}
           onPointerEnter={() => (highlightedLayerId.value = l.id)}
           onPointerLeave={() => highlightedLayerId.value === l.id && (highlightedLayerId.value = null)}
@@ -158,9 +157,24 @@ export default function LayerStack() {
           <span class="stack-text">
             <span class="stack-name">{l.name}</span>
             <span class="stack-io">
-              {[layerIo(l, runtimes.value[l.id]?.model), maskCount[l.id] ? `${maskCount[l.id]} mask${maskCount[l.id] > 1 ? 's' : ''}` : 'unmasked'].filter(Boolean).join(' · ')}
+              {layerIo(l, runtimes.value[l.id]?.model)}
             </span>
           </span>
+          <button
+            class={`stack-mask${isMasked(l.id) ? ' stack-mask-on' : ''}${maskTools.value?.layerId === l.id ? ' stack-mask-open' : ''}`}
+            title={`${isMasked(l.id) ? (masksOf(l.id).length ? 'Masked: operates only inside its mask' : 'Masked to nothing: operates nowhere') : 'Unmasked: operates everywhere'}. Click: mask tools`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              activeLayerId.value = l.id;
+              if (maskTools.value?.layerId === l.id) return closeMaskTools();
+              const card = e.currentTarget.closest('.stack').getBoundingClientRect();
+              const icon = e.currentTarget.getBoundingClientRect();
+              openMaskTools(l.id, card.right + 8, icon.top + icon.height / 2);
+            }}
+          >
+            ◩
+          </button>
           {l.type === 'latent' && (
             <>
               <button
@@ -261,7 +275,7 @@ export default function LayerStack() {
           )}
           {active && (
             <div class="stack-target" style={{ '--c': stackLayerColor(active) }}>
-              Shift+drag on canvas: add mask to <b>{active.name}</b> · Alt+drag: move mask · Del: remove
+              Edit the mask of <b>{active.name}</b> with ◩
             </div>
           )}
         </>

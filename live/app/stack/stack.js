@@ -2,7 +2,7 @@
 // through each layer towards the user (last index = front).
 import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
-import { layers as masks, removeLayer as removeMask } from '../timeline/layers.js';
+import { clearMask } from '../timeline/layers.js';
 
 /**
  * @typedef {'audio-in' | 'latent' | 'operator' | 'audio-out'} StackLayerType
@@ -97,6 +97,6 @@ export function moveLayer(id, index) {
 /** Removes the layer and its masks. */
 export function removeStackLayer(id) {
   stack.value = stack.value.filter((l) => l.id !== id);
-  masks.value.filter((m) => m.layerId === id).forEach((m) => removeMask(m.id));
+  clearMask(id);
   if (activeLayerId.value === id) activeLayerId.value = null;
 }

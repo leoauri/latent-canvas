@@ -6,7 +6,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { view, panBy, zoomAt, worldToScreenY } from './view.js';
 import { clips, selectedId, CLIP_HEIGHT, duration, updateClip, removeClip, bringToFront } from './clips.js';
-import { layers as masks } from './layers.js';
+import { layers as masks, masked } from './layers.js';
 import { stack, activeLayer, activeLayerId, highlightedLayerId, stackLayerColor } from '../stack/stack.js';
 
 const HIT_PAD = 3; // px of slack around the 10px lines
@@ -121,12 +121,13 @@ export default function TimelineCanvas() {
 
     // One path per layer, filled once: overlapping masks merge into a single evenly shaded area.
     function drawMasks(l, v, focused) {
-      const own = masks.value.filter((m) => m.layerId === l.id);
-      if (!own.length) return;
+      if (!masked.value[l.id]) return;
       ctx.beginPath();
-      for (const m of own) {
+      for (const m of masks.value) {
+        if (m.layerId !== l.id) continue;
         const x0 = Math.max(-50, (m.t - v.t0) * v.pps), x1 = Math.min(w + 50, (m.t + m.dur - v.t0) * v.pps);
-        if (x1 > x0) ctx.rect(x0, worldToScreenY(m.y, v), x1 - x0, m.h * v.ys);
+        const y0 = Math.max(-50, worldToScreenY(m.y, v)), y1 = Math.min(h + 50, worldToScreenY(m.y + m.h, v));
+        if (x1 > x0 && y1 > y0) ctx.rect(x0, y0, x1 - x0, y1 - y0);
       }
       ctx.globalAlpha = focused ? 0.22 : 0.1;
       ctx.fillStyle = stackLayerColor(l);
@@ -253,7 +254,7 @@ export default function TimelineCanvas() {
 
     // Redraw whenever the view, the clips or the selection change.
     const stopEffect = effect(() => {
-      view.value, clips.value, selectedId.value, stack.value, masks.value, highlightedLayerId.value, activeLayerId.value;
+      view.value, clips.value, selectedId.value, stack.value, masks.value, masked.value, highlightedLayerId.value, activeLayerId.value;
       schedule();
     });
     // Theme changes (light/dark) change the CSS colours.

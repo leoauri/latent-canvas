@@ -176,5 +176,19 @@
 }
 .stack-thru:hover { opacity: 1; }
 .stack-thru-on { color: var(--c); opacity: 1; font-weight: 700; }
+.stack-mask {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  opacity: 0.4;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.stack-mask:hover { opacity: 1; }
+.stack-mask-on { color: var(--c); opacity: 1; }
+.stack-mask-open { background: color-mix(in srgb, var(--c) 20%, transparent); opacity: 1; }
 .stack-arm-rec { animation: stack-arm-blink 1s steps(2, start) infinite; }
 @keyframes stack-arm-blink { to { visibility: hidden; } }

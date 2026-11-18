@@ -44,7 +44,7 @@ const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toS
 
 /** Where a new clip goes: the layer's first mask, else below the clips it would overlap. */
 function laneFor(l, t0) {
-  const m = masksOf(l.id)[0];
+  const m = masksOf(l.id).find((r) => r.h < 1e6);
   if (m) return m.y + Math.max(0, (m.h - CLIP_HEIGHT) / 2);
   const overlapping = clips.value.filter((c) => c.t + duration(c) > t0);
   return overlapping.length ? Math.max(...overlapping.map((c) => c.y)) + CLIP_HEIGHT + 6 : 0;

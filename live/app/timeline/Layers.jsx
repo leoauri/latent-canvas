@@ -1,78 +1,55 @@
 // Mask editing overlay (the shading itself is drawn in stack order by TimelineCanvas.jsx).
-// Shift+drag draws a mask on the active
-// stack layer; Alt+drag inside one of its masks moves it; its edges/corners resize; Delete removes the
-// selected mask. Mask interiors let pointer events through, so clips stay draggable.
+// The mask toolbar opens next to a layer's mask icon in the stack. With a tool selected (marquee,
+// horizontal stripe: dragged y range at all times, vertical stripe: dragged time range at all heights)
+// a plain drag adds to that layer's mask and Alt+drag cuts. Without one, drags are left to the canvas.
 import { useEffect, useRef } from 'preact/hooks';
-import { useSignal, effect } from '@preact/signals';
+import { signal } from '@preact/signals';
 import { view, timeToX, xToTime, worldToScreenY, screenToWorldY } from './view.js';
-import { selectedId as selectedClipId } from './clips.js';
-import { layers, selectedLayerId, addLayer, updateLayer, removeLayer, selectLayer, MIN_LAYER_HEIGHT } from './layers.js';
-import { activeLayer, stackLayerColor } from '../stack/stack.js';
+import { addMaskArea, cutMaskArea, clearMask, setEmptyMask, isMasked, masked, maskTools, maskTool, closeMaskTools, BIG } from './layers.js';
+import { activeLayer, stackLayerById, stackLayerColor } from '../stack/stack.js';
 
-const MIN_WIDTH_PX = 6;
-const OFFSCREEN = 50; // px: masks extending past the viewport are clipped this far outside it
-const EDGES = ['l', 'r', 't', 'b', 'tl', 'tr', 'bl', 'br'];
+const MIN_PX = 4;
+function StripeIcon({ d }) {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style={{ display: 'block', margin: 'auto' }}>
+      <rect x="2" y="2" width="12" height="12" rx="1" stroke="currentColor" stroke-width="1.2" fill="none" />
+      <path d={d} stroke="currentColor" stroke-width="1.2" fill="none" />
+    </svg>
+  );
+}
+const TOOLS = [
+  { id: 'rect', glyph: '⬚', title: 'Marquee' },
+  { id: 'hstripe', glyph: <StripeIcon d="M2 6h12M2 10h12" />, title: 'Horizontal stripe: all time, dragged height range' },
+  { id: 'vstripe', glyph: <StripeIcon d="M6 2v12M10 2v12" />, title: 'Vertical stripe: all heights, dragged time range' },
+];
+/** Drag in progress: { a, b: {t, y}, cut, tool }. */
+const pending = signal(null);
 
-const isTyping = (el) => !!el?.closest?.('input, textarea, select, button, [contenteditable]');
-
-function track(onMove, onEnd) {
-  const up = () => {
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', up);
-    window.removeEventListener('pointercancel', up);
-    onEnd?.();
-  };
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', up);
-  window.addEventListener('pointercancel', up);
+function areaOf({ a, b, tool }) {
+  const t = Math.min(a.t, b.t), dur = Math.abs(b.t - a.t), y = Math.min(a.y, b.y), h = Math.abs(b.y - a.y);
+  if (tool === 'hstripe') return { t: -BIG, dur: 2 * BIG, y, h };
+  if (tool === 'vstripe') return { t, dur, y: -BIG, h: 2 * BIG };
+  return { t, dur, y, h };
+}
+function tooSmall(area, v) {
+  return (area.dur < BIG && area.dur * v.pps < MIN_PX) || (area.h < BIG && area.h * v.ys < MIN_PX);
 }
 
-/** Move (mode 'move') or resize (mode = edges, e.g. 'tl') a mask by dragging. */
-function startDrag(e, mask, mode) {
-  if (e.button !== 0) return;
-  e.preventDefault();
-  e.stopPropagation();
-  selectLayer(mask.id);
-  const s = mask, px0 = e.clientX, py0 = e.clientY;
-  track((ev) => {
-    const { pps, ys } = view.value;
-    const dt = (ev.clientX - px0) / pps, dy = (ev.clientY - py0) / ys;
-    const minDur = MIN_WIDTH_PX / pps, minH = MIN_LAYER_HEIGHT / ys;
-    if (mode === 'move') return updateLayer(s.id, { t: s.t + dt, y: s.y + dy });
-    const p = {};
-    if (mode.includes('l')) {
-      p.t = Math.min(s.t + dt, s.t + s.dur - minDur);
-      p.dur = s.t + s.dur - p.t;
-    }
-    if (mode.includes('r')) p.dur = Math.max(minDur, s.dur + dt);
-    if (mode.includes('t')) {
-      p.y = Math.min(s.y + dy, s.y + s.h - minH);
-      p.h = s.y + s.h - p.y;
-    }
-    if (mode.includes('b')) p.h = Math.max(minH, s.h + dy);
-    updateLayer(s.id, p);
-  });
-}
+const px = (n) => `${n}px`;
+const clampX = (x, w) => Math.max(-10, Math.min(w + 10, x));
+const stop = (e) => e.stopPropagation();
 
-const px = (n) => `${n}px`; // Preact 11 no longer appends px to numeric styles
-const stop = (e) => e.stopPropagation(); // handle clicks must not place the playhead
-
-/** Screen rect of a mask clipped to just beyond the viewport, or null when offscreen. */
-function screenRect(m, v, w) {
-  const x = timeToX(m.t, v);
-  const left = Math.max(x, -OFFSCREEN);
-  const right = Math.min(x + m.dur * v.pps, w + OFFSCREEN);
-  if (right <= left) return null;
-  return { left, top: worldToScreenY(m.y, v), width: right - left, height: m.h * v.ys };
+/** The layer whose toolbar is open with a tool selected: plain drags edit its mask. */
+function toolTarget() {
+  const open = maskTools.value;
+  return open && maskTool.value ? stackLayerById(open.layerId) : null;
 }
 
 export default function Layers() {
   const ref = useRef(null);
-  const width = useSignal(0);
 
   useEffect(() => {
-    const el = ref.current;
-    const host = el.parentElement;
+    const host = ref.current.parentElement;
     let suppressClick = false;
     const local = (e) => {
       const r = host.getBoundingClientRect();
@@ -81,92 +58,142 @@ export default function Layers() {
 
     // Capture phase, so the clip canvas never sees these gestures.
     const onPointerDownCapture = (e) => {
-      if (e.button !== 0 || !(e.shiftKey || e.altKey) || e.target.closest('.stack')) return;
-      const owner = activeLayer();
+      if (e.button !== 0 || e.target.closest('.stack, .mask-tools')) return;
+      const owner = toolTarget();
       if (!owner) return;
-      const p = local(e);
-      if (e.altKey) {
-        const hit = layers.value.findLast((m) => m.layerId === owner.id && p.t >= m.t && p.t <= m.t + m.dur && p.y >= m.y && p.y <= m.y + m.h);
-        if (!hit) return;
-        suppressClick = true;
-        e.stopImmediatePropagation();
-        return startDrag(e, hit, 'move');
-      }
+      const tool = maskTool.value;
       e.preventDefault();
       e.stopImmediatePropagation();
       suppressClick = true;
-      const mask = addLayer({ t: p.t, y: p.y, dur: 0, h: 0, layerId: owner.id });
-      selectLayer(mask.id);
-      track(
-        (ev) => {
-          const q = local(ev);
-          updateLayer(mask.id, { t: Math.min(p.t, q.t), dur: Math.abs(q.t - p.t), y: Math.min(p.y, q.y), h: Math.abs(q.y - p.y) });
-        },
-        () => {
-          const m = layers.value.find((x) => x.id === mask.id);
-          if (m && (m.dur * view.value.pps < MIN_WIDTH_PX || m.h * view.value.ys < MIN_LAYER_HEIGHT)) removeLayer(m.id);
-        },
-      );
+      const a = local(e);
+      pending.value = { a, b: a, cut: e.altKey, tool };
+      const move = (ev) => (pending.value = { a, b: local(ev), cut: ev.altKey, tool });
+      const end = (ev) => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', end);
+        window.removeEventListener('pointercancel', end);
+        const p = pending.value;
+        pending.value = null;
+        if (ev.type !== 'pointerup' || !p) return;
+        const area = areaOf(p);
+        if (tooSmall(area, view.value)) return;
+        (p.cut ? cutMaskArea : addMaskArea)(owner.id, area);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', end);
+      window.addEventListener('pointercancel', end);
     };
     const onClickCapture = (e) => {
       if (!suppressClick) return;
       suppressClick = false;
       e.stopImmediatePropagation();
     };
-    const onPointerDown = () => selectLayer(null);
     const onKeyDown = (e) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedLayerId.value && !isTyping(e.target)) {
-        e.preventDefault();
-        removeLayer(selectedLayerId.value);
-      }
+      if (e.key !== 'Escape' || !maskTools.value || e.target.closest?.('input, textarea, [contenteditable]')) return;
+      if (maskTool.value) maskTool.value = null;
+      else closeMaskTools();
     };
     host.addEventListener('pointerdown', onPointerDownCapture, true);
     host.addEventListener('click', onClickCapture, true);
-    host.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKeyDown);
-
-    const stopEffect = effect(() => {
-      if (selectedClipId.value) selectedLayerId.value = null;
-    });
-    const resize = new ResizeObserver(() => (width.value = el.clientWidth));
-    resize.observe(el);
-
     return () => {
       host.removeEventListener('pointerdown', onPointerDownCapture, true);
       host.removeEventListener('click', onClickCapture, true);
-      host.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKeyDown);
-      stopEffect();
-      resize.disconnect();
+      pending.value = null;
     };
   }, []);
 
-  const v = view.value;
-  const w = width.value;
-  const sel = selectedLayerId.value;
-  const active = activeLayer();
-  const masks = layers.value;
+  // Close the toolbar when its layer is deleted.
+  const open = maskTools.value;
+  const owner = open && stackLayerById(open.layerId);
+  useEffect(() => {
+    if (open && !owner) closeMaskTools();
+  }, [open, owner]);
 
-  const handles = active ? masks.filter((m) => m.layerId === active.id) : [];
+  // Follow the icon while the stack reflows (selecting a layer expands its details); keep the last spot
+  // when the stack collapses.
+  const openId = open?.layerId;
+  useEffect(() => {
+    if (!openId) return;
+    let frame = requestAnimationFrame(function follow() {
+      const icon = document.querySelector(`.stack [data-layer-id="${openId}"] .stack-mask`);
+      const cur = maskTools.peek();
+      if (icon && cur?.layerId === openId) {
+        const s = icon.closest('.stack').getBoundingClientRect(), i = icon.getBoundingClientRect();
+        const x = s.right + 8, y = i.top + i.height / 2;
+        if (Math.abs(x - cur.x) > 0.5 || Math.abs(y - cur.y) > 0.5) maskTools.value = { ...cur, x, y };
+      }
+      frame = requestAnimationFrame(follow);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [openId]);
+
+  const v = view.value;
+  const active = activeLayer();
+  const p = pending.value;
+  masked.value; // re-render the Clear / Add mask button
+  const target = toolTarget();
+  const host = ref.current?.parentElement;
+  if (host) host.style.cursor = target ? 'crosshair' : '';
+
+  let preview = null;
+  if (p) {
+    const area = areaOf(p);
+    const w = ref.current?.clientWidth ?? 0, hh = ref.current?.clientHeight ?? 0;
+    const x0 = clampX(timeToX(area.t, v), w), x1 = clampX(timeToX(area.t + area.dur, v), w);
+    const y0 = Math.max(-10, Math.min(hh + 10, worldToScreenY(area.y, v)));
+    const y1 = Math.max(-10, Math.min(hh + 10, worldToScreenY(area.y + area.h, v)));
+    preview = (
+      <div
+        class={`mask-preview${p.cut ? ' mask-preview-cut' : ''}`}
+        style={{ left: px(x0), top: px(y0), width: px(x1 - x0), height: px(y1 - y0) }}
+      />
+    );
+  }
+
+  let toolbar = null;
+  if (owner) {
+    const r = ref.current?.getBoundingClientRect() ?? { left: 0, top: 0, width: 1e4, height: 1e4 };
+    const left = Math.max(4, Math.min(r.width - 260, open.x - r.left));
+    const top = Math.max(18, Math.min(r.height - 18, open.y - r.top)); // the toolbar is centred on top
+    const isOn = isMasked(owner.id);
+    toolbar = (
+      <div
+        class="mask-tools"
+        style={{ left: px(left), top: px(top), '--layer': stackLayerColor(owner) }}
+        onPointerDown={stop}
+        onClick={stop}
+      >
+        <span class="mask-tools-name">{owner.name}</span>
+        {TOOLS.map((t) => (
+          <button
+            key={t.id}
+            class={`mask-tool${maskTool.value === t.id ? ' mask-tool-on' : ''}`}
+            title={`${t.title} · Drag: add · Alt+drag: cut`}
+            onClick={() => (maskTool.value = maskTool.value === t.id ? null : t.id)}
+          >
+            {t.glyph}
+          </button>
+        ))}
+        <button
+          class="mask-tools-action"
+          title={isOn ? 'Remove the mask: the layer operates everywhere' : 'Add an empty mask: the layer operates nowhere until you add areas'}
+          onClick={() => (isOn ? clearMask : setEmptyMask)(owner.id)}
+        >
+          {isOn ? 'Clear' : 'Add mask'}
+        </button>
+        <button class="mask-tool" title="Close (Esc)" onClick={closeMaskTools}>
+          ×
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div ref={ref} class="layers" style={{ '--layer': active ? stackLayerColor(active) : 'transparent' }}>
-      {w > 0 &&
-        handles.map((m) => {
-          const r = screenRect(m, v, w);
-          if (!r) return null;
-          return (
-            <div
-              key={m.id}
-              class={`mask-box${m.id === sel ? ' mask-selected' : ''}`}
-              style={{ left: px(r.left), top: px(r.top), width: px(r.width), height: px(r.height) }}
-            >
-              {EDGES.map((edge) => (
-                <div key={edge} class={`layer-edge layer-edge-${edge}`} onPointerDown={(e) => startDrag(e, m, edge)} onClick={stop} />
-              ))}
-            </div>
-          );
-        })}
+    <div ref={ref} class="layers" style={{ '--layer': target || active ? stackLayerColor(target ?? active) : 'transparent' }}>
+      {preview}
+      {toolbar}
     </div>
   );
 }
