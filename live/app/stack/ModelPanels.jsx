@@ -2,7 +2,7 @@
 // (app/stack/recorder.js) and an audio output layer's playback. Counters are not signals, so the panels re-render twice a second.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { stackLayerById, toggleArm } from './stack.js';
-import { runtimes, links, warnings, detachModel, playerStats } from './models.js';
+import { runtimes, links, warnings, detachModel, mixerStats } from './models.js';
 import { recordings, latentSourceOf } from './recorder.js';
 
 function useTick(ms = 500) {
@@ -57,7 +57,7 @@ export function ModelPanel({ layer: l }) {
               <span class={`model-activity${active ? ' model-activity-on' : ''}`} title="Output came out of the model in the last half second">
                 ●
               </span>{' '}
-              {active ? 'running' : 'idle'} · {st.missed} missed
+              {active ? `running${st.voices > 1 ? ` · ${st.voices} voices` : ''}` : 'idle'} · {st.missed} missed
               {st.errors ? ` · ${st.errors} errors (${st.lastError})` : ''}
             </p>
           )}
@@ -91,14 +91,14 @@ export function AudioOutPanel({ layer: l }) {
   useTick();
   const link = links.value[l.id];
   const src = link?.sourceId ? stackLayerById(link.sourceId) : null;
-  const st = playerStats(l.id);
+  const st = mixerStats(l.id);
   if (link?.error) return <p class="layer-panel-error">{link.error}</p>;
   if (!src) return <p class="layer-panel-desc">Nothing reaches it: put an audio input or a decoder behind it.</p>;
   return (
-    <p class="layer-panel-desc">
-      Playing {src.name} ·{' '}
-      <span class={`model-activity${st?.playing ? ' model-activity-on' : ''}`}>●</span> {st?.playing ? 'playing' : 'waiting for audio'}
-      {st ? ` · ${st.underruns} dropouts` : ''}
+    <p class="layer-panel-desc" title="Every voice reaching it is summed, each at its own time plus the output delay, which grows to fit blocks that arrive late">
+      Mixing {src.name} ·{' '}
+      <span class={`model-activity${st?.sounding ? ' model-activity-on' : ''}`}>●</span> {st?.sounding ? 'playing' : 'silent'}
+      {st ? ` · output delay ${Math.round((1000 * st.delay) / 48000)} ms` : ''}
     </p>
   );
 }

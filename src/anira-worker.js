@@ -5,6 +5,6 @@
 import { defineEngine } from '@anira-project/anira/scope';
 import { ONNXRUNTIME_WEB_ENGINE_ID, onnxRuntimeWeb } from '@anira-project/anira/engines/onnxruntime-web';
 
-export const ORT_THREADS = 3;
+export const ORT_THREADS = 2;
 
 defineEngine(ONNXRUNTIME_WEB_ENGINE_ID, onnxRuntimeWeb({ numThreads: ORT_THREADS, warmup: 2 }));

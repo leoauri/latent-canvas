@@ -1,4 +1,6 @@
-// Streams through the layer stack, and the models on operator layers.
+// Streams through the layer stack, and the models on operator layers. A stream may carry several
+// voices at once (one per clip under the playhead): models process each on its own, and an audio
+// output layer sums them.
 //
 // Producers make a stream: an audio-in layer with an open input (audio), an operator layer
 // whose model runs (audio or latent frames, by the model), and a latent layer while the transport
@@ -15,7 +17,7 @@ import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
 import { audioContext, inputs } from '../../lib/audio.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
-import { createTap, createPlayer } from '../../lib/audioBlocks.js';
+import { createTap, createMixer } from '../../lib/audioBlocks.js';
 import { stack, updateStackLayer, stackLayerById } from './stack.js';
 import { playing } from '../timeline/Playhead.jsx';
 
@@ -31,9 +33,10 @@ import { playing } from '../timeline/Playhead.jsx';
  * @property {ModelRef} ref     the ref this runtime was built for
  * @property {object} [model]   lib/streamModel.js createStreamModel result
  *
- * @typedef {{ kind: 'audio', data: Float32Array, start: number }
- *   | { kind: 'latent', data: Float32Array, dim: number, rate: number, start: number, missed?: boolean }} StreamMsg
- *   `start`: the context frame of the audio this unit comes from
+ * @typedef {{ kind: 'audio', data: Float32Array, start: number, voice: string }
+ *   | { kind: 'latent', data: Float32Array, dim: number, rate: number, start: number, voice: string, missed?: boolean }} StreamMsg
+ *   `start`: the context frame this unit belongs to. `voice`: which of the stream's parallel
+ *   voices it belongs to (a clip, an input); a model keeps a separate state per voice.
  *
  * @typedef {object} Link  what reaches a consumer layer
  * @property {string|null} sourceId  the producer behind it
@@ -42,6 +45,7 @@ import { playing } from '../timeline/Playhead.jsx';
  */
 
 const AUDIO_BLOCK = 1024; // samples per block an audio-in layer streams
+const VOICE_IDLE_MS = 250; // a voice that sent nothing this long has ended: its model voice is freed
 
 const fileKey = (layerId, name) => `model:${layerId}:${name}`;
 
@@ -53,7 +57,7 @@ export const links = persist('models.links', {});
 export const warnings = persist('models.warnings', {});
 const listeners = persist('models.listeners', () => new Map()).value; // producer id -> Set<fn>
 const taps = persist('models.taps', () => new Map()).value; // audio-in id -> { source, tap }
-const players = persist('models.players', () => new Map()).value; // audio-out id -> player
+const mixers = persist('models.mixers', () => new Map()).value; // audio-out id -> mixer
 const subs = persist('models.subs', () => new Map()).value; // consumer id -> { sourceId, unsub }
 
 // ---- the stream bus --------------------------------------------------------------------
@@ -158,12 +162,7 @@ async function startModel(l) {
       if (!f) throw new Error(`model file ${n} is missing from storage; drop the model again`);
       files.set(n, f);
     }
-    const model = await createStreamModel({
-      files,
-      sampleRate: audioContext().sampleRate,
-      onOutput: (data, { missed, start }) =>
-        emit(l.id, model.output.kind === 'audio' ? { kind: 'audio', data, start } : { kind: 'latent', data, dim: model.output.channels, rate: model.rate, start, missed }),
-    });
+    const model = await createStreamModel({ files, sampleRate: audioContext().sampleRate });
     if (!current()) return model.destroy();
     setIn(runtimes, l.id, { status: 'ready', ref, model });
   } catch (e) {
@@ -195,7 +194,7 @@ const stopTaps = effect(() => {
     if (taps.has(id)) continue;
     const t = { source, tap: null, destroyed: false };
     taps.set(id, t);
-    createTap(audioContext(), AUDIO_BLOCK, (data, start) => emit(id, { kind: 'audio', data, start })).then((tap) => {
+    createTap(audioContext(), AUDIO_BLOCK, (data, start) => emit(id, { kind: 'audio', data, start, voice: `in:${id}` })).then((tap) => {
       if (t.destroyed) return tap.destroy();
       t.tap = tap;
       source.connect(tap.node);
@@ -224,46 +223,81 @@ function reblock(size, fn) {
   };
 }
 
-/** What a consumer does with the stream reaching it: { accepts, handler } or { error }. */
+/**
+ * A model operator's input: one model voice per voice that reaches it (each stream decoded or
+ * encoded on its own handler, in parallel), ended once that voice has sent nothing for a while.
+ * `prepare(msg)` turns a message into units for the voice's push, or reports and returns null.
+ */
+function modelVoices(l, model, prepare) {
+  const voices = new Map(); // voice -> { voice, feed, last }
+  const reap = setInterval(() => {
+    const now = performance.now();
+    for (const [key, v] of voices) if (now - v.last > VOICE_IDLE_MS) (v.voice.end(), voices.delete(key));
+  }, VOICE_IDLE_MS / 2);
+  return {
+    handler(msg) {
+      let v = voices.get(msg.voice);
+      if (!v) {
+        const voice = model.voice((data, { missed, start }) =>
+          emit(
+            l.id,
+            model.output.kind === 'audio'
+              ? { kind: 'audio', data, start, voice: msg.voice }
+              : { kind: 'latent', data, dim: model.output.channels, rate: model.rate, start, missed, voice: msg.voice },
+          ),
+        );
+        v = { voice, feed: prepare((unit, start) => voice.push(unit, start)), last: 0 };
+        voices.set(msg.voice, v);
+      }
+      v.last = performance.now();
+      v.feed(msg);
+    },
+    stop() {
+      clearInterval(reap);
+      for (const v of voices.values()) v.voice.end();
+      voices.clear();
+    },
+  };
+}
+
+/** What a consumer does with the stream reaching it: { handler, stop? } or { error }. */
 function consumerOf(l, src, kind) {
   if (l.type === 'operator') {
     const model = runtimes.value[l.id]?.model;
     const want = model.input.kind;
     if (kind !== want) return { error: `the model takes ${want === 'audio' ? 'audio' : 'latents'}, but ${kind === 'audio' ? 'audio' : 'latents'} reach it from ${src.name}` };
-    if (want === 'audio') return { handler: reblock(model.input.samples, (unit, start) => model.push(unit, start)) };
+    if (want === 'audio') return modelVoices(l, model, (push) => reblock(model.input.samples, push));
     const dim = runtimes.value[src.id]?.model?.output.channels;
     if (dim !== undefined && dim !== model.input.channels) return { error: `the model takes ${model.input.channels}-d latents, ${src.name} makes ${dim}-d` };
-    // From clips the width is per frame: frames of another width are skipped, and reported.
-    return {
-      handler: (msg) => {
-        if (msg.dim === model.input.channels) return void model.push(msg.data, msg.start);
-        const text = `skipping ${msg.dim}-d frames from ${src.name}: the model takes ${model.input.channels}-d`;
-        if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
-      },
-    };
+    // From clips the width is per clip: frames of another width are skipped, and reported.
+    return modelVoices(l, model, (push) => (msg) => {
+      if (msg.dim === model.input.channels) return void push(msg.data, msg.start);
+      const text = `skipping ${msg.dim}-d frames from ${src.name}: the model takes ${model.input.channels}-d`;
+      if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
+    });
   }
   if (l.type === 'audio-out') {
     if (kind !== 'audio') return { error: `latents reach it from ${src.name}: put a decoder in between` };
-    const player = players.get(l.id);
-    return { handler: (msg) => player?.push(msg.data) };
+    // Every voice is added into the mix at its own time.
+    return { handler: (msg) => mixers.get(l.id)?.push(msg.data, msg.start) };
   }
   return null; // latent recording layers subscribe themselves (recorder.js)
 }
 
-// Audio output layers each have a player while the stack holds them.
-const stopPlayers = effect(() => {
+// Audio output layers each have a mixer while the stack holds them.
+const stopMixers = effect(() => {
   const ids = new Set(stack.value.filter((l) => l.type === 'audio-out').map((l) => l.id));
-  for (const [id, p] of players) if (!ids.has(id)) (p.destroy?.(), players.delete(id));
+  for (const [id, p] of mixers) if (!ids.has(id)) (p.destroy?.(), mixers.delete(id));
   for (const id of ids)
-    if (!players.has(id)) {
+    if (!mixers.has(id)) {
       const pending = { push() {}, stats: () => null, destroy() { this.destroyed = true; } };
-      players.set(id, pending);
-      createPlayer(audioContext()).then((p) => (pending.destroyed ? p.destroy() : players.get(id) === pending && players.set(id, p)));
+      mixers.set(id, pending);
+      createMixer(audioContext()).then((p) => (pending.destroyed ? p.destroy() : mixers.get(id) === pending && mixers.set(id, p)));
     }
 });
 
-/** An audio output layer's player: { underruns, overruns, buffered, playing }, or null. */
-export const playerStats = (id) => players.get(id)?.stats() ?? null;
+/** An audio output layer's mixer: { late, early, blocks, sounding }, or null. */
+export const mixerStats = (id) => mixers.get(id)?.stats() ?? null;
 
 // Wire every consumer to the producer behind it.
 const stopWiring = effect(() => {
@@ -283,21 +317,22 @@ const stopWiring = effect(() => {
       continue;
     }
     sub?.unsub();
+    sub?.stop?.();
     subs.delete(l.id);
     setIn(warnings, l.id, null);
     if (!src) continue;
     const c = consumerOf(l, src, kind);
     if (!c) continue;
     if (c.error) next[l.id].error = c.error;
-    subs.set(l.id, { key, error: c.error ?? null, unsub: c.handler ? subscribe(src.id, c.handler) : () => {} });
+    subs.set(l.id, { key, error: c.error ?? null, unsub: c.handler ? subscribe(src.id, c.handler) : () => {}, stop: c.stop });
   }
-  for (const [id, sub] of subs) if (!next[id]) (sub.unsub(), subs.delete(id));
+  for (const [id, sub] of subs) if (!next[id]) (sub.unsub(), sub.stop?.(), subs.delete(id));
   links.value = next;
 });
 
 export function dispose() {
   stopModels();
   stopTaps();
-  stopPlayers();
+  stopMixers();
   stopWiring();
 }

@@ -3,8 +3,10 @@
 // front, a decoder say). Frames go out on the audio context's clock, one per HOP samples: frame k
 // of a run is due when the context reaches frame start + k * HOP, and carries the clip's sample
 // at the playhead time t0 + k * HOP / sampleRate (held, at the clip's own rate).
-// Which clip: the topmost (last drawn) one under the playhead inside the layer's masks (a layer
-// without masks plays every clip). Where there is none, nothing is sent: the decoder pauses.
+// Every clip under the playhead inside the layer's masks (a layer without masks plays every clip)
+// is a voice of the stream, identified by the clip's id: the layers in front process each on its
+// own (a decoder decodes them in parallel) and an audio output sums them. Where there is no clip,
+// nothing is sent.
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
@@ -20,16 +22,15 @@ const TICK_MS = 5;
 /** layer id -> { start, t0, k, timer } */
 const runs = persist('latentPlayback.runs', () => new Map()).value;
 
-/** The latent frame layer `layerId` plays at time t, or null. */
-export function frameAt(layerId, t) {
-  const list = clips.value;
-  for (let i = list.length - 1; i >= 0; i--) {
-    const c = list[i];
+/** The latent frames layer `layerId` plays at time t: one { voice, data, dim } per clip there. */
+export function framesAt(layerId, t) {
+  const out = [];
+  for (const c of clips.value) {
     if (c.recording || t < c.t || t >= c.t + duration(c)) continue;
     if (!operatesAt(layerId, t, c.y + CLIP_HEIGHT / 2)) continue;
-    return { data: sampleAt(c, Math.min(c.length - 1, Math.floor((t - c.t) * c.rate))), dim: c.dim };
+    out.push({ voice: c.id, data: sampleAt(c, Math.min(c.length - 1, Math.floor((t - c.t) * c.rate))), dim: c.dim });
   }
-  return null;
+  return out;
 }
 
 function begin(id) {
@@ -41,8 +42,9 @@ function begin(id) {
     // Due frames, oldest first; after a stall of over half a second, skip ahead instead.
     if (now - (run.start + run.k * HOP) > ctx.sampleRate / 2) run.k = Math.floor((now - run.start) / HOP);
     while (run.start + run.k * HOP <= now) {
-      const f = frameAt(id, run.t0 + (run.k * HOP) / ctx.sampleRate);
-      if (f) emit(id, { kind: 'latent', data: f.data, dim: f.dim, rate: ctx.sampleRate / HOP, start: run.start + run.k * HOP });
+      const start = run.start + run.k * HOP;
+      for (const f of framesAt(id, run.t0 + (run.k * HOP) / ctx.sampleRate))
+        emit(id, { kind: 'latent', data: f.data, dim: f.dim, rate: ctx.sampleRate / HOP, start, voice: f.voice });
       run.k++;
     }
   }, TICK_MS);

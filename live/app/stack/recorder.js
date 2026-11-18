@@ -1,7 +1,8 @@
 // Latent recording: an armed latent layer records, while the transport plays, the latent stream
-// reaching it (from the nearest producer behind it, app/stack/models.js) into a new clip that
-// starts at the playhead. The clip grows on the timeline while it records and is saved when the
-// recording ends (stop, disarm, or the source going away).
+// reaching it (from the nearest producer behind it, app/stack/models.js) into new clips, one per
+// voice of the stream, each starting where its voice starts (at the playhead for a live input).
+// Clips grow on the timeline while they record and are saved when the recording ends (stop,
+// disarm, or the source going away).
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
@@ -14,14 +15,20 @@ import { masksOf } from '../timeline/layers.js';
 const UPDATE_EVERY = 4; // frames between redraws of a growing clip
 
 /**
+ * @typedef {object} Take  one voice of the stream, recorded into one clip
+ * @property {string|null} clipId  created with the first frame
+ * @property {number} n
+ * @property {number} missed
+ * @property {number} dim
+ * @property {Float32Array} buf
+ *
  * @typedef {object} Recording
  * @property {string} sourceId   the producer layer
  * @property {number} startFrame context frame at the playhead's start
  * @property {number} t0         playhead time at the start, seconds
- * @property {string|null} clipId  created with the first frame
- * @property {number} n          frames recorded
- * @property {number} missed     of which missed (zeros)
- * @property {Float32Array} buf
+ * @property {Map<string, Take>} takes  by voice: each voice that reaches the layer gets its own clip
+ * @property {number} n          frames of the longest take
+ * @property {number} missed     missed frames over all takes (zeros)
  * @property {() => void} unsub
  */
 /** @type {import('@preact/signals').Signal<Record<string, Recording>>} by latent layer id */
@@ -39,44 +46,44 @@ const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toS
 function laneFor(l, t0) {
   const m = masksOf(l.id)[0];
   if (m) return m.y + Math.max(0, (m.h - CLIP_HEIGHT) / 2);
-  const overlapping = clips.value.filter((c) => !c.recording && c.t + duration(c) > t0);
+  const overlapping = clips.value.filter((c) => c.t + duration(c) > t0);
   return overlapping.length ? Math.max(...overlapping.map((c) => c.y)) + CLIP_HEIGHT + 6 : 0;
 }
 
 function begin(l, sourceId) {
   const ctx = audioContext();
-  const rec = { sourceId, startFrame: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), clipId: null, n: 0, missed: 0, buf: null };
-  rec.unsub = subscribe(sourceId, ({ data: frame, missed, start, rate, dim }) => {
+  const rec = { sourceId, startFrame: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), takes: new Map(), n: 0, missed: 0 };
+  rec.unsub = subscribe(sourceId, ({ data: frame, missed, start, rate, dim, voice }) => {
     if (start < rec.startFrame) return; // audio from before the recording started
-    if (!rec.clipId) {
-      rec.buf = new Float32Array(dim * Math.ceil(rate * 30));
-      const clip = {
-        id: newId(),
+    let take = rec.takes.get(voice);
+    if (!take) {
+      take = { clipId: newId(), n: 0, missed: 0, dim, buf: new Float32Array(dim * Math.ceil(rate * 30)) };
+      addClip({
+        id: take.clipId,
         t: rec.t0 + (start - rec.startFrame) / ctx.sampleRate,
         y: laneFor(stackLayerById(l.id) ?? l, rec.t0),
         rate,
         dim,
         length: 0,
-        data: rec.buf.subarray(0, 0),
+        data: take.buf.subarray(0, 0),
         recording: true,
-      };
-      addClip(clip);
-      rec.clipId = clip.id;
+      });
+      rec.takes.set(voice, take);
     }
-    if ((rec.n + 1) * dim > rec.buf.length) {
-      const grown = new Float32Array(rec.buf.length * 2);
-      grown.set(rec.buf);
-      rec.buf = grown;
+    if (dim !== take.dim) return;
+    if ((take.n + 1) * dim > take.buf.length) {
+      const grown = new Float32Array(take.buf.length * 2);
+      grown.set(take.buf);
+      take.buf = grown;
     }
-    rec.buf.set(frame, rec.n * dim);
-    rec.n++;
-    if (missed) rec.missed++;
-    if (rec.n % UPDATE_EVERY === 0) update(rec, dim);
+    take.buf.set(frame, take.n * dim);
+    take.n++;
+    rec.n = Math.max(rec.n, take.n);
+    if (missed) take.missed++, rec.missed++;
+    if (take.n % UPDATE_EVERY === 0) updateClip(take.clipId, { length: take.n, data: take.buf.subarray(0, take.n * dim) });
   });
   recordings.value = { ...recordings.peek(), [l.id]: rec };
 }
-
-const update = (rec, dim) => updateClip(rec.clipId, { length: rec.n, data: rec.buf.subarray(0, rec.n * dim) });
 
 function end(id) {
   const rec = recordings.peek()[id];
@@ -85,12 +92,13 @@ function end(id) {
   const next = { ...recordings.peek() };
   delete next[id];
   recordings.value = next;
-  const clip = rec.clipId && clips.peek().find((c) => c.id === rec.clipId);
-  if (!clip) return; // nothing arrived, or the clip was deleted while recording
-  if (!rec.n) return removeClip(clip.id);
-  // An exact copy of the frames, saved with the other clips from now on.
-  updateClip(clip.id, { length: rec.n, data: rec.buf.slice(0, rec.n * clip.dim), recording: undefined });
-  if (rec.missed) console.warn(`latent recording: ${rec.missed} of ${rec.n} frames missed their inference (zeros)`);
+  for (const take of rec.takes.values()) {
+    if (!clips.peek().some((c) => c.id === take.clipId)) continue; // deleted while recording
+    if (!take.n) removeClip(take.clipId);
+    // An exact copy of the frames, saved with the other clips from now on.
+    else updateClip(take.clipId, { length: take.n, data: take.buf.slice(0, take.n * take.dim), recording: undefined });
+  }
+  if (rec.missed) console.warn(`latent recording: ${rec.missed} frames missed their inference (zeros)`);
 }
 
 const stopEffect = effect(() => {

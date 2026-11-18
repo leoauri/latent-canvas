@@ -15,6 +15,11 @@ import { aniraCore } from './anira.js';
 import { fixOnnxShapes } from './onnxShapes.js';
 
 const OVERDUE_MS = 300; // pop (and count as missed) a unit not available this long after its push
+const PREPARED_VOICES = 4; // handlers prepared at load, so that many streams start without a stall
+// The host here is the page's main thread: after it was busy, the blocks that queued up meanwhile
+// arrive back to back. The contracts declare that as the host's burst (anira sizes the latency and
+// the inferences in flight for it), in units of the input: a push still carries one unit.
+const BURST_UNITS = 3;
 
 const basename = (p) => String(p).split(/[\\/]/).pop();
 
@@ -71,14 +76,13 @@ function sideOf(spec, which) {
 }
 
 /**
- * Loads a model and prepares a handler at `sampleRate`.
+ * Loads a model and prepares handlers for it at `sampleRate`, one per voice (a stateful model
+ * needs its own state per stream, and so its own handler).
  * The result's `input` / `output` say what flows on each side: { kind, channels, samples } per
- * unit. push(Float32Array(channels * samples), start) takes one input unit (channel-major);
- * onOutput(Float32Array(channels * samples), { missed, unit, start }) gets every output unit in
- * stream order, `start` being the value pushed with the input unit it answers (units that only
- * carry the latency's seeded zeros are skipped).
+ * unit. A voice's push(Float32Array(channels * samples), start) takes one input unit
+ * (channel-major); its outputs carry the `start` pushed with the input unit they answer.
  */
-export async function createStreamModel({ files, sampleRate, onOutput }) {
+export async function createStreamModel({ files, sampleRate }) {
   const { configText, configName, meta } = await describeModel(files);
   const { anira, context } = await aniraCore();
   let shapes = null; // the config's tensor extents, written into ONNX files' symbolic dimensions
@@ -113,21 +117,65 @@ export async function createStreamModel({ files, sampleRate, onOutput }) {
   const extentsOf = (spec) => (spec.axes ?? []).map(([, n]) => n);
   shapes = { inputs: v3.inputs.map(extentsOf), outputs: v3.outputs.map(extentsOf) };
   const config = await load(JSON.stringify(v3));
-  let handler, contract;
-  try {
-    // Host blocks count elements of the anchor tensor: the input's units.
-    contract = ContractHandle.fromJson(anira, JSON.stringify({ hard: { budget: 'measured', warmup: 'until_stable', on_miss: 'zeros' } }));
-    contract.hardHostBlocks(input.samples, input.samples, (sampleRate * input.samples) / hop);
-    const pipeline = Pipeline.create(anira).addInference(config).addEngine(ONNXRUNTIME_WEB_ENGINE_ID);
-    handler = InferenceHandler.create(context, pipeline);
-    pipeline.destroy();
-    await context.ready(); // the warm-up runs on the Workers
-    const report = handler.prepare(contract);
-    const plan = report.plans()[handler.getPlan()];
-    const latency = handler.getLatency(outSlot); // in output samples
+  const hostRate = (sampleRate * input.samples) / hop; // host blocks count the anchor's (the input's) units
+  const m = anira.module;
+  const handlers = []; // every handler made, for destroy
 
+  /** A prepared handler under `hard` (a contract's "hard" object). */
+  function prepareHandler(hard) {
+    const contract = ContractHandle.fromJson(anira, JSON.stringify({ hard: { on_miss: 'zeros', ...hard } }));
+    try {
+      contract.hardHostBlocks(input.samples, BURST_UNITS * input.samples, hostRate);
+      const pipeline = Pipeline.create(anira).addInference(config).addEngine(ONNXRUNTIME_WEB_ENGINE_ID);
+      const handler = InferenceHandler.create(context, pipeline);
+      pipeline.destroy();
+      handlers.push(handler);
+      const plan = handler.prepare(contract).plans()[handler.getPlan()];
+      return { handler, plan, latency: handler.getLatency(outSlot) };
+    } finally {
+      contract.destroy();
+    }
+  }
+
+  /** Prepares a handler again under an explicit budget, no warm-up. */
+  function rePrepare(entry, ms) {
+    const contract = ContractHandle.fromJson(anira, JSON.stringify({ hard: { on_miss: 'zeros', budget: { ms }, warmup: 'none' } }));
+    try {
+      contract.hardHostBlocks(input.samples, BURST_UNITS * input.samples, hostRate);
+      entry.handler.prepare(contract);
+      entry.latency = entry.handler.getLatency(outSlot);
+    } finally {
+      contract.destroy();
+    }
+  }
+
+  let first;
+  try {
+    await context.ready(); // the warm-up runs on the Workers
+    first = prepareHandler({ budget: 'measured', warmup: 'until_stable' });
+  } catch (e) {
+    for (const h of handlers) h.destroy();
+    config.destroy();
+    throw e;
+  }
+  const { plan } = first;
+  // The warm-up measured one inference running alone. Voices run in parallel and slow each other
+  // down, so every voice gets a budget with headroom, up to most of a hop: a longer latency,
+  // which the mixer's delay covers.
+  const hopMs = (1000 * hop) / sampleRate;
+  const budgetMs = Math.round(Math.min(0.9 * hopMs, Math.max(3 * plan.budgetMs, 0.5 * hopMs)) * 10) / 10;
+  try {
+    rePrepare(first, budgetMs);
+  } catch (e) {
+    for (const h of handlers) h.destroy();
+    config.destroy();
+    throw e;
+  }
+  const latency = first.latency;
+
+  /** A voice: one handler (its own state) and its host memory, driven by push(). */
+  function makeVoice({ handler, latency: lat }) {
     // Host memory: one input unit, one output unit, two tensor records, their shapes, scratch.
-    const m = anira.module;
     const T = layout.anira_tensor.size;
     const inN = input.channels * input.samples, outN = output.channels * output.samples;
     const base = m._malloc(4 * inN + 4 * outN + 2 * T + 32 + 8 + 16);
@@ -141,83 +189,139 @@ export async function createStreamModel({ files, sampleRate, onOutput }) {
     m._anira_tensor_init_host(outT, outData, ANIRA_DTYPE_F32, 2, outShape);
     const native = handler.native();
 
-    const pending = []; // { at: performance.now(), start } per pushed unit not yet answered
-    let pushed = 0, popped = 0, missed = 0, units = 0, errors = 0, lastError = null;
-    let alive = true;
+    let pending = []; // { at: performance.now(), start } per pushed unit not yet answered
+    let seed = 0; // samples of the latency's seeded zeros still to discard
+    let onOutput = null;
+    /** Points the output tensor at `n` samples (a whole unit, or the seed's remainder). */
+    const outSamples = (n) => {
+      heap(m).HEAP64[outShape / 8 + 1] = BigInt(n);
+      m._anira_tensor_init_host(outT, outData, ANIRA_DTYPE_F32, 2, outShape);
+    };
+    const voice = { units: 0, missed: 0, errors: 0, lastError: null, lastPush: 0 };
 
     const available = () => {
       m._anira_handler_get_available_samples(native, outSlot, 0, scratch);
       return heap(m).HEAPU32[scratch / 4];
     };
     const fail = (where, st) => {
-      errors++;
-      lastError = `${where}: ${anira.abi.anira_status_string(st) ?? st}`;
+      voice.errors++;
+      voice.lastError = `${where}: ${anira.abi.anira_status_string(st) ?? st}`;
     };
 
-    /** Pops every unit that is available or overdue, oldest first. */
+    /**
+     * Pops every unit that is available or overdue, oldest first. The output ring starts with the
+     * latency's seeded zeros (any number of samples, not always whole units): those are discarded
+     * first, the remainder of a unit in one short pop, so every later pop is one whole unit that
+     * answers the oldest pending input unit.
+     */
     function drain() {
-      if (!alive) return;
+      if (!onOutput || !pending.length) return;
       const now = performance.now();
       let avail = available();
-      // The ring holds the latency's seeded samples plus one output unit per pushed input unit.
-      while ((popped + 1) * output.samples <= pushed * output.samples + latency) {
-        const unit = Math.floor((popped * output.samples - latency) / output.samples); // input unit answered
-        const due = avail >= output.samples || unit < 0 || now - pending[0].at > OVERDUE_MS;
+      while (seed > 0) {
+        const n = seed % output.samples || output.samples;
+        if (avail < n) return;
+        if (n !== output.samples) outSamples(n);
+        const st = m._anira_handler_pop_data(native, outT, outSlot, scratch + 4);
+        if (n !== output.samples) outSamples(output.samples);
+        if (st !== anira_status.ANIRA_OK) return void fail('pop (latency)', st);
+        seed -= n;
+        avail -= n;
+      }
+      while (pending.length) {
+        const due = avail >= output.samples || now - pending[0].at > OVERDUE_MS;
         if (!due) break;
         const st = m._anira_handler_pop_data(native, outT, outSlot, scratch + 4);
         if (st !== anira_status.ANIRA_OK && st !== anira_status.ANIRA_MISSED) {
           fail('pop', st);
           break; // a failure (not a miss): try again with the next push
         }
-        popped++;
         avail = Math.max(0, avail - output.samples);
-        if (unit < 0) continue; // seeded zeros only
         const { start } = pending.shift();
-        units++;
-        if (st === anira_status.ANIRA_MISSED) missed++;
+        voice.units++;
+        if (st === anira_status.ANIRA_MISSED) voice.missed++;
         h = heap(m);
-        onOutput(h.HEAPF32.slice(outData / 4, outData / 4 + outN), { missed: st === anira_status.ANIRA_MISSED, unit, start });
+        onOutput(h.HEAPF32.slice(outData / 4, outData / 4 + outN), { missed: st === anira_status.ANIRA_MISSED, start });
       }
     }
 
     /** One input unit (channel-major); false if it was refused. */
-    function push(data, start) {
-      if (!alive) return false;
+    voice.push = (data, start) => {
+      if (!onOutput) return false;
       h = heap(m);
       h.HEAPF32.set(data.length === inN ? data : data.subarray(0, inN), inData / 4);
       const st = m._anira_handler_push_data(native, inT, inSlot);
       if (st < 0) return (fail('push', st), false);
-      pushed++;
-      pending.push({ at: performance.now(), start });
+      voice.lastPush = performance.now();
+      pending.push({ at: voice.lastPush, start });
       drain();
       return true;
-    }
-    const poll = setInterval(drain, 20);
+    };
+    voice.drain = drain;
+    /** Starts a new stream: zero state, empty rings (anira_handler_reset). */
+    voice.begin = (fn) => {
+      m._anira_handler_reset(native);
+      pending = [];
+      seed = lat;
+      onOutput = fn;
+    };
+    voice.end = () => (onOutput = null);
+    voice.free = () => m._free(base);
+    return voice;
+  }
 
-    function destroy() {
+  const idle = [makeVoice(first)];
+  const busy = new Set();
+  const all = [...idle];
+  const grow = () => {
+    const v = makeVoice(prepareHandler({ budget: { ms: budgetMs }, warmup: { fixed: 2 } }));
+    all.push(v);
+    return v;
+  };
+  for (let i = 1; i < PREPARED_VOICES; i++) idle.push(grow());
+  const poll = setInterval(() => busy.forEach((v) => v.drain()), 4);
+  let alive = true;
+
+  return {
+    input, output, hop, latency, sampleRate,
+    /** Latent frames per second. */
+    rate: sampleRate / hop,
+    meta,
+    /** The warm-up's figures (one inference alone), and the budget every voice runs with. */
+    plan: plan && { budgetMs, measuredMs: plan.budgetMs, medianMs: plan.medianMs, rtFactor: plan.rtFactor, rtVerdict: plan.rtVerdict },
+    /**
+     * A voice for one stream: { push(data, start), end() }. Its outputs go to onOutput(data,
+     * { missed, start }) in stream order, one per input unit (the latency's seeded zeros are
+     * discarded). Prepared handlers are reused, from a fresh state; more are made on demand
+     * (which blocks the page for the new handler's warm-up).
+     */
+    voice(onOutput) {
+      if (!alive) throw new Error('the model was destroyed');
+      const v = idle.shift() ?? grow(); // the longest idle: its last stream's inferences are long done
+      v.begin(onOutput);
+      busy.add(v);
+      return {
+        push: (data, start) => v.push(data, start),
+        end() {
+          if (!busy.delete(v)) return;
+          v.end();
+          idle.push(v);
+        },
+      };
+    },
+    /** Totals over every voice; `voices`: streaming now, `handlers`: prepared. */
+    stats: () => {
+      const sum = { units: 0, missed: 0, errors: 0, lastError: null, voices: busy.size, handlers: all.length };
+      for (const v of all) (sum.units += v.units), (sum.missed += v.missed), (sum.errors += v.errors), (sum.lastError = v.lastError ?? sum.lastError);
+      return sum;
+    },
+    destroy() {
       if (!alive) return;
       alive = false;
       clearInterval(poll);
-      handler.destroy();
-      m._free(base);
-    }
-
-    config.destroy();
-    contract.destroy();
-    return {
-      input, output, hop, latency, sampleRate,
-      /** Latent frames per second. */
-      rate: sampleRate / hop,
-      meta,
-      plan: plan && { budgetMs: plan.budgetMs, medianMs: plan.medianMs, rtFactor: plan.rtFactor, rtVerdict: plan.rtVerdict },
-      stats: () => ({ pushed, units, missed, errors, lastError, pending: pending.length }),
-      push,
-      destroy,
-    };
-  } catch (e) {
-    handler?.destroy();
-    contract?.destroy();
-    config.destroy();
-    throw e;
-  }
+      for (const h of handlers) h.destroy();
+      for (const v of all) v.free();
+      config.destroy();
+    },
+  };
 }

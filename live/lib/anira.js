@@ -6,8 +6,8 @@ import { persist } from '@live/runtime';
 import { Anira, Context } from '@anira-project/anira';
 import { url as workerModule } from 'anira-worker';
 
-/** Inference Workers: one per stateful model that runs at once (each runs one at a time). */
-export const INFERENCE_THREADS = 2;
+/** Inference Workers: stateful handlers (one per voice) run one inference at a time each, so this many run in parallel. */
+export const INFERENCE_THREADS = 4;
 
 const box = persist('anira.core', null); // Promise<{ anira, context }>
 
