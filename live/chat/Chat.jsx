@@ -1,4 +1,4 @@
-import { useRef, useLayoutEffect } from 'preact/hooks';
+import { useRef, useLayoutEffect, useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import MarkdownIt from 'markdown-it';
 import { vfs, env, vfsVersion } from '@live/runtime';
@@ -15,13 +15,16 @@ import {
   topWindow,
   showSession,
   newChatIn,
+  queueOf,
 } from './store.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
+import { scopeLabel } from './extensions.js';
 import './chat.css';
 
 export default function Chats() {
   return (
     <>
+      <Connectors />
       {windows.value.map((w) => (
         <ChatWindow key={w.id} win={w} />
       ))}
@@ -31,6 +34,9 @@ export default function Chats() {
     </>
   );
 }
+
+// Windows already open when this module loads (page boot or hot reload) don't grab focus on mount.
+const initialWindowIds = new Set(windows.value.map((w) => w.id));
 
 function ChatWindow({ win }) {
   const s = getSession(win.sessionId);
@@ -51,6 +57,10 @@ function ChatWindow({ win }) {
     lastUserCount.current = userCount;
     if (pinned.value) el.scrollTop = el.scrollHeight;
   }, [messages, draft, collapsed, userCount, s]);
+
+  useEffect(() => {
+    if (!initialWindowIds.has(win.id)) composerOf(win.id)?.focus();
+  }, []);
 
   const onScroll = (e) => {
     const el = e.currentTarget;
@@ -113,6 +123,46 @@ function ChatWindow({ win }) {
       )}
     </aside>
   );
+}
+
+/**
+ * Dotted lines from each open chat window to its anchor on the page: [data-chat-session="<session id>"],
+ * else [data-chat-anchor="<scope>"]. Anchors move with the page (pan, zoom, drag), so positions are read every frame.
+ */
+function Connectors() {
+  const svg = useRef(null);
+  useEffect(() => {
+    let raf;
+    const frame = () => {
+      raf = requestAnimationFrame(frame);
+      const el = svg.current;
+      if (!el) return;
+      const lines = [];
+      for (const w of windows.value) {
+        const scope = findSession(w.sessionId)?.scope?.value;
+        const anchor =
+          document.querySelector(`[data-chat-session="${CSS.escape(w.sessionId)}"]`) ??
+          (scope && document.querySelector(`[data-chat-anchor="${CSS.escape(scope)}"]`));
+        const win = document.querySelector(`.chat[data-window="${CSS.escape(w.id)}"]`);
+        if (!anchor || !win) continue;
+        const a = anchor.getBoundingClientRect();
+        if (!a.width && !a.height) continue;
+        const r = win.getBoundingClientRect();
+        const ax = a.left + a.width / 2;
+        const ay = a.top + a.height / 2;
+        // Start on the window border, at the point closest to the anchor.
+        const wx = Math.max(r.left, Math.min(ax, r.right));
+        const wy = Math.max(r.top, Math.min(ay, r.bottom));
+        if (wx === ax && wy === ay) continue;
+        lines.push(`<line x1="${wx}" y1="${wy}" x2="${ax}" y2="${ay}"/><circle cx="${ax}" cy="${ay}" r="3"/>`);
+      }
+      const html = lines.join('');
+      if (el.innerHTML !== html) el.innerHTML = html;
+    };
+    frame();
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return <svg ref={svg} class="chat-connectors" aria-hidden="true" />;
 }
 
 const composerOf = (windowId) => document.querySelector(`.chat[data-window="${windowId}"] .chat-composer textarea`);
@@ -251,9 +301,15 @@ function Header({ win, s }) {
   const showHistory = useSignal(false);
   const status = activity(s);
   const collapsed = win.collapsed;
+  const scope = s.scope.value;
   return (
     <header class="chat-header" onPointerDown={(e) => startDrag(e, win)} onDblClick={(e) => !e.target.closest('button, select, input, .chat-history') && toggleCollapsed(win)}>
       <strong>Agent</strong>
+      {scope && (
+        <span class="chat-scope" title={`This chat is about ${scope}; its history only shows chats in the same scope`}>
+          {scopeLabel(scope) ?? scope}
+        </span>
+      )}
       <span class={`chat-status chat-status-${status.kind}`} title={status.text}>
         <span class="chat-status-dot" />
         {status.text}
@@ -288,7 +344,7 @@ function Header({ win, s }) {
           </button>
         </div>
       )}
-      {!collapsed && showHistory.value && <History win={win} onClose={() => (showHistory.value = false)} />}
+      {!collapsed && showHistory.value && <History win={win} scope={scope} onClose={() => (showHistory.value = false)} />}
       {!collapsed && showSettings.value && (
         <div class="chat-settings">
           <input
@@ -321,12 +377,12 @@ function chatLabel(c) {
   return new Date(c.updated).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-function History({ win, onClose }) {
-  const list = chat.index.value;
+function History({ win, scope, onClose }) {
+  const list = chat.index.value.filter((c) => (c.scope ?? null) === (scope ?? null));
   const openIn = new Map(windows.value.map((w) => [w.sessionId, w.id]));
   return (
     <div class="chat-history">
-      {list.length === 0 && <p class="chat-empty">No saved conversations yet.</p>}
+      {list.length === 0 && <p class="chat-empty">{scope ? 'No saved conversations about this yet.' : 'No saved conversations yet.'}</p>}
       {list.map((c) => {
         const running = findSession(c.id)?.running.value;
         const elsewhere = openIn.has(c.id) && openIn.get(c.id) !== win.id;
@@ -400,13 +456,45 @@ function Changes({ s }) {
 
 function Composer({ s }) {
   const text = useSignal('');
+  const queue = queueOf(s);
   const submit = () => {
     const t = text.value.trim();
-    if (!t || s.running.value) return;
+    if (s.running.value) {
+      if (t) queue.value = [...queue.value, t];
+    } else if (t) sendMessage(s, t);
+    else if (queue.value.length) {
+      const [next, ...rest] = queue.value;
+      queue.value = rest;
+      sendMessage(s, next);
+    } else return;
     text.value = '';
-    sendMessage(s, t);
   };
+  const remove = (i) => (queue.value = queue.value.filter((_, j) => j !== i));
   return (
+    <>
+    {queue.value.length > 0 && (
+      <div class="chat-queue">
+        {queue.value.map((q, i) => (
+          <div class="chat-queue-item" key={i}>
+            <span title={q}>{q}</span>
+            <button
+              type="button"
+              title="Edit (moves back to the composer)"
+              onClick={() => {
+                remove(i);
+                text.value = text.value ? `${text.value}\n${q}` : q;
+              }}
+            >
+              ✎
+            </button>
+            <button type="button" title="Remove from queue" onClick={() => remove(i)}>
+              ×
+            </button>
+          </div>
+        ))}
+        {!s.running.value && <div class="chat-queue-hint">Queue paused. Send (empty composer) sends the next one.</div>}
+      </div>
+    )}
     <form
       class="chat-composer"
       onSubmit={(e) => {
@@ -417,7 +505,11 @@ function Composer({ s }) {
       <textarea
         rows={3}
         value={text.value}
-        placeholder="Message the agent (Enter to send, Shift+Enter for a new line)"
+        placeholder={
+          s.running.value
+            ? 'Queue a message (Enter to queue, Shift+Enter for a new line)'
+            : 'Message the agent (Enter to send, Shift+Enter for a new line)'
+        }
         onInput={(e) => (text.value = e.currentTarget.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -427,13 +519,17 @@ function Composer({ s }) {
         }}
       />
       {s.running.value ? (
-        <button type="button" onClick={() => stop(s)}>
-          Stop
-        </button>
+        <div class="chat-composer-buttons">
+          <button type="submit">Queue</button>
+          <button type="button" onClick={() => stop(s)}>
+            Stop
+          </button>
+        </div>
       ) : (
         <button type="submit">Send</button>
       )}
     </form>
+    </>
   );
 }
 

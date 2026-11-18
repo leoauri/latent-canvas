@@ -1,6 +1,7 @@
 // Agent tools, as OpenAI-style function definitions. The file tool keeps the schema of the
 // common str_replace text editor; its writes go to the VFS buffer and only run after apply_changes.
 import { vfs, loader, logs, runScript } from '@live/runtime';
+import { extensionTool, extensionToolDefs } from './extensions.js';
 
 const custom = (name, description, properties, required = []) => ({
   type: 'function',
@@ -85,6 +86,8 @@ export const tools = [
   ),
 ];
 
+export const toolDefs = () => [...tools, ...extensionToolDefs()];
+
 // ---- execution ---------------------------------------------------------------------
 
 const ok = (id, content) => ({ type: 'tool_result', tool_use_id: id, content });
@@ -117,10 +120,16 @@ const SPECS = {
   read_console: { since_id: 'integer?', limit: 'integer?', errors_only: 'boolean?' },
 };
 
-export async function runTool(block) {
+/** ctx: { session } of the chat running the tool. */
+export async function runTool(block, ctx = {}) {
   const { id, name, input } = block;
   try {
     if (name === 'str_replace_based_edit_tool') return editor(id, input);
+    const ext = extensionTool(name);
+    if (ext) {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) return fail(id, 'input must be an object');
+      return ok(id, await ext.run(input, ctx));
+    }
     const spec = SPECS[name];
     if (!spec) return fail(id, `unknown tool ${name}`);
     const problem = validate(input, spec);

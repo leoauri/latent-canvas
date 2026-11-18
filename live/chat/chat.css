@@ -51,6 +51,28 @@
 @keyframes chat-pulse { 50% { opacity: 0.3; } }
 .chat .chat-collapse, .chat .chat-close { padding: 0 7px; line-height: 1.4; }
 .chat-history-running { color: #f5a623; }
+.chat-scope {
+  max-width: 40%;
+  padding: 0 6px;
+  border: 1px dashed var(--muted);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-connectors {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 999;
+  pointer-events: none;
+  overflow: visible;
+}
+.chat-connectors line { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 4; stroke-linecap: round; }
+.chat-connectors circle { fill: none; stroke: var(--muted); stroke-width: 1.5; }
 .chat-fab {
   position: fixed;
   right: 20px;
@@ -158,3 +180,10 @@
 
 .chat-composer { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
 .chat-composer textarea { flex: 1; resize: vertical; min-height: 40px; }
+
+.chat-composer-buttons { display: flex; flex-direction: column; gap: 4px; }
+.chat-queue { padding: 6px 10px 0; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; max-height: 30%; overflow-y: auto; }
+.chat-queue-item { display: flex; gap: 4px; align-items: center; background: var(--user-bg); border-radius: 6px; padding: 2px 4px 2px 8px; opacity: 0.75; font-size: 12px; }
+.chat-queue-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat .chat-queue-item button { padding: 0 6px; line-height: 1.4; }
+.chat-queue-hint { color: var(--muted); font-size: 11px; }

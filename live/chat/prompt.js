@@ -1,7 +1,13 @@
 // System prompt. Keep it byte-stable within a session: it sits in the cached prefix.
 import { loader } from '@live/runtime';
+import { scopePrompt } from './extensions.js';
 
-export function systemPrompt() {
+export function systemPrompt(scope) {
+  const scoped = scopePrompt(scope);
+  return base() + (scoped ? `\n\n${scoped}` : '');
+}
+
+function base() {
   const packages = Object.keys(loader.vendor).sort().join(', ');
   return `You are the live-programming agent of "redaw", a web page that is built from live modules while it runs. The user talks to you in a chat panel that is itself one of those modules.
 

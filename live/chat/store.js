@@ -37,9 +37,13 @@ db.once('chats', async () => {
 
 // ---- sessions ------------------------------------------------------------------------------
 
-/** id -> { id, messages, draft, running, error, controller (signals), hydrated }. Not reactive itself. */
+/** id -> { id, scope, messages, draft, running, error, controller (signals), hydrated }. Not reactive itself. */
 const sessions = persist('chat.sessions', () => new Map()).value;
+/** Bumped whenever a session is created, so derived views can react to new sessions. */
+const sessionsVersion = persist('chat.sessionsVersion', 0);
 const unsubs = [];
+const indexScope = (id) => chat.index.value.find((c) => c.id === id)?.scope ?? null;
+for (const s of sessions.values()) s.scope ??= signal(indexScope(s.id));
 
 function track(s) {
   let first = true;
@@ -65,16 +69,19 @@ if (!sessions.has(legacyId.value)) {
     running: persist('chat.running', false),
     error: persist('chat.error', null),
     controller: persist('chat.controller', null),
+    scope: signal(indexScope(legacyId.value)),
     hydrated: true,
   };
   sessions.set(s.id, s);
   track(s);
 }
 
-function createSession(id, hydrated) {
-  const s = { id, messages: signal([]), draft: signal(null), running: signal(false), error: signal(null), controller: signal(null), hydrated };
+function createSession(id, hydrated, scope = null) {
+  const s = { id, scope: signal(scope), messages: signal([]), draft: signal(null), running: signal(false), error: signal(null), controller: signal(null), hydrated };
   sessions.set(id, s);
   track(s);
+  // Deferred: getSession runs during render, which must not write signals other components read.
+  queueMicrotask(() => sessionsVersion.value++);
   return s;
 }
 
@@ -82,21 +89,32 @@ function createSession(id, hydrated) {
 export function getSession(id) {
   let s = sessions.get(id);
   if (s) return s;
-  s = createSession(id, false);
+  s = createSession(id, false, indexScope(id));
   db.get('chats', id)
     .then((stored) => {
       if (stored && !s.messages.value.length) s.messages.value = stored.messages;
+      if (stored?.scope) s.scope.value = stored.scope;
     })
     .catch((e) => console.warn('chat: loading session failed', e))
     .finally(() => (s.hydrated = true));
   return s;
 }
 
+/** Messages waiting to be sent after the current turn. Added lazily: sessions may predate this field. */
+export const queueOf = (s) => (s.queue ??= signal([]));
+
 export const findSession = (id) => sessions.get(id);
 export const runningSessions = () => [...sessions.values()].filter((s) => s.running.value);
 
-function newSession() {
-  return createSession(newId(), true).id;
+/** Whether any session in the given scope is running (reactive, including sessions created later). */
+export function scopeRunning(scope) {
+  sessionsVersion.value;
+  return [...sessions.values()].some((s) => s.scope.value === scope && s.running.value);
+}
+
+/** Creates an empty session, optionally tied to a scope (e.g. "layer:<id>"), and returns its id. */
+export function newSession(scope = null) {
+  return createSession(newId(), true, scope).id;
 }
 
 /** Labels of the change sets successfully applied in a transcript, in order. */
@@ -112,18 +130,19 @@ export function changesOf(messages) {
   return out;
 }
 
-function persistSession({ id, messages: { value: messages } }) {
+function persistSession({ id, scope: { value: scope }, messages: { value: messages } }) {
   const prev = chat.index.value.find((c) => c.id === id);
   const now = Date.now();
   const entry = {
     id,
+    scope,
     created: prev?.created ?? now,
     updated: now,
     changes: changesOf(messages),
     preview: messages.find((m) => m.role === 'user' && typeof m.content === 'string')?.content.slice(0, 120) ?? '',
   };
   chat.index.value = [entry, ...chat.index.value.filter((c) => c.id !== id)];
-  return Promise.all([db.put('chats', id, { id, messages }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
+  return Promise.all([db.put('chats', id, { id, scope, messages }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
     console.warn('chat: saving failed', e),
   );
 }
@@ -193,6 +212,18 @@ export function showSession(windowId, sessionId) {
   updateWindow(windowId, { sessionId });
 }
 
+/** A new conversation in the window, in the same scope as the one it showed. */
 export function newChatIn(windowId) {
-  showSession(windowId, newSession());
+  const w = windows.value.find((x) => x.id === windowId);
+  showSession(windowId, newSession(w && findSession(w.sessionId)?.scope.value));
+}
+
+/** Brings up the window showing a session (expanded, on top), opening one if none does. */
+export function openSession(sessionId) {
+  getSession(sessionId);
+  const w = windows.value.find((x) => x.sessionId === sessionId);
+  if (!w) return openWindow(sessionId);
+  if (w.collapsed) updateWindow(w.id, { collapsed: false });
+  focusWindow(w.id);
+  return w.id;
 }

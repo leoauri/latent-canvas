@@ -9,6 +9,7 @@ import {
   layers, selectedLayerId, addLayer, updateLayer, removeLayer, bringLayerToFront, selectLayer,
   layerColor, MIN_LAYER_HEIGHT,
 } from './layers.js';
+import { LayerTabContent, LayerPanel, hoverLayer, unhoverLayer, togglePin, panelVisible } from './LayerConfig.jsx';
 
 const MIN_WIDTH_PX = 6;
 const OFFSCREEN = 50; // px: layers extending past the viewport are clipped this far outside it
@@ -59,6 +60,19 @@ function startDrag(e, layer, mode) {
 
 const px = (n) => `${n}px`; // Preact 11 no longer appends px to numeric styles
 const stop = (e) => e.stopPropagation(); // handle clicks must not place the playhead
+
+// A click on the tab pins its panel, unless the pointer moved (then it was a drag).
+let tabDown = null;
+const onTabPointerDown = (e, l) => {
+  tabDown = { x: e.clientX, y: e.clientY };
+  startDrag(e, l, 'move');
+};
+const onTabClick = (e, l) => {
+  e.stopPropagation();
+  if (e.target.closest('input, button')) return;
+  if (tabDown && Math.hypot(e.clientX - tabDown.x, e.clientY - tabDown.y) < 4) togglePin(l.id);
+  tabDown = null;
+};
 
 export default function Layers() {
   const ref = useRef(null);
@@ -147,14 +161,17 @@ export default function Layers() {
               <div
                 class="layer-tab"
                 style={{ left: px(Math.max(0, -left)) }} // keep the name visible when the start is offscreen
-                onPointerDown={(e) => startDrag(e, l, 'move')}
-                onClick={stop}
+                onPointerDown={(e) => !e.target.closest('input, button') && onTabPointerDown(e, l)}
+                onPointerEnter={() => hoverLayer(l.id)}
+                onPointerLeave={unhoverLayer}
+                onClick={(e) => onTabClick(e, l)}
               >
-                {l.name}
+                <LayerTabContent layer={l} />
               </div>
               {EDGES.map((edge) => (
                 <div key={edge} class={`layer-edge layer-edge-${edge}`} onPointerDown={(e) => startDrag(e, l, edge)} onClick={stop} />
               ))}
+              {panelVisible(l.id) && <LayerPanel layer={l} left={Math.max(0, -left)} />}
             </div>
           );
         })}

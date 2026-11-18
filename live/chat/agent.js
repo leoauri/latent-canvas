@@ -2,9 +2,9 @@
 // The transcript is stored as content blocks (text, thinking, tool_use / tool_result) so the UI
 // and the chat log stay provider-neutral; toWire() converts it to Chat Completions messages.
 import { env } from '@live/runtime';
-import { tools, runTool } from './tools.js';
+import { toolDefs, runTool } from './tools.js';
 import { systemPrompt } from './prompt.js';
-import { chat, pushMessage } from './store.js';
+import { chat, pushMessage, queueOf } from './store.js';
 
 const MAX_STEPS = 60;
 export const EFFORTS = ['default', 'low', 'medium', 'high'];
@@ -50,6 +50,13 @@ export async function sendMessage(s, text) {
     s.running.value = false;
     s.controller.value = null;
   }
+  // After a stop or error the queue is held so the user can decide what to do with it.
+  const queue = queueOf(s);
+  if (!s.error.value && queue.value.length) {
+    const [next, ...rest] = queue.value;
+    queue.value = rest;
+    sendMessage(s, next);
+  }
 }
 
 export function stop(s) {
@@ -65,8 +72,8 @@ async function loop(s, target, signal) {
       stream_options: { include_usage: true },
       // Sent explicitly: a gateway's default cap (often ~4k) is far too low for whole-file edits.
       max_completion_tokens: env.maxTokens,
-      messages: [{ role: 'system', content: systemPrompt() }, ...toWire(s.messages.value)],
-      tools,
+      messages: [{ role: 'system', content: systemPrompt(s.scope?.value) }, ...toWire(s.messages.value)],
+      tools: toolDefs(),
     };
     if (EFFORTS.includes(chat.effort.value) && chat.effort.value !== 'default') body.reasoning_effort = chat.effort.value;
 
@@ -102,6 +109,7 @@ async function loop(s, target, signal) {
     }
     if (!uses.length) {
       if (message.stop_reason === 'max_tokens') s.error.value = `The reply hit the output token limit (${describeUsage(message.usage)}).`;
+      else if (drainQueue(s)) continue;
       return;
     }
 
@@ -113,14 +121,25 @@ async function loop(s, target, signal) {
         // A truncated input can still look valid; never run it.
         results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: `Output hit the token limit (${describeUsage(message.usage)}), so this tool input was truncated and not run. Retry with smaller edits.` });
       } else {
-        results.push(await runTool(use));
+        results.push(await runTool(use, { session: s }));
       }
     }
     // Every tool_use gets its result, even when stopping.
     pushMessage(s, { role: 'user', content: results });
     if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+    drainQueue(s);
   }
   s.error.value = `Stopped after ${MAX_STEPS} steps.`;
+}
+
+// Queued messages join the transcript at the next step boundary, so the model sees them on its next call.
+function drainQueue(s) {
+  const queue = queueOf(s);
+  const pending = queue.value;
+  if (!pending.length) return false;
+  queue.value = [];
+  for (const text of pending) pushMessage(s, { role: 'user', content: text });
+  return true;
 }
 
 // ---- streaming ---------------------------------------------------------------------------
