@@ -39,20 +39,7 @@ export const stack = persist('stack.layers', () => [{ id: newId(), type: 'latent
 export const activeLayerId = persist('stack.activeLayerId', null);
 /** Stack layer whose masks are highlighted on the canvas (hovering its card). */
 export const highlightedLayerId = persist('stack.highlighted', null);
-/** Layer ids whose detail panels are expanded. */
-export const openLayerIds = persist('stack.openLayerIds', []);
-/** Keep the stack panel expanded even when the pointer leaves it. */
-export const stackPinned = persist('stack.pinned', false);
-export const toggleLayerOpen = (id) => {
-  const ids = openLayerIds.value;
-  openLayerIds.value = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
-};
-const unbind = [
-  db.sync(stack, 'stack.layers'),
-  db.sync(activeLayerId, 'stack.activeLayerId'),
-  db.sync(openLayerIds, 'stack.openLayerIds'),
-  db.sync(stackPinned, 'stack.pinned'),
-];
+const unbind = [db.sync(stack, 'stack.layers'), db.sync(activeLayerId, 'stack.activeLayerId')];
 export function dispose() {
   unbind.forEach((f) => f());
 }

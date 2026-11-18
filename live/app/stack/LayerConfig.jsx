@@ -216,6 +216,7 @@ Tips for writing layer functions:
 - A layer operates only inside its masks (app/timeline/layers.js: rectangles in time × world y with layerId; operatesAt(layerId, t, y) tests a point; no masks = everywhere).
 - What ctx contains is defined by the callers of runLayer. Find them before writing a transform (in eval_js: vfs.list().filter((p) => /runLayer\\(/.test(vfs.read(p)))). If there are none, nothing applies layers yet: pick a minimal ctx contract, say so in the layer's desc and tell the user that wiring it up is a separate app change.
 - Data shapes are documented in the typedefs at the top of app/timeline/clips.js (clips of latent vectors, helper sampleAt), app/stack/stack.js and app/timeline/layers.js. Read them rather than assuming.
+- Details panels only show for the selected layer while the stack panel is hovered. To inspect one without touching the UI, render it off-screen in eval_js: const { h, render } = vendor['preact']; const host = document.body.appendChild(document.createElement('div')); host.style.cssText = 'position:fixed;left:-9999px'; render(h(modules('app/stack/LayerConfig.jsx').LayerDetails, { layer }), host); read host.innerHTML/innerText, then render(null, host); host.remove().
 - Test a transform with chosen values without touching the user's: modules('app/stack/layerFunc.js').runLayer({ ...layer, paramValues: { … } }, ctx) in eval_js, with the layer from modules('app/stack/stack.js').stack.value.`;
 
 const unregister = registerExtension('layers', {

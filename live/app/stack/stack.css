@@ -55,30 +55,6 @@
   transition: transform 0.15s;
 }
 .stack-add-open { transform: rotate(45deg); }
-.stack-pin {
-  width: 20px;
-  height: 20px;
-  border: 1px solid transparent;
-  border-radius: 50%;
-  background: none;
-  color: var(--muted);
-  font: 13px/1 system-ui, sans-serif;
-  cursor: pointer;
-}
-.stack-pin-on { color: var(--fg); border-color: #c8c8cc; background: var(--bg); }
-.stack-disclose {
-  width: 14px;
-  padding: 0;
-  margin-right: -4px;
-  border: none;
-  background: none;
-  color: var(--muted);
-  font-size: 10px;
-  cursor: pointer;
-  transition: transform 0.12s;
-}
-.stack-disclose:hover { color: var(--fg); }
-.stack-disclose-open { transform: rotate(90deg); color: var(--fg); }
 .stack-palette {
   display: grid;
   grid-template-columns: 1fr 1fr;
