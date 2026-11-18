@@ -36,24 +36,30 @@ export function framesAt(layerId, t) {
 function begin(id) {
   const ctx = audioContext();
   ctx.resume(); // Space is a user gesture: a context nothing has started yet can start here
-  const run = { start: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), cue: cue.peek(), k: 0, timer: 0 };
+  const run = { start: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), cue: cue.peek(), k: 0, timer: 0, voices: new Set() };
   run.timer = setInterval(() => {
     const now = ctx.currentTime * ctx.sampleRate;
     // Due frames, oldest first; after a stall of over half a second, skip ahead instead.
     if (now - (run.start + run.k * HOP) > ctx.sampleRate / 2) run.k = Math.floor((now - run.start) / HOP);
     while (run.start + run.k * HOP <= now) {
       const start = run.start + run.k * HOP;
-      for (const f of framesAt(id, run.t0 + (run.k * HOP) / ctx.sampleRate))
+      for (const f of framesAt(id, run.t0 + (run.k * HOP) / ctx.sampleRate)) {
+        run.voices.add(f.voice);
         emit(id, { kind: 'latent', data: f.data, dim: f.dim, rate: ctx.sampleRate / HOP, start, voice: f.voice });
+      }
       run.k++;
     }
   }, TICK_MS);
   runs.set(id, run);
 }
 
+/** Stops a run, and cuts its voices off downstream: what is still on its way is dropped. */
 function end(id) {
-  clearInterval(runs.get(id)?.timer);
+  const run = runs.get(id);
+  if (!run) return;
+  clearInterval(run.timer);
   runs.delete(id);
+  if (run.voices.size) emit(id, { kind: 'flush', voices: [...run.voices] });
 }
 
 // A run per latent layer while playing; a seek restarts it.

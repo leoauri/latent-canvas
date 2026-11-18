@@ -3,6 +3,7 @@
 // Renders a vertical line across its container; the container is whatever element
 // it is mounted in (it listens for pointerdown there, so clips can stop it).
 import { useEffect, useRef } from 'preact/hooks';
+import { batch } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { view, timeToX, xToTime, placeTimeAt } from './view.js';
 import * as db from '../../lib/db.js';
@@ -39,8 +40,10 @@ function startLoop() {
 }
 
 export function play() {
-  time.value = cue.value;
-  playing.value = true;
+  batch(() => {
+    time.value = cue.value;
+    playing.value = true;
+  });
   startLoop();
 }
 export function stop() {
@@ -52,8 +55,11 @@ export function toggle() {
 }
 /** Place the cue; while playing, playback jumps there. */
 export function seek(t) {
-  cue.value = t;
-  time.value = t;
+  // Together: effects reacting to the cue must see the time already there.
+  batch(() => {
+    cue.value = t;
+    time.value = t;
+  });
 }
 
 export function dispose() {

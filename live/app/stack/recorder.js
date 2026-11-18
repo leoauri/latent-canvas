@@ -53,8 +53,8 @@ function laneFor(l, t0) {
 function begin(l, sourceId) {
   const ctx = audioContext();
   const rec = { sourceId, startFrame: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), takes: new Map(), n: 0, missed: 0 };
-  rec.unsub = subscribe(sourceId, ({ data: frame, missed, start, rate, dim, voice }) => {
-    if (start < rec.startFrame) return; // audio from before the recording started
+  rec.unsub = subscribe(sourceId, ({ kind, data: frame, missed, start, rate, dim, voice }) => {
+    if (kind !== 'latent' || start < rec.startFrame) return; // a flush; or audio from before the recording started
     let take = rec.takes.get(voice);
     if (!take) {
       take = { clipId: newId(), n: 0, missed: 0, dim, buf: new Float32Array(dim * Math.ceil(rate * 30)) };

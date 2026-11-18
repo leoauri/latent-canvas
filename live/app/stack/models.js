@@ -34,9 +34,11 @@ import { playing } from '../timeline/Playhead.jsx';
  * @property {object} [model]   lib/streamModel.js createStreamModel result
  *
  * @typedef {{ kind: 'audio', data: Float32Array, start: number, voice: string }
- *   | { kind: 'latent', data: Float32Array, dim: number, rate: number, start: number, voice: string, missed?: boolean }} StreamMsg
+ *   | { kind: 'latent', data: Float32Array, dim: number, rate: number, start: number, voice: string, missed?: boolean }
+ *   | { kind: 'flush', voices: string[] }} StreamMsg
  *   `start`: the context frame this unit belongs to. `voice`: which of the stream's parallel
  *   voices it belongs to (a clip, an input); a model keeps a separate state per voice.
+ *   `flush`: those voices were cut off (a seek or stop): drop what is still on its way for them.
  *
  * @typedef {object} Link  what reaches a consumer layer
  * @property {string|null} sourceId  the producer behind it
@@ -249,6 +251,11 @@ function modelVoices(l, model, prepare) {
   }, VOICE_IDLE_MS / 2);
   return {
     handler(msg) {
+      if (msg.kind === 'flush') {
+        // Their pending outputs are dropped with the voices; the layers in front flush too.
+        for (const key of msg.voices) voices.get(key)?.voice.end(), voices.delete(key);
+        return emit(l.id, msg);
+      }
       let v = voices.get(msg.voice);
       if (!v) {
         const voice = model.voice((data, { missed, start }) =>
@@ -292,7 +299,7 @@ function consumerOf(l, src, kind) {
   if (l.type === 'audio-out') {
     if (kind !== 'audio') return { error: `latents reach it from ${src.name}: put a decoder in between` };
     // Every voice is added into the mix at its own time.
-    return { handler: (msg) => mixers.get(l.id)?.push(msg.data, msg.start) };
+    return { handler: (msg) => (msg.kind === 'flush' ? mixers.get(l.id)?.flush() : mixers.get(l.id)?.push(msg.data, msg.start)) };
   }
   if (l.type === 'latent') {
     // Pass-through: the latents reaching it go on to the layers in front, beside its own clips

@@ -42,12 +42,17 @@ class Mixer extends AudioWorkletProcessor {
     this.early = 0; // blocks too far ahead for the ring
     this.blocks = 0;
     this.maxDelay = o.processorOptions.capacity / 2;
+    this.baseDelay = this.delay;
+    this.lags = new Float64Array(256); // the latest blocks' arrival lags
+    this.nLags = 0;
     this.on = true;
     this.lastSound = -1;
     this.reportAt = 0;
     this.port.onmessage = (e) => {
       if (e.data === 'stop') return void (this.on = false);
+      if (e.data === 'flush') return this.flush();
       const { data, start } = e.data, cap = this.ring.length, now = currentFrame;
+      this.lags[this.nLags++ % this.lags.length] = now - start; // how long this block took to get here
       // Late: the blocks take longer to get here than the delay allows. Raise it by that much (and
       // a quantum), so the next ones are on time: a gap once, then the mix is steady again.
       if (start + this.delay < now) {
@@ -66,6 +71,20 @@ class Mixer extends AudioWorkletProcessor {
       if (early) this.early++;
     };
   }
+  /**
+   * Drops everything queued (a seek or stop: what is queued belongs to the old position), and
+   * sets the delay to what the latest blocks needed (their 95th percentile lag, and a margin),
+   * so a delay that one stall raised comes back down.
+   */
+  flush() {
+    this.ring.fill(0);
+    const n = Math.min(this.nLags, this.lags.length);
+    if (n >= 16) {
+      const sorted = Array.from(this.lags.subarray(0, n)).sort((a, b) => a - b);
+      this.delay = Math.min(this.maxDelay, Math.max(this.baseDelay, sorted[Math.floor(0.95 * (n - 1))] + 512));
+    }
+    this.nLags = 0;
+  }
   process(_, outputs) {
     if (!this.on) return false;
     const out = outputs[0][0], cap = this.ring.length;
@@ -78,8 +97,8 @@ class Mixer extends AudioWorkletProcessor {
     }
     if (sound) this.lastSound = currentFrame;
     if (currentFrame >= this.reportAt) {
-      this.reportAt = currentFrame + sampleRate / 4;
-      this.port.postMessage({ late: this.late, early: this.early, blocks: this.blocks, delay: this.delay, sounding: this.lastSound >= 0 && currentFrame - this.lastSound < sampleRate / 4 });
+      this.reportAt = currentFrame + sampleRate / 20;
+      this.port.postMessage({ late: this.late, early: this.early, blocks: this.blocks, delay: this.delay, silentFor: this.lastSound < 0 ? Infinity : currentFrame - this.lastSound, sounding: this.lastSound >= 0 && currentFrame - this.lastSound < sampleRate / 4 });
     }
     return true;
   }
@@ -128,7 +147,8 @@ export const OUTPUT_DELAY = 3072;
  * played at context frame start + delay, so blocks of different streams that belong to the same
  * moment sound together. A block later than that raises the delay to fit it (the delay adapts to
  * how long blocks take to arrive on this machine, and only grows).
- * stats(): { late, early, blocks, delay, sounding } as of the last report (four times a second).
+ * stats(): { late, early, blocks, delay, silentFor, sounding } as of the last report (twenty
+ * times a second); silentFor: frames since the output last made a sound.
  */
 export async function createMixer(ctx, { delay = OUTPUT_DELAY, capacity = ctx.sampleRate * 2 } = {}) {
   await ensureModule(ctx);
@@ -145,6 +165,8 @@ export async function createMixer(ctx, { delay = OUTPUT_DELAY, capacity = ctx.sa
     node,
     delay,
     push: (data, start) => node.port.postMessage({ data, start }),
+    /** Drops what is queued, and re-fits the delay (see the worklet's flush). */
+    flush: () => node.port.postMessage('flush'),
     stats: () => last,
     destroy() {
       node.port.postMessage('stop');
