@@ -10,6 +10,7 @@
     "prepare": "git config core.hooksPath >/dev/null || git config core.hooksPath .githooks"
   },
   "dependencies": {
+    "@anira-project/anira": "^3.0.0-alpha.3",
     "@preact/signals": "^2.11.4",
     "es-module-lexer": "^3.0.5",
     "idb-keyval": "^6.3.0",

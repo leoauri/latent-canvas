@@ -9,6 +9,7 @@ import { compileLayerFunc, widgetOf, paramValues, WIDGET_NAMES } from './layerFu
 import { registerExtension } from '../../chat/extensions.js';
 import { chat, windows, findSession, newSession, openSession, scopeRunning } from '../../chat/store.js';
 import AudioInputControls from './AudioInput.jsx';
+import { ModelPanel, RecordPanel } from './ModelPanels.jsx';
 import './layerConfig.css';
 
 export const layerScope = (id) => `layer:${id}`;
@@ -97,6 +98,8 @@ export function LayerDetails({ layer: l }) {
         onKeyDown={(e) => (e.key === 'Enter' || e.key === 'Escape') && e.currentTarget.blur()}
       />
       {l.type === 'audio-in' && <AudioInputControls layer={l} />}
+      {l.type === 'operator' && <ModelPanel layer={l} />}
+      {l.type === 'latent' && <RecordPanel layer={l} />}
       {compiled?.meta?.desc && <p class="layer-panel-desc">{compiled.meta.desc}</p>}
       {compiled?.error && <p class="layer-panel-error">Function error: {compiled.error}</p>}
       {!l.func && <p class="layer-panel-empty">No function yet. Use the chat bubble to have an agent write one.</p>}

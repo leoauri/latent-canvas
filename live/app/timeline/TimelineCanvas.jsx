@@ -1,11 +1,11 @@
 // Infinite blank canvas over time. Touchpad: two-finger scroll pans, pinch zooms both axes.
 // Mouse: wheel pans (shift for horizontal), ctrl+wheel zooms, middle-drag pans.
-// Drag clips to move them, double-click empty space for a new clip, Delete removes the selection.
+// Drag clips to move them, Delete removes the selection.
 // Presses on empty space bubble to the container (the playhead uses them); presses on clips don't.
 import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
-import { view, panBy, zoomAt, xToTime, worldToScreenY, screenToWorldY } from './view.js';
-import { clips, selectedId, CLIP_HEIGHT, duration, randomClip, addClip, updateClip, removeClip, bringToFront } from './clips.js';
+import { view, panBy, zoomAt, worldToScreenY } from './view.js';
+import { clips, selectedId, CLIP_HEIGHT, duration, updateClip, removeClip, bringToFront } from './clips.js';
 import { layers as masks } from './layers.js';
 import { stack, activeLayer, activeLayerId, highlightedLayerId, stackLayerColor } from '../stack/stack.js';
 
@@ -217,13 +217,6 @@ export default function TimelineCanvas() {
       if (suppressClick) e.stopPropagation();
       suppressClick = false;
     };
-    const onDblClick = (e) => {
-      const [px, py] = local(e);
-      if (hit(px, py)) return;
-      const clip = randomClip({ t: xToTime(px), y: screenToWorldY(py - CLIP_HEIGHT / 2) });
-      addClip(clip);
-      selectedId.value = clip.id;
-    };
     const onKeyDown = (e) => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId.value && !isTyping(e.target)) {
         e.preventDefault();
@@ -243,7 +236,6 @@ export default function TimelineCanvas() {
       [canvas, 'pointerup', onPointerUp],
       [canvas, 'pointercancel', onPointerUp],
       [canvas, 'click', onClick],
-      [canvas, 'dblclick', onDblClick],
       [window, 'keydown', onKeyDown],
     ];
     for (const [target, type, fn, opts] of listeners) target.addEventListener(type, fn, opts);

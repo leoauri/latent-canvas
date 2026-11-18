@@ -13,6 +13,7 @@ export const CLIP_HEIGHT = 10; // px, independent of zoom
  * @property {number} dim     latent dimensionality
  * @property {number} length  number of samples
  * @property {Float32Array} data  length * dim values, sample-major: data[i * dim + d]
+ * @property {boolean} [recording]  still being recorded (app/stack/recorder.js): not saved yet
  */
 
 /** @type {import('@preact/signals').Signal<Clip[]>} draw order = array order (last on top) */
@@ -33,7 +34,8 @@ const unbind = [
       }
       return out;
     },
-    write: async (list) => {
+    write: async (all) => {
+      const list = all.filter((c) => !c.recording);
       const saved = savedBlobs.value;
       const ids = new Set(list.map((c) => c.id));
       for (const c of list)
@@ -73,27 +75,4 @@ export function bringToFront(id) {
   const i = list.findIndex((c) => c.id === id);
   if (i === -1 || i === list.length - 1) return;
   clips.value = [...list.slice(0, i), ...list.slice(i + 1), list[i]];
-}
-
-const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
-const logUniform = (lo, hi) => Math.exp(Math.log(lo) + Math.random() * (Math.log(hi) - Math.log(lo)));
-const gauss = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
-
-/**
- * A random clip: 1-12 s at 4-240 Hz. Each latent dimension is an Ornstein-Uhlenbeck process
- * (unit variance, its own time constant), so smoothness over time is independent of the rate.
- */
-export function randomClip({ t, y, dim = 16 }) {
-  const rate = Math.round(logUniform(4, 240));
-  const length = Math.max(2, Math.round((1 + Math.random() * 11) * rate));
-  const tau = Array.from({ length: dim }, () => logUniform(0.1, 3));
-  const decay = tau.map((tc) => Math.exp(-1 / rate / tc));
-  const v = Array.from({ length: dim }, gauss);
-  const data = new Float32Array(length * dim);
-  for (let i = 0; i < length; i++)
-    for (let d = 0; d < dim; d++) {
-      v[d] = decay[d] * v[d] + Math.sqrt(1 - decay[d] * decay[d]) * gauss();
-      data[i * dim + d] = v[d];
-    }
-  return { id: newId(), t, y, rate, dim, length, data };
 }

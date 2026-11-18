@@ -16,13 +16,15 @@ import { layers as masks, removeLayer as removeMask } from '../timeline/layers.j
  * @property {number} [funcUpdated]  ms timestamp of the last function save
  * @property {string} [funcChat]  chat session that last saved the function
  * @property {string} [inputDevice]  audio-in: chosen input deviceId (lib/audio.js); empty = default
+ * @property {import('./models.js').ModelRef} [model]  operator: the model it runs (app/stack/models.js)
+ * @property {boolean} [armed]  latent: records the latent stream reaching it while playing (app/stack/recorder.js)
  * Masks (app/timeline/layers.js, field layerId) limit where a layer operates.
  */
 
 export const LAYER_TYPES = {
   'audio-in': { label: 'Audio input', glyph: '◖', hue: 220, io: 'mic / file → audio' },
   latent: { label: 'Latent recording', glyph: '▤', hue: 290, io: 'latent clips' },
-  operator: { label: 'Operator', glyph: '⚙', hue: 50, io: 'audio ⇄ latent · no model' },
+  operator: { label: 'Operator', glyph: '⚙', hue: 50, io: 'audio ⇄ latent · drop a model' },
   'audio-out': { label: 'Audio output', glyph: '◗', hue: 150, io: 'audio → speakers' },
 };
 
@@ -56,6 +58,15 @@ export function insertLayer(type, index = stack.value.length) {
   list.splice(index, 0, layer);
   stack.value = list;
   return layer;
+}
+
+/** What a layer's card says it does: its type's io, or the model it runs. */
+export const layerIo = (l) =>
+  l.type === 'operator' && l.model ? `audio → latent · ${l.model.name}` : LAYER_TYPES[l.type].io;
+
+export function toggleArm(id) {
+  const l = stackLayerById(id);
+  if (l?.type === 'latent') updateStackLayer(id, { armed: !l.armed || undefined });
 }
 
 export function updateStackLayer(id, patch) {

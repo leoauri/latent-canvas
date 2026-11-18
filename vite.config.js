@@ -13,7 +13,16 @@ export default defineConfig(({ mode }) => {
   // models that reject a larger value.
   const maxTokens = Number(get('OPENAI_MAX_TOKENS')) || 128000;
 
+  // anira (WASM threads, SharedArrayBuffer) needs a cross-origin-isolated page.
+  const isolation = {
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+  };
+
   return {
+    // anira locates its .wasm files relative to its own module; pre-bundling breaks that.
+    optimizeDeps: { exclude: ['@anira-project/anira'] },
+    preview: { headers: isolation },
     plugins: [livePlugin({ dir: 'live' })],
     // The bootstrap itself is plain JS; JSX only appears in live modules (compiled in-page).
     define: {
@@ -24,6 +33,7 @@ export default defineConfig(({ mode }) => {
       __REDAW_MAX_TOKENS__: JSON.stringify(maxTokens),
     },
     server: {
+      headers: isolation,
       // The key stays on the dev server; the page talks to /__llm.
       proxy: apiKey
         ? {

@@ -2,8 +2,10 @@ import { useRef, useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import {
   stack, LAYER_TYPES, typeColor, stackLayerColor, insertLayer, moveLayer, removeStackLayer,
-  activeLayer, activeLayerId, highlightedLayerId,
+  activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, stackLayerById,
 } from './stack.js';
+import { readDrop, attachModel } from './models.js';
+import { recordings } from './recorder.js';
 import { layers as masks } from '../timeline/layers.js';
 import { ChatBubble, LayerDetails } from './LayerConfig.jsx';
 import './stack.css';
@@ -16,10 +18,13 @@ export default function LayerStack() {
   const paletteOpen = useSignal(false);
   /** { kind: 'new'|'move', type, id, x, y, gap, started } */
   const drag = useSignal(null);
+  /** An OS file drag over the stack: { overId } (the card under it), else null. */
+  const fileDrag = useSignal(null);
+  const dropError = useSignal(null);
   const root = useRef(null);
   const list = useRef(null);
 
-  const expanded = hover.value || pinned.value || !!drag.value;
+  const expanded = hover.value || pinned.value || !!drag.value || !!fileDrag.value;
   const layers = stack.value;
 
   useEffect(() => {
@@ -28,11 +33,17 @@ export default function LayerStack() {
     const outside = (e) => {
       if (!el.contains(e.target)) (pinned.value = false), (paletteOpen.value = false);
     };
+    // A file dropped outside the stack must not make the browser open it.
+    const noOpen = (e) => e.dataTransfer?.types.includes('Files') && !el.contains(e.target) && e.preventDefault();
     el.addEventListener('wheel', stopWheel);
     document.addEventListener('pointerdown', outside);
+    window.addEventListener('dragover', noOpen);
+    window.addEventListener('drop', noOpen);
     return () => {
       el.removeEventListener('wheel', stopWheel);
       document.removeEventListener('pointerdown', outside);
+      window.removeEventListener('dragover', noOpen);
+      window.removeEventListener('drop', noOpen);
     };
   }, []);
 
@@ -81,6 +92,41 @@ export default function LayerStack() {
     window.addEventListener('pointercancel', up);
   };
 
+  // Model drops: on an operator card that layer runs the model; anywhere else in the stack a new
+  // operator layer gets it (in front of the card it was dropped on, else in front of everything).
+  const isFileDrag = (e) => e.dataTransfer?.types.includes('Files');
+  const onDragOver = (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    const overId = e.target.closest?.('.stack-card')?.dataset.layerId ?? null;
+    if (fileDrag.value?.overId !== overId) fileDrag.value = { overId };
+    dropError.value = null;
+  };
+  const onDragLeave = (e) => {
+    if (!root.current.contains(e.relatedTarget)) fileDrag.value = null;
+  };
+  const onDrop = (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    const over = stackLayerById(fileDrag.value?.overId);
+    fileDrag.value = null;
+    const read = readDrop(e.dataTransfer); // takes the entries now, inside the event
+    (async () => {
+      const { files, name } = await read;
+      let id = over?.type === 'operator' ? over.id : null;
+      const created = !id;
+      if (created) id = insertLayer('operator', over ? stack.value.indexOf(over) + 1 : stack.value.length).id;
+      activeLayerId.value = id;
+      try {
+        await attachModel(id, files, name);
+      } catch (err) {
+        if (created) removeStackLayer(id);
+        dropError.value = String(err?.message || err);
+      }
+    })();
+  };
+
   const d = drag.value;
   const gap = d?.started ? d.gap : null;
   const active = activeLayer();
@@ -97,7 +143,8 @@ export default function LayerStack() {
       rows.push(
         <div
           key={l.id}
-          class={`stack-card${moving ? ' stack-card-moving' : ''}${active?.id === l.id ? ' stack-card-active' : ''}`}
+          data-layer-id={l.id}
+          class={`stack-card${moving ? ' stack-card-moving' : ''}${active?.id === l.id ? ' stack-card-active' : ''}${fileDrag.value?.overId === l.id ? ' stack-card-drop' : ''}`}
           style={{ '--c': stackLayerColor(l) }}
           title="Click: select (Shift+drag on the canvas adds masks to it) · Drag: reorder"
           onPointerDown={(e) => expanded && startDrag(e, { kind: 'move', id: l.id, type: l.type })}
@@ -108,9 +155,19 @@ export default function LayerStack() {
           <span class="stack-text">
             <span class="stack-name">{l.name}</span>
             <span class="stack-io">
-              {t.io} · {maskCount[l.id] ? `${maskCount[l.id]} mask${maskCount[l.id] > 1 ? 's' : ''}` : 'unmasked'}
+              {layerIo(l)} · {maskCount[l.id] ? `${maskCount[l.id]} mask${maskCount[l.id] > 1 ? 's' : ''}` : 'unmasked'}
             </span>
           </span>
+          {l.type === 'latent' && (
+            <button
+              class={`stack-arm${l.armed ? ' stack-arm-on' : ''}${recordings.value[l.id] ? ' stack-arm-rec' : ''}`}
+              title={recordings.value[l.id] ? 'Recording' : l.armed ? 'Armed: records while playing. Click to disarm' : 'Arm: record the latent stream reaching this layer while playing'}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => toggleArm(l.id)}
+            >
+              ●
+            </button>
+          )}
           <ChatBubble layer={l} />
           <button
             class="stack-remove"
@@ -135,6 +192,10 @@ export default function LayerStack() {
       onPointerLeave={(e) => e.pointerType === 'mouse' && (hover.value = false)}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={() => !expanded && (pinned.value = true)}
+      onDragEnter={onDragOver}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       {expanded ? (
         <>
@@ -170,6 +231,18 @@ export default function LayerStack() {
             {!layers.length && <div class={`stack-gap${gap === 0 ? ' stack-gap-active' : ''}`} />}
           </div>
           <div class="stack-foot">back · data flows up</div>
+          {fileDrag.value && (
+            <div class="stack-target stack-drop-hint">
+              {stackLayerById(fileDrag.value.overId)?.type === 'operator'
+                ? <>Drop: <b>{stackLayerById(fileDrag.value.overId).name}</b> runs this model</>
+                : 'Drop on an operator layer, or here for a new one'}
+            </div>
+          )}
+          {dropError.value && (
+            <div class="stack-target stack-drop-error" title="Click to dismiss" onClick={() => (dropError.value = null)}>
+              Model not added: {dropError.value}
+            </div>
+          )}
           {active && (
             <div class="stack-target" style={{ '--c': stackLayerColor(active) }}>
               Shift+drag on canvas: add mask to <b>{active.name}</b> · Alt+drag: move mask · Del: remove

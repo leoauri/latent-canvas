@@ -22,8 +22,20 @@ export const inputs = persist('audio.inputs', {});
 /** @type {import('@preact/signals').Signal<MediaDeviceInfo[]>} audio input devices; labels are empty until permission is granted */
 export const inputDevices = persist('audio.inputDevices', []);
 
+/** The models run at 48 kHz; the browser resamples inputs to the context's rate. */
+export const SAMPLE_RATE = 48000;
+
+/**
+ * The shared context. Where the browser has render sizes (`renderQuantumSize` is their feature
+ * test), renderSizeHint 'hardware' renders at the device's callback size, one process() call per
+ * callback, instead of a fixed 128 frames.
+ */
 export function audioContext() {
-  if (!ctxBox.value || ctxBox.value.state === 'closed') ctxBox.value = new AudioContext({ latencyHint: 'interactive' });
+  if (!ctxBox.value || ctxBox.value.state === 'closed') {
+    const options = { latencyHint: 'interactive', sampleRate: SAMPLE_RATE };
+    if ('renderQuantumSize' in AudioContext.prototype) options.renderSizeHint = 'hardware';
+    ctxBox.value = new AudioContext(options);
+  }
   return ctxBox.value;
 }
 

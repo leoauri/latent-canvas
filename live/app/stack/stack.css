@@ -145,3 +145,24 @@
   white-space: nowrap;
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
 }
+
+/* Model drops (OS file drags) */
+.stack-card-drop { box-shadow: inset 0 0 0 2px var(--timeline-select); }
+.stack-drop-hint { --c: var(--timeline-select); }
+.stack-drop-error { --c: oklch(0.62 0.2 25); cursor: pointer; }
+
+/* Latent layers: arm for recording */
+.stack-arm {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: pointer;
+}
+.stack-arm:hover { opacity: 1; }
+.stack-arm-on { color: oklch(0.62 0.2 25); opacity: 1; }
+.stack-arm-rec { animation: stack-arm-blink 1s steps(2, start) infinite; }
+@keyframes stack-arm-blink { to { visibility: hidden; } }

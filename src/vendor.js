@@ -6,6 +6,7 @@ import * as preactHooks from 'preact/hooks';
 import * as preactJsxRuntime from 'preact/jsx-runtime';
 import * as signals from '@preact/signals';
 import * as markdownIt from 'markdown-it';
+import * as anira from '@anira-project/anira';
 
 export const vendor = {
   preact,
@@ -13,4 +14,5 @@ export const vendor = {
   'preact/jsx-runtime': preactJsxRuntime,
   '@preact/signals': signals,
   'markdown-it': markdownIt,
+  '@anira-project/anira': anira,
 };
