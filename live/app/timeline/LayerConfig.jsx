@@ -275,7 +275,12 @@ const FORMAT = `A layer function is JS source of ONE expression evaluating to { 
 \`\`\`
 - Each param: desc, widget (a preact component), default, plus props passed to the widget (e.g. min/max/step, placeholder, label for the row title). The panel renders the widget with { ...props, value, onChange, default }.
 - In scope: the default widgets ${WIDGET_NAMES.join(', ')} (Knob and Slider take min/max/step; NumberInput min/max/step; TextInput placeholder), plus preact's h and Fragment for custom widgets, e.g. ({ value, onChange }) => h('input', { type: 'checkbox', checked: value, onChange: (e) => onChange(e.currentTarget.checked) }). No JSX, no imports.
-- The user's values survive edits for params whose name you keep. app/timeline/layerFunc.js exports runLayer(layer, ctx) to call transform.`;
+- The user's values survive edits for params whose name you keep. app/timeline/layerFunc.js exports runLayer(layer, ctx) to call transform.
+
+Tips for writing layer functions:
+- What ctx contains is defined by the callers of runLayer. Find them before writing a transform (in eval_js: vfs.list().filter((p) => /runLayer\\(/.test(vfs.read(p)))). If there are none, nothing applies layers yet: pick a minimal ctx contract, say so in the layer's desc and tell the user that wiring it up is a separate app change.
+- Data shapes are documented in the typedefs at the top of app/timeline/clips.js (clips of latent vectors, helper sampleAt) and app/timeline/layers.js (layer geometry in time and world y; layersAt finds the layers at a point). Read them rather than assuming.
+- Test a transform with chosen values without touching the user's: modules('app/timeline/layerFunc.js').runLayer({ ...layer, paramValues: { … } }, ctx) in eval_js, with the layer from modules('app/timeline/layers.js').layers.value.`;
 
 const unregister = registerExtension('layers', {
   label: (scope) => {
