@@ -9,6 +9,9 @@ export default defineConfig(({ mode }) => {
   // Ollama, vLLM, LM Studio, a gateway…). Requests go to `${baseURL}/chat/completions`.
   const baseURL = (get('OPENAI_BASE_URL') || 'https://api.openai.com/v1').replace(/\/+$/, '');
   const model = get('OPENAI_MODEL') || 'gpt-5';
+  // Output cap per reply (reasoning + text + tool-call arguments). gpt-5 allows 128k; lower it for
+  // models that reject a larger value.
+  const maxTokens = Number(get('OPENAI_MAX_TOKENS')) || 128000;
 
   return {
     plugins: [livePlugin({ dir: 'live' })],
@@ -18,6 +21,7 @@ export default defineConfig(({ mode }) => {
       // Not secret: the page calls it directly when no key is configured for the proxy.
       __REDAW_BASE_URL__: JSON.stringify(baseURL),
       __REDAW_MODEL__: JSON.stringify(model),
+      __REDAW_MAX_TOKENS__: JSON.stringify(maxTokens),
     },
     server: {
       // The key stays on the dev server; the page talks to /__llm.

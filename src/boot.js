@@ -14,7 +14,16 @@ installErrorCapture();
 
 const ENTRY = 'main.jsx';
 const isDev = import.meta.env.DEV;
-const env = { dev: isDev, proxy: isDev && __REDAW_PROXY__, baseURL: __REDAW_BASE_URL__, model: __REDAW_MODEL__, entry: ENTRY };
+// The __REDAW_*__ values are injected by vite.config.js `define` when the server starts. The guards
+// keep the bootstrap alive if a new one is served before the server has reloaded its config.
+const env = {
+  dev: isDev,
+  proxy: isDev && typeof __REDAW_PROXY__ !== 'undefined' && __REDAW_PROXY__,
+  baseURL: typeof __REDAW_BASE_URL__ !== 'undefined' ? __REDAW_BASE_URL__ : 'https://api.openai.com/v1',
+  model: typeof __REDAW_MODEL__ !== 'undefined' ? __REDAW_MODEL__ : 'gpt-5',
+  maxTokens: typeof __REDAW_MAX_TOKENS__ !== 'undefined' ? __REDAW_MAX_TOKENS__ : 128000,
+  entry: ENTRY,
+};
 
 const loader = new Loader({ vendor, entry: ENTRY });
 let runtime;

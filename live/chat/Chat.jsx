@@ -1,7 +1,7 @@
-import { useRef, useEffect } from 'preact/hooks';
+import { useRef, useLayoutEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import { vfs, env, vfsVersion } from '@live/runtime';
-import { chat, resetChat, save } from './store.js';
+import { chat, resetChat, openChat, save } from './store.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
 import './chat.css';
 
@@ -10,11 +10,29 @@ export default function Chat() {
   const messages = chat.messages.value;
   const draft = chat.draft.value;
 
-  // Stick to the bottom while new content arrives.
-  useEffect(() => {
+  // Pinned is decided from the user's last scroll, not after new content lands, so big chunks don't unpin.
+  const pinned = useSignal(true);
+  const lastUserCount = useRef(0);
+  const userCount = messages.filter((m) => m.role === 'user' && typeof m.content === 'string').length;
+  const collapsed = chat.collapsed.value;
+
+  useLayoutEffect(() => {
     const el = listRef.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 200) el.scrollTop = el.scrollHeight;
-  }, [messages, draft]);
+    if (!el) return;
+    if (userCount !== lastUserCount.current) pinned.value = true;
+    lastUserCount.current = userCount;
+    if (pinned.value) el.scrollTop = el.scrollHeight;
+  }, [messages, draft, collapsed, userCount]);
+
+  const onScroll = (e) => {
+    const el = e.currentTarget;
+    pinned.value = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  };
+  const jumpToEnd = () => {
+    pinned.value = true;
+    const el = listRef.current;
+    el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  };
 
   // tool_use id -> tool_result block, so results render inside their call.
   const results = new Map();
@@ -22,7 +40,6 @@ export default function Chat() {
     if (m.role === 'user' && Array.isArray(m.content))
       for (const b of m.content) if (b.type === 'tool_result') results.set(b.tool_use_id, b);
 
-  const collapsed = chat.collapsed.value;
   const r = clampRect(chat.rect.value);
   const style = {
     left: `${r.x}px`,
@@ -37,7 +54,7 @@ export default function Chat() {
       {!collapsed && (
         <>
           <Changes />
-          <div class="chat-list" ref={listRef}>
+          <div class="chat-list" ref={listRef} onScroll={onScroll}>
             {messages.length === 0 && <p class="chat-empty">Ask for a change to this page, including this chat.</p>}
             {messages.map((m, i) => (
               <Message key={i} message={m} results={results} />
@@ -45,6 +62,11 @@ export default function Chat() {
             {draft && <Message message={draft} results={results} streaming />}
             {chat.running.value && !draft && <div class="chat-pending">…</div>}
           </div>
+          {!pinned.value && (
+            <button class="chat-jump" onClick={jumpToEnd} title="Scroll to latest">
+              ↓ Latest
+            </button>
+          )}
           {chat.error.value && <div class="chat-error">{chat.error.value}</div>}
           <Composer />
           <div class="chat-resize chat-resize-sw" onPointerDown={(e) => startResize(e, 'sw')} />
@@ -59,9 +81,12 @@ const composerInput = () => document.querySelector('.chat-composer textarea');
 
 function onGlobalKey(e) {
   if (e.code !== 'Space' || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-  if (document.activeElement === composerInput()) return;
   e.preventDefault();
   e.stopPropagation();
+  if (document.activeElement === composerInput()) {
+    if (!chat.running.value) resetChat();
+    return;
+  }
   if (chat.collapsed.value) toggleCollapsed();
   // The composer only exists after the expanded panel has rendered.
   requestAnimationFrame(() => composerInput()?.focus());
@@ -136,6 +161,7 @@ function activity() {
 
 function Header() {
   const showSettings = useSignal(false);
+  const showHistory = useSignal(false);
   const status = activity();
   const collapsed = chat.collapsed.value;
   return (
@@ -164,11 +190,15 @@ function Header() {
         ))}
       </select>
       <button onClick={() => (showSettings.value = !showSettings.value)}>Settings</button>
+      <button onClick={() => (showHistory.value = !showHistory.value)} title="Previous conversations">
+        History
+      </button>
       <button onClick={resetChat} disabled={chat.running.value} title="Start a new conversation">
         New
       </button>
         </div>
       )}
+      {!collapsed && showHistory.value && <History onClose={() => (showHistory.value = false)} />}
       {!collapsed && showSettings.value && (
         <div class="chat-settings">
           <input
@@ -193,6 +223,38 @@ function Header() {
         </div>
       )}
     </header>
+  );
+}
+
+function chatLabel(c) {
+  if (c.changes.length) return c.changes.join(' · ');
+  return new Date(c.updated).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function History({ onClose }) {
+  const list = chat.index.value;
+  return (
+    <div class="chat-history">
+      {list.length === 0 && <p class="chat-empty">No saved conversations yet.</p>}
+      {list.map((c) => (
+        <button
+          key={c.id}
+          class={`chat-history-item${c.id === chat.id.value ? ' chat-history-current' : ''}`}
+          disabled={chat.running.value}
+          title={c.preview}
+          onClick={async () => {
+            await openChat(c.id);
+            onClose();
+          }}
+        >
+          <span class="chat-history-label">{chatLabel(c)}</span>
+          <span class="chat-history-meta">
+            {c.changes.length ? `${new Date(c.updated).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })} · ` : ''}
+            {c.preview}
+          </span>
+        </button>
+      ))}
+    </div>
   );
 }
 

@@ -2,6 +2,7 @@
 // Each layer gets a distinct colour and hatch angle at creation, so overlapping layers stay
 // distinguishable: colours are spread by the golden angle, hatches cycle through 8 directions.
 import { persist } from '@live/runtime';
+import * as db from '../../lib/db.js';
 import { selectedId as selectedClipId } from './clips.js';
 
 export const MIN_LAYER_HEIGHT = 12; // on-screen px, at any zoom
@@ -22,6 +23,14 @@ export const MIN_LAYER_HEIGHT = 12; // on-screen px, at any zoom
 export const layers = persist('timeline.layers', []);
 export const selectedLayerId = persist('timeline.selectedLayerId', null);
 const created = persist('timeline.layerCount', 0);
+const unbind = [
+  db.sync(layers, 'timeline.layers'),
+  db.sync(selectedLayerId, 'timeline.selectedLayerId'),
+  db.sync(created, 'timeline.layerCount'),
+];
+export function dispose() {
+  unbind.forEach((f) => f());
+}
 
 const HATCHES = [45, 135, 0, 90, 22.5, 112.5, 67.5, 157.5];
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));

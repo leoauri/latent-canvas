@@ -5,12 +5,19 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { persist } from '@live/runtime';
 import { view, timeToX, xToTime, placeTimeAt } from './view.js';
+import * as db from '../../lib/db.js';
 
 /** Where playback starts, seconds. */
 export const cue = persist('playhead.cue', 0);
 /** Current playback position, seconds (equals cue when stopped). */
 export const time = persist('playhead.time', 0);
 export const playing = persist('playhead.playing', false);
+const unbindCue = db.sync(cue, 'playhead.cue', {
+  hydrate: (t) => {
+    if (!playing.value) time.value = t;
+    return t;
+  },
+});
 
 // One loop at a time, even while two versions of this module coexist during a swap.
 const owner = persist('playhead.loopOwner', null);
@@ -50,6 +57,7 @@ export function seek(t) {
 }
 
 export function dispose() {
+  unbindCue();
   cancelAnimationFrame(raf);
   raf = 0;
 }

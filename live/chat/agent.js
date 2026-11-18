@@ -62,6 +62,9 @@ async function loop(target, signal) {
     const body = {
       model: chat.model.value || env.model,
       stream: true,
+      stream_options: { include_usage: true },
+      // Sent explicitly: a gateway's default cap (often ~4k) is far too low for whole-file edits.
+      max_completion_tokens: env.maxTokens,
       messages: [{ role: 'system', content: systemPrompt() }, ...toWire(chat.messages.value)],
       tools,
     };
@@ -98,7 +101,7 @@ async function loop(target, signal) {
       return;
     }
     if (!uses.length) {
-      if (message.stop_reason === 'max_tokens') chat.error.value = 'The reply hit the output token limit.';
+      if (message.stop_reason === 'max_tokens') chat.error.value = `The reply hit the output token limit (${describeUsage(message.usage)}).`;
       return;
     }
 
@@ -108,7 +111,7 @@ async function loop(target, signal) {
         results.push({ type: 'tool_result', tool_use_id: use.id, content: 'Cancelled by the user.', is_error: true });
       } else if (message.stop_reason === 'max_tokens') {
         // A truncated input can still look valid; never run it.
-        results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'Output hit the token limit, so this tool input was truncated and not run. Retry with smaller edits.' });
+        results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: `Output hit the token limit (${describeUsage(message.usage)}), so this tool input was truncated and not run. Retry with smaller edits.` });
       } else {
         results.push(await runTool(use));
       }
@@ -142,6 +145,7 @@ async function streamCompletion(target, body, signal, onUpdate) {
   let text = '';
   let refusal = '';
   let finish = null;
+  let usage = null;
   const calls = []; // by index: { id, name, args }
 
   const blocks = (final) => {
@@ -162,6 +166,7 @@ async function streamCompletion(target, body, signal, onUpdate) {
 
   const handle = (chunk) => {
     if (chunk.error) throw new APIError(chunk.error.code || 500, chunk.error.message || JSON.stringify(chunk.error));
+    if (chunk.usage) usage = chunk.usage; // final chunk, with include_usage
     const choice = chunk.choices?.[0];
     if (!choice) return;
     const d = choice.delta || {};
@@ -200,7 +205,13 @@ async function streamCompletion(target, body, signal, onUpdate) {
   calls.forEach((c, i) => c && !c.id && (c.id = `call_${Date.now().toString(36)}_${i}`));
   const stop_reason =
     refusal || finish === 'content_filter' ? 'refusal' : finish === 'length' ? 'max_tokens' : calls.length ? 'tool_use' : 'end_turn';
-  return { content: blocks(true), stop_reason, refusal };
+  return { content: blocks(true), stop_reason, refusal, usage };
+}
+
+function describeUsage(usage) {
+  if (!usage) return `cap ${env.maxTokens}; the server reported no usage`;
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens;
+  return `${usage.completion_tokens} output tokens${reasoning != null ? `, ${reasoning} of them reasoning` : ''}, cap ${env.maxTokens}`;
 }
 
 // ---- transcript -> Chat Completions messages -----------------------------------------------
