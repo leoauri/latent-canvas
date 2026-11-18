@@ -1,7 +1,7 @@
 // Infinite blank canvas over time. Touchpad: two-finger scroll pans, pinch zooms both axes.
 // Mouse: wheel pans (shift for horizontal), ctrl+wheel zooms, middle-drag pans.
 // Drag clips to move them, double-click empty space for a new clip, Delete removes the selection.
-// Clicks on empty space bubble to the container (the playhead uses them); clicks on clips don't.
+// Presses on empty space bubble to the container (the playhead uses them); presses on clips don't.
 import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { view, panBy, zoomAt, xToTime, worldToScreenY, screenToWorldY } from './view.js';
@@ -151,7 +151,8 @@ export default function TimelineCanvas() {
         selectedId.value = null;
         return;
       }
-      suppressClick = true; // a click on a clip is not a click on the timeline
+      e.stopPropagation(); // a press on a clip must not move the playhead
+      suppressClick = true;
       selectedId.value = c.id;
       bringToFront(c.id);
       drag = { mode: 'clip', id: c.id, x: e.clientX, y: e.clientY, t: c.t, cy: c.y };

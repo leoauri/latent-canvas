@@ -1,7 +1,7 @@
-// Playhead over the timeline's time axis. Left click on the timeline places it (the cue),
+// Playhead over the timeline's time axis. Left press/drag on the timeline places it (the cue),
 // Space plays from the cue, Space again stops and returns to the cue.
 // Renders a vertical line across its container; the container is whatever element
-// it is mounted in (it listens for clicks there, so clips can stop them).
+// it is mounted in (it listens for pointerdown there, so clips can stop it).
 import { useEffect, useRef } from 'preact/hooks';
 import { persist } from '@live/runtime';
 import { view, timeToX, xToTime, placeTimeAt } from './view.js';
@@ -62,20 +62,29 @@ export default function Playhead() {
 
   useEffect(() => {
     const host = ref.current.parentElement;
-    const onClick = (e) => {
+    const seekTo = (e) => seek(xToTime(e.clientX - host.getBoundingClientRect().left));
+    const onPointerDown = (e) => {
       if (e.button !== 0) return;
-      seek(xToTime(e.clientX - host.getBoundingClientRect().left));
+      seekTo(e);
+      const up = () => {
+        window.removeEventListener('pointermove', seekTo);
+        window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
+      };
+      window.addEventListener('pointermove', seekTo);
+      window.addEventListener('pointerup', up);
+      window.addEventListener('pointercancel', up);
     };
     const onKey = (e) => {
       if (e.code !== 'Space' || e.repeat || isTyping(e.target)) return;
       e.preventDefault();
       toggle();
     };
-    host.addEventListener('click', onClick);
+    host.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKey);
     if (playing.value) startLoop(); // resume after this module was reloaded mid-playback
     return () => {
-      host.removeEventListener('click', onClick);
+      host.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKey);
     };
   }, []);
