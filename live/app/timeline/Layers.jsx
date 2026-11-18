@@ -6,7 +6,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { view, timeToX, xToTime, worldToScreenY, screenToWorldY } from './view.js';
 import { addMaskArea, cutMaskArea, clearMask, setEmptyMask, isMasked, masked, maskTools, maskTool, closeMaskTools, BIG } from './layers.js';
-import { activeLayer, stackLayerById, stackLayerColor } from '../stack/stack.js';
+import { activeLayer, stackLayerById, stackLayerColor, hasMaskTools } from '../stack/stack.js';
 
 const MIN_PX = 4;
 function StripeIcon({ d }) {
@@ -104,9 +104,10 @@ export default function Layers() {
     };
   }, []);
 
-  // Close the toolbar when its layer is deleted.
+  // Close the toolbar when its layer is deleted or takes no masks.
   const open = maskTools.value;
-  const owner = open && stackLayerById(open.layerId);
+  const found = open && stackLayerById(open.layerId);
+  const owner = found && hasMaskTools(found) ? found : null;
   useEffect(() => {
     if (open && !owner) closeMaskTools();
   }, [open, owner]);
