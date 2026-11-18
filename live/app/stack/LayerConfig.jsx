@@ -114,7 +114,6 @@ function FunctionSection({ layer: l }) {
     <>
       {compiled?.meta?.desc && <p class="layer-panel-desc">{compiled.meta.desc}</p>}
       {compiled?.error && <p class="layer-panel-error">Function error: {compiled.error}</p>}
-      {!l.func && <p class="layer-panel-empty">No function yet. Use the chat bubble to have an agent write one.</p>}
       {params.length > 0 && (
         <div class="layer-params">
           {params.map(([name, p]) => (
@@ -122,7 +121,7 @@ function FunctionSection({ layer: l }) {
           ))}
         </div>
       )}
-      <details class="layer-func">
+      {(l.func || !l.model) && <details class="layer-func">
         <summary>
           Function{' '}
           <span class="layer-func-meta">
@@ -136,7 +135,7 @@ function FunctionSection({ layer: l }) {
             Open chat that wrote it{funcChatEntry?.preview ? `: ${funcChatEntry.preview.slice(0, 40)}` : ''}
           </button>
         )}
-      </details>
+      </details>}
     </>
   );
 }

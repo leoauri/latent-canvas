@@ -22,13 +22,14 @@ const TICK_MS = 5;
 /** layer id -> { start, t0, k, timer } */
 const runs = persist('latentPlayback.runs', () => new Map()).value;
 
-/** The latent frames layer `layerId` plays at time t: one { voice, data, dim } per clip there. */
+/** The latent frames layer `layerId` plays at time t: one { voice, data, dim, y } per clip there (y: the clip's middle). */
 export function framesAt(layerId, t) {
   const out = [];
   for (const c of clips.value) {
     if (c.recording || t < c.t || t >= c.t + duration(c)) continue;
-    if (!operatesAt(layerId, t, c.y + CLIP_HEIGHT / 2)) continue;
-    out.push({ voice: c.id, data: sampleAt(c, Math.min(c.length - 1, Math.floor((t - c.t) * c.rate))), dim: c.dim });
+    const y = c.y + CLIP_HEIGHT / 2;
+    if (!operatesAt(layerId, t, y)) continue;
+    out.push({ voice: c.id, data: sampleAt(c, Math.min(c.length - 1, Math.floor((t - c.t) * c.rate))), dim: c.dim, y });
   }
   return out;
 }
@@ -43,9 +44,10 @@ function begin(id) {
     if (now - (run.start + run.k * HOP) > ctx.sampleRate / 2) run.k = Math.floor((now - run.start) / HOP);
     while (run.start + run.k * HOP <= now) {
       const start = run.start + run.k * HOP;
-      for (const f of framesAt(id, run.t0 + (run.k * HOP) / ctx.sampleRate)) {
+      const t = run.t0 + (run.k * HOP) / ctx.sampleRate;
+      for (const f of framesAt(id, t)) {
         run.voices.add(f.voice);
-        emit(id, { kind: 'latent', data: f.data, dim: f.dim, rate: ctx.sampleRate / HOP, start, voice: f.voice });
+        emit(id, { kind: 'latent', data: f.data, dim: f.dim, rate: ctx.sampleRate / HOP, start, voice: f.voice, t, y: f.y });
       }
       run.k++;
     }

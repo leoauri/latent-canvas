@@ -25,7 +25,6 @@ export function ModelPanel({ layer: l }) {
   const active = !!st && st.units > lastUnits.current;
   if (st) lastUnits.current = st.units;
   const link = links.value[l.id];
-  const src = link?.sourceId ? stackLayerById(link.sourceId) : null;
   const side = (x) => (x.kind === 'audio' ? `audio (${x.samples} samples)` : `${x.channels}-d latent`);
   return (
     <div class="model-panel">
@@ -52,7 +51,6 @@ export function ModelPanel({ layer: l }) {
             <p class="layer-panel-error">{link.error}</p>
           ) : (
             <p class="layer-panel-desc">
-              {src ? `Input: ${src.name}` : `Nothing reaches it: put ${model.input.kind === 'audio' ? 'an open audio input' : 'an encoder'} behind it`} ·{' '}
               <span class={`model-activity${active ? ' model-activity-on' : ''}`} title="Output came out of the model in the last half second">
                 ●
               </span>{' '}

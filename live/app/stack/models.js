@@ -19,7 +19,8 @@ import { audioContext, inputs } from '../../lib/audio.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
 import { createTap, createMixer } from '../../lib/audioBlocks.js';
 import { stack, updateStackLayer, stackLayerById } from './stack.js';
-import { playing } from '../timeline/Playhead.jsx';
+import { playing, inputPoint } from '../timeline/Playhead.jsx';
+import { operatesAt } from '../timeline/layers.js';
 
 /**
  * @typedef {object} ModelRef  stored on an operator layer as `model`
@@ -39,6 +40,10 @@ import { playing } from '../timeline/Playhead.jsx';
  *   `start`: the context frame this unit belongs to. `voice`: which of the stream's parallel
  *   voices it belongs to (a clip, an input); a model keeps a separate state per voice.
  *   `flush`: those voices were cut off (a seek or stop): drop what is still on its way for them.
+ *   Optional `t` (timeline seconds) and `y` (world y): where on the timeline a unit comes from (clip
+ *   playback; live input enters at the playhead, mid-view; models' outputs keep their input's). An operator processes only units inside its
+ *   masks (or without a position) and passes the rest on as they are, as it does units its model
+ *   does not take; consumers ignore units of a kind they do not take.
  *
  * @typedef {object} Link  what reaches a consumer layer
  * @property {string|null} sourceId  the producer behind it
@@ -197,6 +202,8 @@ const stopModels = effect(() => {
 // ---- audio inputs as producers ---------------------------------------------------------
 
 // Every open audio-in layer streams its input as blocks, through a tap on its source node.
+// Taps left by a previous version of this module run its code: rebuild them with this one's.
+for (const [id, t] of taps) (t.destroyed = true, t.tap?.destroy(), taps.delete(id));
 const stopTaps = effect(() => {
   const open = new Map(stack.value.filter((l) => l.type === 'audio-in' && inputs.value[l.id]?.status === 'open').map((l) => [l.id, inputs.value[l.id].source]));
   for (const [id, t] of taps)
@@ -209,7 +216,7 @@ const stopTaps = effect(() => {
     if (taps.has(id)) continue;
     const t = { source, tap: null, destroyed: false };
     taps.set(id, t);
-    createTap(audioContext(), AUDIO_BLOCK, (data, start) => emit(id, { kind: 'audio', data, start, voice: `in:${id}` })).then((tap) => {
+    createTap(audioContext(), AUDIO_BLOCK, (data, start) => emit(id, { kind: 'audio', data, start, voice: `in:${id}`, ...inputPoint() })).then((tap) => {
       if (t.destroyed) return tap.destroy();
       t.tap = tap;
       source.connect(tap.node);
@@ -256,19 +263,23 @@ function modelVoices(l, model, prepare) {
         for (const key of msg.voices) voices.get(key)?.voice.end(), voices.delete(key);
         return emit(l.id, msg);
       }
+      if (msg.kind !== model.input.kind || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) return emit(l.id, msg);
       let v = voices.get(msg.voice);
       if (!v) {
-        const voice = model.voice((data, { missed, start }) =>
+        const sr = audioContext().sampleRate;
+        const voice = model.voice((data, { missed, start }) => {
+          const pos = v.tOff === undefined ? {} : { t: start / sr + v.tOff, y: v.y };
           emit(
             l.id,
             model.output.kind === 'audio'
-              ? { kind: 'audio', data, start, voice: msg.voice }
-              : { kind: 'latent', data, dim: model.output.channels, rate: model.rate, start, missed, voice: msg.voice },
-          ),
-        );
+              ? { kind: 'audio', data, start, voice: msg.voice, ...pos }
+              : { kind: 'latent', data, dim: model.output.channels, rate: model.rate, start, missed, voice: msg.voice, ...pos },
+          );
+        });
         v = { voice, feed: prepare((unit, start) => voice.push(unit, start)), last: 0 };
         voices.set(msg.voice, v);
       }
+      if (msg.t !== undefined) (v.tOff = msg.t - msg.start / audioContext().sampleRate), (v.y = msg.y);
       v.last = performance.now();
       v.feed(msg);
     },
@@ -299,7 +310,7 @@ function consumerOf(l, src, kind) {
   if (l.type === 'audio-out') {
     if (kind !== 'audio') return { error: `latents reach it from ${src.name}: put a decoder in between` };
     // Every voice is added into the mix at its own time.
-    return { handler: (msg) => (msg.kind === 'flush' ? mixers.get(l.id)?.flush() : mixers.get(l.id)?.push(msg.data, msg.start)) };
+    return { handler: (msg) => (msg.kind === 'flush' ? mixers.get(l.id)?.flush() : msg.kind === 'audio' && mixers.get(l.id)?.push(msg.data, msg.start)) };
   }
   if (l.type === 'latent') {
     // Pass-through: the latents reaching it go on to the layers in front, beside its own clips
@@ -324,6 +335,9 @@ const stopMixers = effect(() => {
 
 /** An audio output layer's mixer: { late, early, blocks, sounding }, or null. */
 export const mixerStats = (id) => mixers.get(id)?.stats() ?? null;
+
+// Handlers left by a previous version of this module run its code: rewire with this one's.
+for (const [id, sub] of subs) (sub.unsub(), sub.stop?.(), subs.delete(id));
 
 // Wire every consumer to the producer behind it.
 const stopWiring = effect(() => {

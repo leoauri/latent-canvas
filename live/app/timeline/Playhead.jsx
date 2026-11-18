@@ -5,8 +5,10 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { batch } from '@preact/signals';
 import { persist } from '@live/runtime';
-import { view, timeToX, xToTime, placeTimeAt } from './view.js';
+import { view, timeToX, xToTime, placeTimeAt, screenToWorldY } from './view.js';
 import * as db from '../../lib/db.js';
+import { inputs, peaks } from '../../lib/audio.js';
+import { stack } from '../stack/stack.js';
 
 /** Where playback starts, seconds. */
 export const cue = persist('playhead.cue', 0);
@@ -19,6 +21,11 @@ const unbindCue = db.sync(cue, 'playhead.cue', {
     return t;
   },
 });
+
+const viewHeight = persist('playhead.viewHeight', 0); // px of the timeline the playhead spans
+
+/** Where live input enters the timeline: the playhead, mid-view (the input dot). */
+export const inputPoint = () => ({ t: time.peek(), y: screenToWorldY(viewHeight.peek() / 2, view.peek()) });
 
 // One loop at a time, even while two versions of this module coexist during a swap.
 const owner = persist('playhead.loopOwner', null);
@@ -71,6 +78,30 @@ export function dispose() {
 const isTyping = (el) => !!el?.closest?.('input, textarea, select, button, [contenteditable]');
 const FOLLOW_MARGIN = 24; // px: while playing, page the view when the playhead leaves it
 
+const DOT_MIN = 6; // px diameter at silence
+const DOT_MAX = 40; // px diameter at full scale
+
+/** The live input's level as a dot: its size follows the loudest input's peak, smoothed. */
+function InputDot({ ids }) {
+  const ref = useRef(null);
+  const idsRef = useRef(ids);
+  idsRef.current = ids;
+  useEffect(() => {
+    let level = 0;
+    let frame = requestAnimationFrame(function step() {
+      if (!ref.current) return; // unmounted
+      const peak = Math.max(0, ...idsRef.current.flatMap((id) => peaks(id)));
+      level = peak > level ? level + (peak - level) * 0.5 : level * 0.85; // fast attack, slow release
+      const d = DOT_MIN + (DOT_MAX - DOT_MIN) * Math.sqrt(Math.min(1, level));
+      ref.current.style.width = ref.current.style.height = `${d}px`;
+      ref.current.style.margin = `${-d / 2}px 0 0 ${-d / 2}px`;
+      frame = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return <div ref={ref} class="playhead-input" title="Incoming audio input" />;
+}
+
 export default function Playhead() {
   const ref = useRef(null);
 
@@ -94,10 +125,13 @@ export default function Playhead() {
       e.preventDefault();
       toggle();
     };
+    const resize = new ResizeObserver(() => (viewHeight.value = host.clientHeight));
+    resize.observe(host);
     host.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKey);
     if (playing.value) startLoop(); // resume after this module was reloaded mid-playback
     return () => {
+      resize.disconnect();
       host.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKey);
     };
@@ -112,10 +146,14 @@ export default function Playhead() {
   });
 
   const v = view.value;
+  // Live audio input has no place on the timeline yet: it enters at the playhead, mid-view.
+  const liveInputs = stack.value.filter((l) => l.type === 'audio-in' && inputs.value[l.id]?.status === 'open').map((l) => l.id);
   return (
     <div ref={ref} class="playhead-layer">
       {playing.value && <div class="playhead playhead-cue" style={{ transform: `translateX(${timeToX(cue.value, v)}px)` }} />}
-      <div class="playhead" style={{ transform: `translateX(${timeToX(time.value, v)}px)` }} />
+      <div class="playhead" style={{ transform: `translateX(${timeToX(time.value, v)}px)` }}>
+        {liveInputs.length > 0 && <InputDot ids={liveInputs} />}
+      </div>
     </div>
   );
 }
