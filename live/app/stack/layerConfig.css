@@ -76,3 +76,11 @@
   white-space: pre;
 }
 .layer-panel .layer-func-chat { width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+
+.audio-input { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.layer-panel .audio-on { background: var(--layer); color: #fff; border-color: transparent; }
+.audio-meters { display: flex; flex-direction: column; gap: 2px; }
+.audio-meter { height: 4px; background: #ececf0; border-radius: 2px; overflow: hidden; }
+.audio-meter > div { height: 100%; width: 0; background: var(--layer); }
+.audio-meter > div.clip { background: #c62828; }

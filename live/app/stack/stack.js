@@ -15,6 +15,7 @@ import { layers as masks, removeLayer as removeMask } from '../timeline/layers.j
  * @property {Record<string, any>} [paramValues]  user-set parameter values
  * @property {number} [funcUpdated]  ms timestamp of the last function save
  * @property {string} [funcChat]  chat session that last saved the function
+ * @property {string} [inputDevice]  audio-in: chosen input deviceId (lib/audio.js); empty = default
  * Masks (app/timeline/layers.js, field layerId) limit where a layer operates.
  */
 

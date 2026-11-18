@@ -8,6 +8,7 @@ import { masksOf } from '../timeline/layers.js';
 import { compileLayerFunc, widgetOf, paramValues, WIDGET_NAMES } from './layerFunc.js';
 import { registerExtension } from '../../chat/extensions.js';
 import { chat, windows, findSession, newSession, openSession, scopeRunning } from '../../chat/store.js';
+import AudioInputControls from './AudioInput.jsx';
 import './layerConfig.css';
 
 export const layerScope = (id) => `layer:${id}`;
@@ -95,6 +96,7 @@ export function LayerDetails({ layer: l }) {
         onBlur={() => !l.name.trim() && updateStackLayer(l.id, { name: LAYER_TYPES[l.type].label })}
         onKeyDown={(e) => (e.key === 'Enter' || e.key === 'Escape') && e.currentTarget.blur()}
       />
+      {l.type === 'audio-in' && <AudioInputControls layer={l} />}
       {compiled?.meta?.desc && <p class="layer-panel-desc">{compiled.meta.desc}</p>}
       {compiled?.error && <p class="layer-panel-error">Function error: {compiled.error}</p>}
       {!l.func && <p class="layer-panel-empty">No function yet. Use the chat bubble to have an agent write one.</p>}
