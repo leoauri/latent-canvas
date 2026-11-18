@@ -55,6 +55,22 @@ export default function Chat() {
   );
 }
 
+const composerInput = () => document.querySelector('.chat-composer textarea');
+
+function onGlobalKey(e) {
+  if (e.code !== 'Space' || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (document.activeElement === composerInput()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (chat.collapsed.value) toggleCollapsed();
+  // The composer only exists after the expanded panel has rendered.
+  requestAnimationFrame(() => composerInput()?.focus());
+}
+window.addEventListener('keydown', onGlobalKey, true);
+export function dispose() {
+  window.removeEventListener('keydown', onGlobalKey, true);
+}
+
 const MIN_W = 280;
 const MIN_H = 200;
 const MARGIN = 16;
