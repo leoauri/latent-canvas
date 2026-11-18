@@ -7,7 +7,7 @@ import { batch } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { view, timeToX, xToTime, placeTimeAt, screenToWorldY } from './view.js';
 import * as db from '../../lib/db.js';
-import { inputs, peaks } from '../../lib/audio.js';
+import { inputs, peaks, audioContext } from '../../lib/audio.js';
 import { stack } from '../stack/stack.js';
 
 /** Where playback starts, seconds. */
@@ -46,7 +46,25 @@ function startLoop() {
   raf = requestAnimationFrame(tick);
 }
 
+// Where heard playback is: the audio clock at the speaker, from the context time playback (re)started.
+const clock = persist('playhead.clock', () => ({ anchor: null, delay: () => 0 })).value;
+/** fn() -> seconds between when a frame is scheduled and when an output plays it (its mixer delay). */
+export const setOutputDelay = (fn) => void (clock.delay = fn);
+const anchorAt = (t) => {
+  const ctx = audioContext();
+  clock.anchor = { ctx, at: ctx.currentTime, t0: t };
+};
+/** The playhead time being heard now (time itself is when frames are scheduled). */
+function heardTime(t) {
+  const a = clock.anchor;
+  if (!playing.peek() || !a || a.ctx.state !== 'running') return t;
+  const ts = a.ctx.getOutputTimestamp?.();
+  const out = ts?.performanceTime ? ts.contextTime + (performance.now() - ts.performanceTime) / 1000 : a.ctx.currentTime - (a.ctx.outputLatency || 0);
+  return Math.max(a.t0, a.t0 + out - a.at - clock.delay());
+}
+
 export function play() {
+  anchorAt(cue.value);
   batch(() => {
     time.value = cue.value;
     playing.value = true;
@@ -63,6 +81,7 @@ export function toggle() {
 /** Place the cue; while playing, playback jumps there. */
 export function seek(t) {
   // Together: effects reacting to the cue must see the time already there.
+  if (playing.peek()) anchorAt(t);
   batch(() => {
     cue.value = t;
     time.value = t;
@@ -137,12 +156,14 @@ export default function Playhead() {
     };
   }, []);
 
+  const shown = heardTime(time.value);
+
   // Follow playback.
   useEffect(() => {
     if (!playing.value) return;
     const width = ref.current.clientWidth;
-    const x = timeToX(time.value);
-    if (x < 0 || x > width - FOLLOW_MARGIN) placeTimeAt(time.value, FOLLOW_MARGIN);
+    const x = timeToX(shown);
+    if (x < 0 || x > width - FOLLOW_MARGIN) placeTimeAt(shown, FOLLOW_MARGIN);
   });
 
   const v = view.value;
@@ -151,7 +172,7 @@ export default function Playhead() {
   return (
     <div ref={ref} class="playhead-layer">
       {playing.value && <div class="playhead playhead-cue" style={{ transform: `translateX(${timeToX(cue.value, v)}px)` }} />}
-      <div class="playhead" style={{ transform: `translateX(${timeToX(time.value, v)}px)` }}>
+      <div class="playhead" style={{ transform: `translateX(${timeToX(shown, v)}px)` }}>
         {liveInputs.length > 0 && <InputDot ids={liveInputs} />}
       </div>
     </div>

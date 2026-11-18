@@ -19,7 +19,7 @@ import { audioContext, inputs } from '../../lib/audio.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
 import { createTap, createMixer } from '../../lib/audioBlocks.js';
 import { stack, updateStackLayer, stackLayerById } from './stack.js';
-import { playing, inputPoint } from '../timeline/Playhead.jsx';
+import { playing, inputPoint, setOutputDelay } from '../timeline/Playhead.jsx';
 import { operatesAt } from '../timeline/layers.js';
 
 /**
@@ -335,6 +335,12 @@ const stopMixers = effect(() => {
 
 /** An audio output layer's mixer: { late, early, blocks, sounding }, or null. */
 export const mixerStats = (id) => mixers.get(id)?.stats() ?? null;
+
+setOutputDelay(() => {
+  let d = 0;
+  for (const [id, m] of mixers) if (links.peek()[id]?.kind === 'audio') d = Math.max(d, m.stats()?.delay ?? m.delay ?? 0);
+  return d / audioContext().sampleRate;
+});
 
 // Handlers left by a previous version of this module run its code: rewire with this one's.
 for (const [id, sub] of subs) (sub.unsub(), sub.stop?.(), subs.delete(id));
