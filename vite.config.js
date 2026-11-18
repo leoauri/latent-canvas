@@ -21,7 +21,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     // anira locates its .wasm files relative to its own module; pre-bundling breaks that.
-    optimizeDeps: { exclude: ['@anira-project/anira'] },
+    optimizeDeps: { exclude: ['@anira-project/anira', 'onnxruntime-web'] },
+    // anira's worker module (src/anira-worker.js) must be one self-contained ES module.
+    worker: { format: 'es', rolldownOptions: { output: { codeSplitting: false } } },
     preview: { headers: isolation },
     plugins: [livePlugin({ dir: 'live' })],
     // The bootstrap itself is plain JS; JSX only appears in live modules (compiled in-page).

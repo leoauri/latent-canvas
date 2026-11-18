@@ -1,12 +1,12 @@
 // Latent recording: an armed latent layer records, while the transport plays, the latent stream
-// reaching it (from the nearest operator layer with a model behind it) into a new clip that
+// reaching it (from the nearest producer behind it, app/stack/models.js) into a new clip that
 // starts at the playhead. The clip grows on the timeline while it records and is saved when the
 // recording ends (stop, disarm, or the source going away).
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
 import { stack, stackLayerById } from './stack.js';
-import { onLatent, behind, runtimes } from './models.js';
+import { subscribe, producerBehind, producedKind } from './models.js';
 import { playing, time } from '../timeline/Playhead.jsx';
 import { clips, addClip, updateClip, removeClip, CLIP_HEIGHT, duration } from '../timeline/clips.js';
 import { masksOf } from '../timeline/layers.js';
@@ -15,7 +15,7 @@ const UPDATE_EVERY = 4; // frames between redraws of a growing clip
 
 /**
  * @typedef {object} Recording
- * @property {string} sourceId   operator layer
+ * @property {string} sourceId   the producer layer
  * @property {number} startFrame context frame at the playhead's start
  * @property {number} t0         playhead time at the start, seconds
  * @property {string|null} clipId  created with the first frame
@@ -27,9 +27,11 @@ const UPDATE_EVERY = 4; // frames between redraws of a growing clip
 /** @type {import('@preact/signals').Signal<Record<string, Recording>>} by latent layer id */
 export const recordings = persist('recorder.recordings', {});
 
-/** The operator feeding latent layer `l`: the nearest one behind it with a running model. */
-export const latentSourceOf = (l) =>
-  behind(stack.value.indexOf(l), (s) => s.type === 'operator' && runtimes.value[s.id]?.status === 'ready');
+/** The layer whose latents reach latent layer `l`, or null (nothing, or audio, reaches it). */
+export function latentSourceOf(l) {
+  const src = producerBehind(l);
+  return src && producedKind(src) === 'latent' ? src : null;
+}
 
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
@@ -44,7 +46,7 @@ function laneFor(l, t0) {
 function begin(l, sourceId) {
   const ctx = audioContext();
   const rec = { sourceId, startFrame: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), clipId: null, n: 0, missed: 0, buf: null };
-  rec.unsub = onLatent(sourceId, (frame, { missed, start, rate, dim }) => {
+  rec.unsub = subscribe(sourceId, ({ data: frame, missed, start, rate, dim }) => {
     if (start < rec.startFrame) return; // audio from before the recording started
     if (!rec.clipId) {
       rec.buf = new Float32Array(dim * Math.ceil(rate * 30));

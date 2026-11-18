@@ -60,9 +60,12 @@ export function insertLayer(type, index = stack.value.length) {
   return layer;
 }
 
-/** What a layer's card says it does: its type's io, or the model it runs. */
-export const layerIo = (l) =>
-  l.type === 'operator' && l.model ? `audio → latent · ${l.model.name}` : LAYER_TYPES[l.type].io;
+/** What a layer's card says it does: its type's io, or the model it runs (`model`: its runtime's model, once loaded). */
+export function layerIo(l, model) {
+  if (l.type !== 'operator' || !l.model) return LAYER_TYPES[l.type].io;
+  const kinds = model ? `${model.input.kind} → ${model.output.kind}` : 'loading';
+  return `${kinds} · ${l.model.name}`;
+}
 
 export function toggleArm(id) {
   const l = stackLayerById(id);

@@ -16,7 +16,7 @@ export default function Timeline() {
       <div class="timeline-hud">
         {sel
           ? `${sel.length} samples × ${sel.dim} dims @ ${sel.rate} Hz · ${duration(sel).toFixed(2)} s`
-          : 'Double-click: new clip · Shift+drag: new layer · Drag: move · Click: place playhead · Space: play · Pinch: zoom · Shift+Space: agent chat (again, when empty: new chat)'}
+          : 'Shift+drag: draw mask · Drag: move · Click: place playhead · Space: play · Pinch: zoom · Shift+Space: agent chat (again, when empty: new chat)'}
       </div>
     </div>
   );

@@ -7,6 +7,8 @@ import * as preactJsxRuntime from 'preact/jsx-runtime';
 import * as signals from '@preact/signals';
 import * as markdownIt from 'markdown-it';
 import * as anira from '@anira-project/anira';
+// The URL of anira's worker module (src/anira-worker.js), for Context.create({ workerModule }).
+import aniraWorkerUrl from './anira-worker.js?worker&url';
 
 export const vendor = {
   preact,
@@ -15,4 +17,5 @@ export const vendor = {
   '@preact/signals': signals,
   'markdown-it': markdownIt,
   '@anira-project/anira': anira,
+  'anira-worker': { url: aniraWorkerUrl },
 };

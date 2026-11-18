@@ -4,7 +4,7 @@ import {
   stack, LAYER_TYPES, typeColor, stackLayerColor, insertLayer, moveLayer, removeStackLayer,
   activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, stackLayerById,
 } from './stack.js';
-import { readDrop, attachModel } from './models.js';
+import { readDrop, attachModel, runtimes } from './models.js';
 import { recordings } from './recorder.js';
 import { layers as masks } from '../timeline/layers.js';
 import { ChatBubble, LayerDetails } from './LayerConfig.jsx';
@@ -155,7 +155,7 @@ export default function LayerStack() {
           <span class="stack-text">
             <span class="stack-name">{l.name}</span>
             <span class="stack-io">
-              {layerIo(l)} · {maskCount[l.id] ? `${maskCount[l.id]} mask${maskCount[l.id] > 1 ? 's' : ''}` : 'unmasked'}
+              {layerIo(l, runtimes.value[l.id]?.model)} · {maskCount[l.id] ? `${maskCount[l.id]} mask${maskCount[l.id] > 1 ? 's' : ''}` : 'unmasked'}
             </span>
           </span>
           {l.type === 'latent' && (
