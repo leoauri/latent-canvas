@@ -542,6 +542,12 @@ function Composer({ s }) {
             e.preventDefault();
             submit();
           }
+          // Space in an empty composer goes to the app's Space handler (play) instead of typing.
+          if (e.code === 'Space' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.repeat && !e.currentTarget.value) {
+            e.preventDefault();
+            e.currentTarget.blur();
+            document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }));
+          }
         }}
       />
       {s.running.value ? (
