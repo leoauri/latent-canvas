@@ -1,20 +1,47 @@
 import { useRef, useLayoutEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import { vfs, env, vfsVersion } from '@live/runtime';
-import { chat, resetChat, openChat, save } from './store.js';
+import {
+  chat,
+  save,
+  windows,
+  getSession,
+  findSession,
+  openWindow,
+  closeWindow,
+  focusWindow,
+  updateWindow,
+  topWindow,
+  showSession,
+  newChatIn,
+} from './store.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
 import './chat.css';
 
-export default function Chat() {
+export default function Chats() {
+  return (
+    <>
+      {windows.value.map((w) => (
+        <ChatWindow key={w.id} win={w} />
+      ))}
+      <button class="chat-fab" onClick={() => openWindow()} title="New agent window (Shift+Space focuses the top one)">
+        +
+      </button>
+    </>
+  );
+}
+
+function ChatWindow({ win }) {
+  const s = getSession(win.sessionId);
   const listRef = useRef(null);
-  const messages = chat.messages.value;
-  const draft = chat.draft.value;
+  const messages = s.messages.value;
+  const draft = s.draft.value;
+  const collapsed = win.collapsed;
 
   // Pinned is decided from the user's last scroll, not after new content lands, so big chunks don't unpin.
   const pinned = useSignal(true);
   const lastUserCount = useRef(0);
   const userCount = messages.filter((m) => m.role === 'user' && typeof m.content === 'string').length;
-  const collapsed = chat.collapsed.value;
 
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -22,7 +49,7 @@ export default function Chat() {
     if (userCount !== lastUserCount.current) pinned.value = true;
     lastUserCount.current = userCount;
     if (pinned.value) el.scrollTop = el.scrollHeight;
-  }, [messages, draft, collapsed, userCount]);
+  }, [messages, draft, collapsed, userCount, s]);
 
   const onScroll = (e) => {
     const el = e.currentTarget;
@@ -40,56 +67,90 @@ export default function Chat() {
     if (m.role === 'user' && Array.isArray(m.content))
       for (const b of m.content) if (b.type === 'tool_result') results.set(b.tool_use_id, b);
 
-  const r = clampRect(chat.rect.value);
+  const r = clampRect(win.rect);
   const style = {
     left: `${r.x}px`,
     top: `${r.y}px`,
     width: `${r.w}px`,
     height: collapsed ? 'auto' : `${r.h}px`,
+    zIndex: `${1000 + win.z}`,
   };
 
   return (
-    <aside class={`chat${collapsed ? ' chat-collapsed' : ''}`} style={style}>
-      <Header />
+    <aside
+      class={`chat${collapsed ? ' chat-collapsed' : ''}`}
+      style={style}
+      data-window={win.id}
+      onPointerDownCapture={(e) => {
+        focusWindow(win.id);
+        if (e.altKey) altGesture(e, win);
+      }}
+      onContextMenu={(e) => e.altKey && e.preventDefault()}
+    >
+      <Header win={win} s={s} />
       {!collapsed && (
         <>
-          <Changes />
+          <Changes s={s} />
           <div class="chat-list" ref={listRef} onScroll={onScroll}>
             {messages.length === 0 && <p class="chat-empty">Ask for a change to this page, including this chat.</p>}
             {messages.map((m, i) => (
               <Message key={i} message={m} results={results} />
             ))}
             {draft && <Message message={draft} results={results} streaming />}
-            {chat.running.value && !draft && <div class="chat-pending">…</div>}
+            {s.running.value && !draft && <div class="chat-pending">…</div>}
           </div>
           {!pinned.value && (
             <button class="chat-jump" onClick={jumpToEnd} title="Scroll to latest">
               ↓ Latest
             </button>
           )}
-          {chat.error.value && <div class="chat-error">{chat.error.value}</div>}
-          <Composer />
-          <div class="chat-resize chat-resize-sw" onPointerDown={(e) => startResize(e, 'sw')} />
-          <div class="chat-resize chat-resize-se" onPointerDown={(e) => startResize(e, 'se')} />
+          {s.error.value && <div class="chat-error">{s.error.value}</div>}
+          <Composer s={s} />
+          <div class="chat-resize chat-resize-sw" onPointerDown={(e) => startResize(e, win, 'sw')} />
+          <div class="chat-resize chat-resize-se" onPointerDown={(e) => startResize(e, win, 'se')} />
         </>
       )}
     </aside>
   );
 }
 
-const composerInput = () => document.querySelector('.chat-composer textarea');
+const composerOf = (windowId) => document.querySelector(`.chat[data-window="${windowId}"] .chat-composer textarea`);
 
 function onGlobalKey(e) {
-  if (e.code !== 'Space' || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-  e.preventDefault();
-  e.stopPropagation();
-  if (document.activeElement === composerInput()) {
-    if (!chat.running.value) resetChat();
+  // e.code, since Alt+W types a symbol on macOS.
+  if (e.code === 'KeyW' && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+    const id = document.activeElement?.closest?.('.chat')?.dataset.window ?? topWindow()?.id;
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeWindow(id);
     return;
   }
-  if (chat.collapsed.value) toggleCollapsed();
-  // The composer only exists after the expanded panel has rendered.
-  requestAnimationFrame(() => composerInput()?.focus());
+  if (e.code !== 'Space' || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+  const active = document.activeElement;
+  const inComposer = active?.matches?.('.chat-composer textarea');
+  if (inComposer) {
+    // Only an empty composer turns Shift+Space into "new chat"; otherwise it types a space.
+    if (active.value.trim()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const winId = active.closest('.chat').dataset.window;
+    const win = windows.value.find((x) => x.id === winId);
+    if (findSession(win.sessionId)?.running.value) {
+      const id = openWindow();
+      requestAnimationFrame(() => composerOf(id)?.focus());
+    } else newChatIn(winId);
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  let w = topWindow();
+  if (!w) {
+    const id = openWindow();
+    w = windows.value.find((x) => x.id === id);
+  } else if (w.collapsed) updateWindow(w.id, { collapsed: false });
+  // The composer only exists after the expanded window has rendered.
+  requestAnimationFrame(() => composerOf(w.id)?.focus());
 }
 window.addEventListener('keydown', onGlobalKey, true);
 export function dispose() {
@@ -110,95 +171,123 @@ function clampRect({ x, y, w, h }) {
   return { x, y, w, h };
 }
 
-function track(e, onMove) {
+function track(e, win, onMove, cursor) {
   e.preventDefault();
-  const start = clampRect(chat.rect.value);
+  const root = document.documentElement;
+  if (cursor) {
+    root.style.setProperty('--chat-gesture-cursor', cursor);
+    root.classList.add('chat-gesture');
+  }
+  const start = clampRect(win.rect);
   const sx = e.clientX;
   const sy = e.clientY;
-  const move = (ev) => (chat.rect.value = clampRect(onMove(start, ev.clientX - sx, ev.clientY - sy)));
+  const move = (ev) => updateWindow(win.id, { rect: clampRect(onMove(start, ev.clientX - sx, ev.clientY - sy)) }, false);
   const up = () => {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
-    save('redaw.chat.rect', chat.rect.value);
+    root.classList.remove('chat-gesture');
+    save('redaw.chat.windows', windows.value);
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
 }
 
-function startDrag(e) {
-  if (e.button !== 0 || e.target.closest('button, select, input, textarea, .chat-settings')) return;
-  track(e, (s, dx, dy) => ({ ...s, x: s.x + dx, y: s.y + dy }));
+function startDrag(e, win) {
+  if (e.button !== 0 || e.target.closest('button, select, input, textarea, .chat-settings, .chat-history')) return;
+  track(e, win, (s, dx, dy) => ({ ...s, x: s.x + dx, y: s.y + dy }));
 }
 
-function startResize(e, dir) {
+function startResize(e, win, dir) {
   e.stopPropagation();
-  track(e, (s, dx, dy) =>
+  track(e, win, (s, dx, dy) =>
     dir === 'sw' ? { ...s, x: s.x + Math.min(dx, s.w - MIN_W), w: s.w - dx, h: s.h + dy } : { ...s, w: s.w + dx, h: s.h + dy },
   );
 }
 
-function toggleCollapsed() {
-  chat.collapsed.value = !chat.collapsed.value;
-  save('redaw.chat.collapsed', chat.collapsed.value);
+// Alt+left drag moves; Alt+right drag resizes from the edges nearest the pointer.
+function altGesture(e, win) {
+  if (e.button !== 0 && e.button !== 2) return;
+  e.stopPropagation();
+  win = windows.value.find((w) => w.id === win.id);
+  if (e.button === 0) return track(e, win, (s, dx, dy) => ({ ...s, x: s.x + dx, y: s.y + dy }), 'move');
+  const r = clampRect(win.rect);
+  const left = e.clientX < r.x + r.w / 2;
+  const top = e.clientY < r.y + r.h / 2;
+  const cursor = left === top ? 'nwse-resize' : 'nesw-resize';
+  track(e, win, (s, dx, dy) => {
+    const ddx = left ? Math.min(dx, s.w - MIN_W) : dx;
+    const ddy = top ? Math.min(dy, s.h - MIN_H) : dy;
+    return {
+      x: left ? s.x + ddx : s.x,
+      y: top ? s.y + ddy : s.y,
+      w: left ? s.w - ddx : s.w + ddx,
+      h: top ? s.h - ddy : s.h + ddy,
+    };
+  }, cursor);
 }
+
+const toggleCollapsed = (win) => updateWindow(win.id, { collapsed: !win.collapsed });
 
 const toolLabel = (name) => name.replace('str_replace_based_edit_tool', 'edit');
 
-function activity() {
-  if (!chat.running.value) return chat.error.value ? { kind: 'error', text: chat.error.value.split('\n')[0] } : { kind: 'idle', text: 'Idle' };
-  const blocks = chat.draft.value?.content;
+function activity(s) {
+  if (!s.running.value) return s.error.value ? { kind: 'error', text: s.error.value.split('\n')[0] } : { kind: 'idle', text: 'Idle' };
+  const blocks = s.draft.value?.content;
   if (blocks?.length) {
     const b = blocks[blocks.length - 1];
     if (b.type === 'thinking') return { kind: 'busy', text: 'Thinking…' };
     if (b.type === 'text') return { kind: 'busy', text: 'Writing…' };
     if (b.type === 'tool_use') return { kind: 'busy', text: `Preparing ${toolLabel(b.name)}…` };
   }
-  const last = chat.messages.value[chat.messages.value.length - 1];
+  const last = s.messages.value[s.messages.value.length - 1];
   const use = last?.role === 'assistant' && Array.isArray(last.content) && last.content.findLast((b) => b.type === 'tool_use');
   if (use) return { kind: 'busy', text: `Running ${toolLabel(use.name)}${use.input?.path ? ` ${use.input.path}` : ''}…` };
   return { kind: 'busy', text: 'Waiting for model…' };
 }
 
-function Header() {
+function Header({ win, s }) {
   const showSettings = useSignal(false);
   const showHistory = useSignal(false);
-  const status = activity();
-  const collapsed = chat.collapsed.value;
+  const status = activity(s);
+  const collapsed = win.collapsed;
   return (
-    <header class="chat-header" onPointerDown={startDrag} onDblClick={(e) => !e.target.closest('button, select, input') && toggleCollapsed()}>
+    <header class="chat-header" onPointerDown={(e) => startDrag(e, win)} onDblClick={(e) => !e.target.closest('button, select, input, .chat-history') && toggleCollapsed(win)}>
       <strong>Agent</strong>
       <span class={`chat-status chat-status-${status.kind}`} title={status.text}>
         <span class="chat-status-dot" />
         {status.text}
       </span>
-      <button class="chat-collapse" onClick={toggleCollapsed} title={collapsed ? 'Expand' : 'Collapse'}>
+      <button class="chat-collapse" onClick={() => toggleCollapsed(win)} title={collapsed ? 'Expand' : 'Collapse'}>
         {collapsed ? '▾' : '▴'}
+      </button>
+      <button class="chat-close" onClick={() => closeWindow(win.id)} title="Close window (a running session keeps running; reopen it from History)">
+        ×
       </button>
       {!collapsed && (
         <div class="chat-header-row">
           <span class="chat-model">{chat.model.value || env.model}</span>
-      <select
-        value={chat.effort.value}
-        title="reasoning effort (default: not sent)"
-        onChange={(e) => {
-          chat.effort.value = e.currentTarget.value;
-          save('redaw.chat.effort', chat.effort.value);
-        }}
-      >
-        {EFFORTS.map((e) => (
-          <option value={e}>{e}</option>
-        ))}
-      </select>
-      <button onClick={() => (showSettings.value = !showSettings.value)}>Settings</button>
-      <button onClick={() => (showHistory.value = !showHistory.value)} title="Previous conversations">
-        History
-      </button>
-      <button onClick={resetChat} disabled={chat.running.value} title="Start a new conversation">
-        New
-      </button>
+          <select
+            value={chat.effort.value}
+            title="reasoning effort (default: not sent)"
+            onChange={(e) => {
+              chat.effort.value = e.currentTarget.value;
+              save('redaw.chat.effort', chat.effort.value);
+            }}
+          >
+            {EFFORTS.map((e) => (
+              <option value={e}>{e}</option>
+            ))}
+          </select>
+          <button onClick={() => (showSettings.value = !showSettings.value)}>Settings</button>
+          <button onClick={() => (showHistory.value = !showHistory.value)} title="Previous conversations">
+            History
+          </button>
+          <button onClick={() => newChatIn(win.id)} title="Start a new conversation in this window">
+            New
+          </button>
         </div>
       )}
-      {!collapsed && showHistory.value && <History onClose={() => (showHistory.value = false)} />}
+      {!collapsed && showHistory.value && <History win={win} onClose={() => (showHistory.value = false)} />}
       {!collapsed && showSettings.value && (
         <div class="chat-settings">
           <input
@@ -231,34 +320,42 @@ function chatLabel(c) {
   return new Date(c.updated).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-function History({ onClose }) {
+function History({ win, onClose }) {
   const list = chat.index.value;
+  const openIn = new Map(windows.value.map((w) => [w.sessionId, w.id]));
   return (
     <div class="chat-history">
       {list.length === 0 && <p class="chat-empty">No saved conversations yet.</p>}
-      {list.map((c) => (
-        <button
-          key={c.id}
-          class={`chat-history-item${c.id === chat.id.value ? ' chat-history-current' : ''}`}
-          disabled={chat.running.value}
-          title={c.preview}
-          onClick={async () => {
-            await openChat(c.id);
-            onClose();
-          }}
-        >
-          <span class="chat-history-label">{chatLabel(c)}</span>
-          <span class="chat-history-meta">
-            {c.changes.length ? `${new Date(c.updated).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })} · ` : ''}
-            {c.preview}
-          </span>
-        </button>
-      ))}
+      {list.map((c) => {
+        const running = findSession(c.id)?.running.value;
+        const elsewhere = openIn.has(c.id) && openIn.get(c.id) !== win.id;
+        return (
+          <button
+            key={c.id}
+            class={`chat-history-item${c.id === win.sessionId ? ' chat-history-current' : ''}`}
+            title={c.preview}
+            onClick={() => {
+              showSession(win.id, c.id);
+              onClose();
+            }}
+          >
+            <span class="chat-history-label">
+              {running && <span class="chat-history-running">● running · </span>}
+              {elsewhere && <span class="chat-history-meta">(open) </span>}
+              {chatLabel(c)}
+            </span>
+            <span class="chat-history-meta">
+              {c.changes.length ? `${new Date(c.updated).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })} · ` : ''}
+              {c.preview}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function Changes() {
+function Changes({ s }) {
   vfsVersion.value; // re-render on VFS changes
   const busy = useSignal(false);
   const pending = vfs.status();
@@ -267,7 +364,7 @@ function Changes() {
     busy.value = true;
     try {
       const r = await fn();
-      if (r && !r.ok && r.errors?.length) chat.error.value = r.errors.map((e) => `${e.path}: ${e.message}`).join('\n');
+      if (r && !r.ok && r.errors?.length) s.error.value = r.errors.map((e) => `${e.path}: ${e.message}`).join('\n');
     } finally {
       busy.value = false;
     }
@@ -300,13 +397,13 @@ function Changes() {
   );
 }
 
-function Composer() {
+function Composer({ s }) {
   const text = useSignal('');
   const submit = () => {
     const t = text.value.trim();
-    if (!t || chat.running.value) return;
+    if (!t || s.running.value) return;
     text.value = '';
-    sendMessage(t);
+    sendMessage(s, t);
   };
   return (
     <form
@@ -328,8 +425,8 @@ function Composer() {
           }
         }}
       />
-      {chat.running.value ? (
-        <button type="button" onClick={stop}>
+      {s.running.value ? (
+        <button type="button" onClick={() => stop(s)}>
           Stop
         </button>
       ) : (
@@ -371,7 +468,7 @@ function Block({ block, result, streaming }) {
       return (
         <details class={`blk-tool blk-tool-${state}`}>
           <summary>
-            <span class="blk-tool-name">{block.name.replace('str_replace_based_edit_tool', 'edit')}</span> {summary}
+            <span class="blk-tool-name">{toolLabel(block.name)}</span> {summary}
           </summary>
           <pre>{JSON.stringify(input, null, 2)}</pre>
           {result && <pre class="blk-result">{resultText(result)}</pre>}

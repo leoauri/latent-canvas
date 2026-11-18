@@ -1,6 +1,8 @@
-// Chat state. Signals come from persist(), so they survive reloads of any chat module —
-// a running agent turn (old module instance) and the re-rendered UI (new instance) share them.
-// Transcripts live in IndexedDB (lib/db.js); small UI prefs stay in localStorage.
+// Chat state, split into sessions (transcript + agent run state) and windows (views onto a session).
+// Both come from persist(), so they survive reloads of any chat module — a running agent turn
+// (old module instance) and the re-rendered UI (new instance) share them. Closing a window never
+// touches its session. Transcripts live in IndexedDB (lib/db.js); UI prefs stay in localStorage.
+import { signal } from '@preact/signals';
 import { persist, chatLog } from '@live/runtime';
 import * as db from '../lib/db.js';
 
@@ -21,53 +23,80 @@ export const save = (key, value) => {
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
 export const chat = {
-  /** Id of the open conversation. */
-  id: persist('chat.id', newId),
-  /** The transcript as block-shaped messages (append-only); agent.js converts it for the API. */
-  messages: persist('chat.messages', []),
   /** Saved conversations, newest first: { id, created, updated, changes: string[], preview }. */
   index: persist('chat.index', []),
-  /** Snapshot of the assistant message currently streaming, or null. */
-  draft: persist('chat.draft', null),
-  running: persist('chat.running', false),
-  error: persist('chat.error', null),
   effort: persist('chat.effort', () => load('redaw.chat.effort', 'default')),
   /** Model override; empty means the configured default (OPENAI_MODEL). */
   model: persist('chat.model', () => load('redaw.chat.model', '')),
   apiKey: persist('chat.apiKey', () => load('redaw.apiKey', '')),
-  controller: persist('chat.controller', null),
-  collapsed: persist('chat.collapsed', () => load('redaw.chat.collapsed', false)),
-  /** Floating panel geometry in px; null x/y means default (top-right). */
-  rect: persist('chat.rect', () => load('redaw.chat.rect', { x: null, y: null, w: 380, h: 560 })),
 };
-
-let loading = false;
 
 db.once('chats', async () => {
   chat.index.value = (await db.get('kv', 'chat.index')) ?? [];
-  // Transcript from before IndexedDB becomes the first saved chat.
-  const legacy = load('redaw.chat.messages', null);
-  localStorage.removeItem('redaw.chat.messages');
-  if (!chat.index.value.length) {
-    const messages = chat.messages.value.length ? chat.messages.value : legacy;
-    if (messages?.length) {
-      chat.messages.value = messages;
-      persistChat();
-      return;
-    }
-  }
-  const id = await db.get('kv', 'chat.currentId');
-  if (id) await openChat(id);
 });
 
-// Saves on every transcript change, whichever module version made it.
-let initial = true;
-const unsubscribe = chat.messages.subscribe((messages) => {
-  if (initial) return void (initial = false);
-  if (!loading && messages.length) persistChat();
-});
+// ---- sessions ------------------------------------------------------------------------------
+
+/** id -> { id, messages, draft, running, error, controller (signals), hydrated }. Not reactive itself. */
+const sessions = persist('chat.sessions', () => new Map()).value;
+const unsubs = [];
+
+function track(s) {
+  let first = true;
+  unsubs.push(
+    s.messages.subscribe((messages) => {
+      if (first) return void (first = false);
+      if (s.hydrated && messages.length) persistSession(s);
+    }),
+  );
+}
+for (const s of sessions.values()) track(s);
 export function dispose() {
-  unsubscribe();
+  unsubs.forEach((u) => u());
+}
+
+// The single-chat store kept its session in these signals; adopt it so a turn running in it stays visible.
+const legacyId = persist('chat.id', newId);
+if (!sessions.has(legacyId.value)) {
+  const s = {
+    id: legacyId.value,
+    messages: persist('chat.messages', []),
+    draft: persist('chat.draft', null),
+    running: persist('chat.running', false),
+    error: persist('chat.error', null),
+    controller: persist('chat.controller', null),
+    hydrated: true,
+  };
+  sessions.set(s.id, s);
+  track(s);
+}
+
+function createSession(id, hydrated) {
+  const s = { id, messages: signal([]), draft: signal(null), running: signal(false), error: signal(null), controller: signal(null), hydrated };
+  sessions.set(id, s);
+  track(s);
+  return s;
+}
+
+/** The session for id, loading its transcript from IndexedDB on first use. */
+export function getSession(id) {
+  let s = sessions.get(id);
+  if (s) return s;
+  s = createSession(id, false);
+  db.get('chats', id)
+    .then((stored) => {
+      if (stored && !s.messages.value.length) s.messages.value = stored.messages;
+    })
+    .catch((e) => console.warn('chat: loading session failed', e))
+    .finally(() => (s.hydrated = true));
+  return s;
+}
+
+export const findSession = (id) => sessions.get(id);
+export const runningSessions = () => [...sessions.values()].filter((s) => s.running.value);
+
+function newSession() {
+  return createSession(newId(), true).id;
 }
 
 /** Labels of the change sets successfully applied in a transcript, in order. */
@@ -83,9 +112,7 @@ export function changesOf(messages) {
   return out;
 }
 
-function persistChat() {
-  const id = chat.id.value;
-  const messages = chat.messages.value;
+function persistSession({ id, messages: { value: messages } }) {
   const prev = chat.index.value.find((c) => c.id === id);
   const now = Date.now();
   const entry = {
@@ -96,15 +123,14 @@ function persistChat() {
     preview: messages.find((m) => m.role === 'user' && typeof m.content === 'string')?.content.slice(0, 120) ?? '',
   };
   chat.index.value = [entry, ...chat.index.value.filter((c) => c.id !== id)];
-  return Promise.all([
-    db.put('chats', id, { id, messages }),
-    db.put('kv', 'chat.index', chat.index.value),
-    db.put('kv', 'chat.currentId', id),
-  ]).catch((e) => console.warn('chat: saving failed', e));
+  return Promise.all([db.put('chats', id, { id, messages }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
+    console.warn('chat: saving failed', e),
+  );
 }
 
-export function pushMessage(message) {
-  chat.messages.value = [...chat.messages.value, message];
+export function pushMessage(session, message) {
+  session.hydrated = true;
+  session.messages.value = [...session.messages.value, message];
   logTurn(message);
 }
 
@@ -115,22 +141,58 @@ function logTurn({ role, content }) {
     chatLog('agent', content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'));
 }
 
-export function resetChat() {
-  if (chat.running.value) return;
-  chat.id.value = newId();
-  chat.messages.value = [];
-  chat.error.value = null;
-  db.del('kv', 'chat.currentId').catch(() => {});
+// ---- windows -------------------------------------------------------------------------------
+
+const DEFAULT_RECT = { x: null, y: null, w: 380, h: 560 };
+
+/** Open windows: { id, sessionId, rect: { x, y, w, h }, collapsed, z }. */
+export const windows = persist('chat.windows', () => {
+  const saved = load('redaw.chat.windows', null);
+  if (saved) return saved;
+  const initial = [
+    { id: newId(), sessionId: legacyId.value, rect: load('redaw.chat.rect', DEFAULT_RECT), collapsed: load('redaw.chat.collapsed', false), z: 1 },
+  ];
+  save('redaw.chat.windows', initial);
+  return initial;
+});
+
+function setWindows(list, persistNow = true) {
+  windows.value = list;
+  if (persistNow) save('redaw.chat.windows', list);
 }
 
-export async function openChat(id) {
-  if (chat.running.value) return;
-  const stored = await db.get('chats', id);
-  if (!stored) return;
-  chat.id.value = id;
-  loading = true;
-  chat.messages.value = stored.messages;
-  loading = false;
-  chat.error.value = null;
-  db.put('kv', 'chat.currentId', id).catch(() => {});
+export function updateWindow(id, patch, persistNow = true) {
+  setWindows(windows.value.map((w) => (w.id === id ? { ...w, ...patch } : w)), persistNow);
+}
+
+export const topWindow = () => windows.value.reduce((a, w) => (!a || w.z > a.z ? w : a), null);
+
+/** Opens a window (on a new session by default) on top and returns its id. */
+export function openWindow(sessionId = newSession()) {
+  const n = windows.value.length;
+  const rect = { ...DEFAULT_RECT, x: window.innerWidth - DEFAULT_RECT.w - 16 - 24 * n, y: 16 + 24 * n };
+  const w = { id: newId(), sessionId, rect, collapsed: false, z: (topWindow()?.z ?? 0) + 1 };
+  setWindows([...windows.value, w]);
+  return w.id;
+}
+
+export function closeWindow(id) {
+  setWindows(windows.value.filter((w) => w.id !== id));
+}
+
+/** Raises a window; z stays 1..n so it can't climb past the FAB. */
+export function focusWindow(id) {
+  if (topWindow()?.id === id) return;
+  const order = [...windows.value].sort((a, b) => a.z - b.z).filter((w) => w.id !== id);
+  const rank = new Map(order.map((w, i) => [w.id, i + 1]));
+  setWindows(windows.value.map((w) => ({ ...w, z: w.id === id ? order.length + 1 : rank.get(w.id) })));
+}
+
+export function showSession(windowId, sessionId) {
+  getSession(sessionId);
+  updateWindow(windowId, { sessionId });
+}
+
+export function newChatIn(windowId) {
+  showSession(windowId, newSession());
 }

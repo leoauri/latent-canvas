@@ -30,33 +30,33 @@ function endpoint() {
   };
 }
 
-export async function sendMessage(text) {
-  if (chat.running.value) return;
-  chat.error.value = null;
-  pushMessage({ role: 'user', content: text });
+export async function sendMessage(s, text) {
+  if (s.running.value) return;
+  s.error.value = null;
+  pushMessage(s, { role: 'user', content: text });
   const controller = new AbortController();
-  chat.controller.value = controller;
-  chat.running.value = true;
+  s.controller.value = controller;
+  s.running.value = true;
   try {
-    await loop(endpoint(), controller.signal);
+    await loop(s, endpoint(), controller.signal);
   } catch (err) {
-    if (controller.signal.aborted) chat.error.value = 'Stopped.';
-    else if (err instanceof APIError && err.status === 401) chat.error.value = 'Authentication failed: check the API key.';
-    else if (err instanceof APIError && err.status === 429) chat.error.value = 'Rate limited: try again in a moment.';
-    else if (err instanceof APIError) chat.error.value = `API error ${err.status}: ${err.message}`;
-    else chat.error.value = String(err?.message || err);
+    if (controller.signal.aborted) s.error.value = 'Stopped.';
+    else if (err instanceof APIError && err.status === 401) s.error.value = 'Authentication failed: check the API key.';
+    else if (err instanceof APIError && err.status === 429) s.error.value = 'Rate limited: try again in a moment.';
+    else if (err instanceof APIError) s.error.value = `API error ${err.status}: ${err.message}`;
+    else s.error.value = String(err?.message || err);
   } finally {
-    chat.draft.value = null;
-    chat.running.value = false;
-    chat.controller.value = null;
+    s.draft.value = null;
+    s.running.value = false;
+    s.controller.value = null;
   }
 }
 
-export function stop() {
-  chat.controller.value?.abort();
+export function stop(s) {
+  s.controller.value?.abort();
 }
 
-async function loop(target, signal) {
+async function loop(s, target, signal) {
   let jsonRetries = 0;
   for (let step = 0; step < MAX_STEPS; step++) {
     const body = {
@@ -65,7 +65,7 @@ async function loop(target, signal) {
       stream_options: { include_usage: true },
       // Sent explicitly: a gateway's default cap (often ~4k) is far too low for whole-file edits.
       max_completion_tokens: env.maxTokens,
-      messages: [{ role: 'system', content: systemPrompt() }, ...toWire(chat.messages.value)],
+      messages: [{ role: 'system', content: systemPrompt() }, ...toWire(s.messages.value)],
       tools,
     };
     if (EFFORTS.includes(chat.effort.value) && chat.effort.value !== 'default') body.reasoning_effort = chat.effort.value;
@@ -77,12 +77,12 @@ async function loop(target, signal) {
         if (frame) return;
         frame = requestAnimationFrame(() => {
           frame = 0;
-          chat.draft.value = snapshot();
+          s.draft.value = snapshot();
         });
       });
     } finally {
       cancelAnimationFrame(frame);
-      chat.draft.value = null;
+      s.draft.value = null;
     }
 
     const uses = message.content.filter((b) => b.type === 'tool_use');
@@ -94,14 +94,14 @@ async function loop(target, signal) {
     jsonRetries = 0;
     for (const u of uses) u.input ??= {};
 
-    pushMessage({ role: 'assistant', content: message.content });
+    pushMessage(s, { role: 'assistant', content: message.content });
 
     if (message.stop_reason === 'refusal') {
-      chat.error.value = `The model declined${message.refusal ? `: ${message.refusal}` : ''}.`;
+      s.error.value = `The model declined${message.refusal ? `: ${message.refusal}` : ''}.`;
       return;
     }
     if (!uses.length) {
-      if (message.stop_reason === 'max_tokens') chat.error.value = `The reply hit the output token limit (${describeUsage(message.usage)}).`;
+      if (message.stop_reason === 'max_tokens') s.error.value = `The reply hit the output token limit (${describeUsage(message.usage)}).`;
       return;
     }
 
@@ -117,10 +117,10 @@ async function loop(target, signal) {
       }
     }
     // Every tool_use gets its result, even when stopping.
-    pushMessage({ role: 'user', content: results });
+    pushMessage(s, { role: 'user', content: results });
     if (signal.aborted) throw new DOMException('aborted', 'AbortError');
   }
-  chat.error.value = `Stopped after ${MAX_STEPS} steps.`;
+  s.error.value = `Stopped after ${MAX_STEPS} steps.`;
 }
 
 // ---- streaming ---------------------------------------------------------------------------
