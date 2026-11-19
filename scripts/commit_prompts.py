@@ -9,9 +9,10 @@
 Prompts come from Claude Code transcripts of this repo and from the page chat log
 (.redaw/chat.jsonl, written by the dev server). Candidates are the prompts written since
 the last run, plus prompts carried over because their work was still uncommitted.
-Sonnet picks which candidates contributed to the staged diff (copied here verbatim, it
-only returns ids), which still belong to uncommitted work (carried to the next commit),
-and, only if needed, agent decisions that explain a change.
+Prompts are split into numbered sentences, and Sonnet picks the sentences that contributed
+to the staged diff (copied here verbatim, it only returns ids; omissions are marked […]),
+which prompts still belong to uncommitted work (carried to the next commit), and, only if
+needed, agent decisions that explain a change.
 
 State lives in .git/commit-prompts/: pending.json is the carried-over set plus the scan
 cursor; prepare writes next.json, and post-commit promotes it, so an aborted commit
@@ -92,7 +93,9 @@ def prompt_text(content):
 def is_noise(text):
     s = text.lstrip()
     return s.startswith(("<local-command-", "<command-name>", "<command-message>", "Caveat: ", "[Request interrupted",
-                        "<task-notification>"))
+                        "<task-notification>",
+                        # compaction summaries; isCompactSummary is not set on every Claude Code version
+                        "This session is being continued from a previous conversation"))
 
 
 def from_transcripts(root, since):
@@ -175,17 +178,47 @@ def load_pending():
 SCHEMA = {
     "type": "object",
     "properties": {
-        "prompt_ids": {"type": "array", "items": {"type": "integer"}},
+        "sentence_ids": {"type": "array", "items": {"type": "string"}},
         "keep_ids": {"type": "array", "items": {"type": "integer"}},
         "decisions": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["prompt_ids", "keep_ids", "decisions"],
+    "required": ["sentence_ids", "keep_ids", "decisions"],
 }
+
+
+def split_sentences(text):
+    """Split into (sentence, separator-after) pairs; joining them all gives back the stripped text."""
+    parts = re.split(r"((?<=[.!?])[ \t]+|[ \t]*\n\s*)", text.strip())
+    pairs = [(parts[i], parts[i + 1] if i + 1 < len(parts) else "") for i in range(0, len(parts), 2)]
+    return [(s, sep) for s, sep in pairs if s.strip()]
+
+
+def numbered(prompt):
+    return "\n".join(f"[{prompt['id']}.{i + 1}] {s}" for i, (s, _) in enumerate(split_sentences(prompt["text"])))
+
+
+def excerpt(text, keep):
+    """The kept sentences (0-based indices) verbatim, with […] where sentences were left out."""
+    sents = split_sentences(text)
+    keep = sorted(i for i in keep if 0 <= i < len(sents))
+    out, prev = "", None
+    for i in keep:
+        if prev is None:
+            out += "[…] " if i > 0 else ""
+        elif i == prev + 1:
+            out += sents[prev][1]
+        else:
+            out += "\n[…]\n" if "\n" in sents[i - 1][1] else " […] "
+        out += sents[i][0]
+        prev = i
+    if prev is not None and prev < len(sents) - 1:
+        out += " […]"
+    return out
 
 
 def ask_sonnet(diff, rest, message, prompts, agent):
     timeline = sorted(
-        [{"ts": p["ts"], "s": f"[HUMAN PROMPT id={p['id']} via {p['source']}]\n{p['text']}"} for p in prompts]
+        [{"ts": p["ts"], "s": f"[HUMAN PROMPT id={p['id']} via {p['source']}]\n{numbered(p)}"} for p in prompts]
         + [{"ts": a["ts"], "s": f"[AGENT via {a['source']}]\n{a['text']}"} for a in agent],
         key=lambda x: x["ts"],
     )
@@ -194,13 +227,18 @@ def ask_sonnet(diff, rest, message, prompts, agent):
 Below are the staged diff (what this commit contains), the changes that stay uncommitted,
 the draft commit message, and a timeline of human prompts and agent replies from coding
 sessions. Some prompts may be older than the agent replies shown; they were carried over
-from earlier commits because their work was not committed yet.
+from earlier commits because their work was not committed yet. Each human prompt is split
+into numbered sentences: [3.2] is sentence 2 of prompt 3.
 
-1. prompt_ids: ids of every HUMAN PROMPT that contributed to the staged diff (asked for the
-   changes, shaped them, corrected them, or gave requirements they implement). Leave out
-   prompts that only asked questions or concerned other work.
-2. keep_ids: ids of HUMAN PROMPTs that contributed to the uncommitted changes. A prompt can be
-   in both lists if its work is split across staged and uncommitted changes.
+1. sentence_ids: ids (like "3.2") of every human prompt sentence that contributed to the
+   staged diff: it asked for the changes, shaped them, corrected them, or gave requirements
+   they implement. The selected sentences are quoted verbatim in the commit message, so pick
+   only those that carry information about this commit. Leave out sentences that only ask
+   questions, concern other work, or add no information, such as approving or confirming a
+   plan the agent proposed ("Yes.", "go ahead", "sounds good"): the intent is already in the
+   earlier prompt that led to the plan.
+2. keep_ids: integer ids of HUMAN PROMPTs that contributed to the uncommitted changes. A prompt
+   can count for both if its work is split across staged and uncommitted changes.
 3. decisions: usually empty. Only if the reason for a change in the staged diff cannot be
    understood from the selected prompts, add one short sentence per agent decision that explains it.
 
@@ -297,7 +335,7 @@ def prepare(msg_file, source):
     fresh, agent = collect(root, since)
     prompts = [{**p, "id": i + 1} for i, p in enumerate(sorted(carried + fresh, key=lambda p: p["ts"]))]
 
-    data = {"prompt_ids": [], "keep_ids": [], "decisions": []}
+    data = {"sentence_ids": [], "keep_ids": [], "decisions": []}
     if prompts:
         if not shutil.which("claude"):
             raise RuntimeError("`claude` (Claude Code CLI) not found on PATH")
@@ -306,8 +344,15 @@ def prepare(msg_file, source):
         data = ask_sonnet(diff, uncommitted_changes(), draft, prompts, agent)
 
     by_id = {p["id"]: p for p in prompts}
-    pick = lambda key: [by_id[i] for i in sorted(set(data.get(key, []))) if i in by_id]
-    chosen, kept = pick("prompt_ids"), pick("keep_ids")
+    kept = [by_id[i] for i in sorted(set(data.get("keep_ids", []))) if i in by_id]
+    sel = {}  # prompt id -> 0-based sentence indices; a bare "3" means the whole prompt
+    for sid in data.get("sentence_ids", []):
+        m = re.fullmatch(r"\s*(\d+)(?:\.(\d+))?\s*", str(sid))
+        if m and int(m[1]) in by_id:
+            p = int(m[1])
+            sel.setdefault(p, set()).update(
+                [int(m[2]) - 1] if m[2] else range(len(split_sentences(by_id[p]["text"]))))
+    chosen = [q for q in (excerpt(by_id[p]["text"], sel[p]) for p in sorted(sel)) if q.strip()]
     decisions = [d.strip() for d in data.get("decisions", []) if d.strip()]
 
     sd.mkdir(parents=True, exist_ok=True)
@@ -318,7 +363,7 @@ def prepare(msg_file, source):
 
     section = []
     if chosen:
-        section.append(HEADER + "\n\n" + "\n\n".join(quote(p["text"]) for p in chosen))
+        section.append(HEADER + "\n\n" + "\n\n".join(quote(q) for q in chosen))
     if decisions:
         section.append("Agent decisions:\n\n" + "\n".join(f"- {d}" for d in decisions))
     if section:
