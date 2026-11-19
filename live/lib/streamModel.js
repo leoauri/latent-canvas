@@ -13,6 +13,7 @@ import {
 } from '@anira-project/anira';
 import { aniraCore } from './anira.js';
 import { fixOnnxShapes } from './onnxShapes.js';
+import { createResampler } from './resample.js';
 
 const OVERDUE_MS = 300; // pop (and count as missed) a unit not available this long after its push
 const PREPARED_VOICES = 4; // handlers prepared at load, so that many streams start without a stall
@@ -106,8 +107,9 @@ export async function createStreamModel({ files, sampleRate }) {
   if (moreIn.length || moreOut.length) throw new Error('models with several streamed inputs or outputs are not supported yet');
   const input = sideOf(inSpec, 'input'), output = sideOf(outSpec, 'output');
   if (input.kind === output.kind) throw new Error(`${input.kind} to ${output.kind} models are not supported yet (only encoders and decoders)`);
-  if (meta.sample_rate && meta.sample_rate !== sampleRate)
-    throw new Error(`the model runs at ${meta.sample_rate} Hz, the audio context at ${sampleRate} Hz`);
+  // The model runs at its own rate inside; its audio is resampled to and from the context's.
+  const modelRate = meta.sample_rate || sampleRate;
+  const ratio = sampleRate / modelRate; // context frames per model sample
   const hop = input.kind === 'audio' ? input.samples : output.samples; // audio samples per latent frame
   const inSlot = v3.inputs.indexOf(inSpec), outSlot = v3.outputs.indexOf(outSpec);
 
@@ -117,7 +119,7 @@ export async function createStreamModel({ files, sampleRate }) {
   const extentsOf = (spec) => (spec.axes ?? []).map(([, n]) => n);
   shapes = { inputs: v3.inputs.map(extentsOf), outputs: v3.outputs.map(extentsOf) };
   const config = await load(JSON.stringify(v3));
-  const hostRate = (sampleRate * input.samples) / hop; // host blocks count the anchor's (the input's) units
+  const hostRate = (modelRate * input.samples) / hop; // host blocks count the anchor's (the input's) units
   const m = anira.module;
   const handlers = []; // every handler made, for destroy
 
@@ -162,7 +164,7 @@ export async function createStreamModel({ files, sampleRate }) {
   // The warm-up measured one inference running alone. Voices run in parallel and slow each other
   // down, so every voice gets a budget with headroom, up to most of a hop: a longer latency,
   // which the mixer's delay covers.
-  const hopMs = (1000 * hop) / sampleRate;
+  const hopMs = (1000 * hop) / modelRate;
   const budgetMs = Math.round(Math.min(0.9 * hopMs, Math.max(3 * plan.budgetMs, 0.5 * hopMs)) * 10) / 10;
   try {
     rePrepare(first, budgetMs);
@@ -281,11 +283,55 @@ export async function createStreamModel({ files, sampleRate }) {
   for (let i = 1; i < PREPARED_VOICES; i++) idle.push(grow());
   const poll = setInterval(() => busy.forEach((v) => v.drain()), 4);
   let alive = true;
+  const unitFrames = hop * ratio; // context frames per latent frame
+
+  /**
+   * Context-rate audio in chunks of any length -> model-rate units of input.samples, each with
+   * the context frame it starts at. A chunk not following on from the last restarts the stream.
+   */
+  function audioIn(pushUnit) {
+    let rs = null, s0 = 0, inCount = 0, unit = null, n = 0, outCount = 0;
+    return (data, start) => {
+      if (!rs || Math.abs(start - (s0 + inCount)) > 1) {
+        rs = ratio === 1 ? { push: (x) => x } : createResampler(sampleRate, modelRate);
+        (s0 = start), (inCount = 0), (unit = new Float32Array(input.samples)), (n = 0), (outCount = 0);
+      }
+      inCount += data.length;
+      const x = rs.push(data);
+      for (let i = 0; i < x.length; ) {
+        const k = Math.min(input.samples - n, x.length - i);
+        unit.set(x.subarray(i, i + k), n);
+        (n += k), (i += k);
+        if (n === input.samples) {
+          pushUnit(unit, Math.round(s0 + outCount * ratio));
+          outCount += input.samples;
+          (unit = new Float32Array(input.samples)), (n = 0);
+        }
+      }
+    };
+  }
+
+  /** Model-rate audio units out -> context-rate chunks, each with its context start frame. */
+  function audioOut(onOut) {
+    if (ratio === 1) return onOut;
+    let rs = null, s0 = 0, expect = null, count = 0;
+    return (data, info) => {
+      if (expect === null || Math.abs(info.start - expect) > 1) (rs = createResampler(modelRate, sampleRate)), (s0 = Math.round(info.start)), (count = 0);
+      expect = info.start + unitFrames;
+      const y = rs.push(data);
+      if (!y.length) return;
+      onOut(y, { ...info, start: s0 + count });
+      count += y.length;
+    };
+  }
 
   return {
-    input, output, hop, latency, sampleRate,
+    input, output, latency, modelRate,
+    /** Context frames per latent frame (not always whole when the rates differ). */
+    hop: unitFrames,
+    sampleRate,
     /** Latent frames per second. */
-    rate: sampleRate / hop,
+    rate: modelRate / hop,
     meta,
     /** The warm-up's figures (one inference alone), and the budget every voice runs with. */
     plan: plan && { budgetMs, measuredMs: plan.budgetMs, medianMs: plan.medianMs, rtFactor: plan.rtFactor, rtVerdict: plan.rtVerdict },
@@ -298,10 +344,13 @@ export async function createStreamModel({ files, sampleRate }) {
     voice(onOutput) {
       if (!alive) throw new Error('the model was destroyed');
       const v = idle.shift() ?? grow(); // the longest idle: its last stream's inferences are long done
-      v.begin(onOutput);
+      let push = (data, start) => v.push(data, start);
+      if (output.kind === 'audio') v.begin(audioOut(onOutput));
+      else v.begin(onOutput);
+      if (input.kind === 'audio') push = audioIn(push);
       busy.add(v);
       return {
-        push: (data, start) => v.push(data, start),
+        push,
         end() {
           if (!busy.delete(v)) return;
           v.end();

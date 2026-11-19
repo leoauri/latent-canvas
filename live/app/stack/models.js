@@ -253,25 +253,6 @@ const stopTaps = effect(() => {
 
 // ---- consumers -------------------------------------------------------------------------
 
-/** Re-blocks audio into units of `size` samples for fn(unit, start). */
-function reblock(size, fn) {
-  let buf = new Float32Array(size), n = 0, start = 0;
-  return ({ data, start: s }) => {
-    for (let i = 0; i < data.length; ) {
-      if (n === 0) start = s + i;
-      const k = Math.min(size - n, data.length - i);
-      buf.set(data.subarray(i, i + k), n);
-      n += k;
-      i += k;
-      if (n === size) {
-        fn(buf, start);
-        buf = new Float32Array(size);
-        n = 0;
-      }
-    }
-  };
-}
-
 /**
  * Resamples a latent stream at any rate onto a grid of one unit per `hop` context frames, as a
  * zero-order hold: a frame holds from its start for 1 / rate seconds, and every grid point in
@@ -349,7 +330,8 @@ function consumerOf(l, src, kind) {
     const model = runtimes.value[l.id]?.model;
     const want = model.input.kind;
     if (kind !== want) return { error: `the model takes ${want === 'audio' ? 'audio' : 'latents'}, but ${kind === 'audio' ? 'audio' : 'latents'} reach it from ${src.name}` };
-    if (want === 'audio') return modelVoices(l, model, (push) => reblock(model.input.samples, push));
+    // The model's voice re-blocks (and resamples) audio itself.
+    if (want === 'audio') return modelVoices(l, model, (push) => (msg) => push(msg.data, msg.start));
     const dim = runtimes.value[src.id]?.model?.output.channels;
     if (dim !== undefined && dim !== model.input.channels) return { error: `the model takes ${model.input.channels}-d latents, ${src.name} makes ${dim}-d` };
     // From clips the width is per clip: frames of another width are skipped, and reported.
