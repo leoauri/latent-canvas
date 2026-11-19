@@ -44,7 +44,8 @@ page.on('console', (m) => log(`[${m.type()}]`, m.text()));
 page.on('pageerror', (e) => log('[pageerror]', e.stack || e.message));
 page.on('crash', () => exit(1, 'page crashed'));
 
-await page.goto(`http://localhost:${port}/${hash}`);
+// ?store-only: fetch and keep model files for peers, but never run the models.
+await page.goto(`http://localhost:${port}/?store-only${hash}`);
 log('joined', hash.replace(/room=[^&]+/, 'room=…'));
 
 // What the peer is doing, once a minute: signaling connection, open peers, session load state.

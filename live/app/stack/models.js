@@ -183,6 +183,8 @@ function stopModel(id) {
   if (rt && !stackLayerById(id)) dropLegacyFiles(id, rt.ref);
 }
 
+const storeOnly = new URLSearchParams(location.search).has('store-only');
+
 async function startModel(l) {
   const ref = l.model;
   setIn(runtimes, l.id, { status: 'loading', ref });
@@ -206,6 +208,9 @@ async function startModel(l) {
       updateStackLayer(l.id, { model: { ...ref, hashes } });
       ref.hashes = hashes; // same `added`: the runtime carries on
     }
+    // A page opened with ?store-only (the always-on peer, scripts/peer.mjs) keeps the files for
+    // peers but never runs the model.
+    if (storeOnly) return void (current() && setIn(runtimes, l.id, { status: 'stored', ref }));
     const model = await createStreamModel({ files, sampleRate: audioContext().sampleRate });
     if (!current()) return model.destroy();
     setIn(runtimes, l.id, { status: 'ready', ref, model });
