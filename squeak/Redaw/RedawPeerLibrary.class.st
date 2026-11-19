@@ -29,6 +29,42 @@ RedawPeerLibrary class >> modulePath: aString [
 	self resetDefault
 ]
 
+{
+	#category : #primitives,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:46'
+}
+RedawPeerLibrary >> blob: aPeer hash: hashString into: aByteArray capacity: anInteger [
+	<cdecl: int64_t 'rp_blob_buf' (void* char* void* int64_t)>
+	^ self externalCallFailed
+]
+
+{
+	#category : #primitives,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:46'
+}
+RedawPeerLibrary >> blobFetch: aPeer hash: hashString [
+	<cdecl: int32_t 'rp_blob_fetch' (void* char*)>
+	^ self externalCallFailed
+]
+
+{
+	#category : #primitives,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:46'
+}
+RedawPeerLibrary >> blobStatus: aPeer hash: hashString into: aByteArray capacity: anInteger [
+	<cdecl: int64_t 'rp_blob_status_buf' (void* char* void* int64_t)>
+	^ self externalCallFailed
+]
+
+{
+	#category : #primitives,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:46'
+}
+RedawPeerLibrary >> blobWait: aPeer hash: hashString timeout: milliseconds [
+	<cdecl: int64_t 'rp_blob_wait' (void* char* uint32_t)>
+	^ self externalCallFailed
+]
+
 { #category : #primitives }
 RedawPeerLibrary >> close: aPeer [
 	<cdecl: void 'rp_close' (void*)>
@@ -75,6 +111,21 @@ RedawPeerLibrary >> open: linkString name: nameString store: storeStringOrNil [
 RedawPeerLibrary >> put: aPeer path: pathString json: jsonString [
 	<cdecl: int32_t 'rp_put' (void* char* char*)>
 	^ self externalCallFailed
+]
+
+{
+	#category : #helpers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:46'
+}
+RedawPeerLibrary >> readBytes: aBlock ifAbsent: absentBlock [
+	"aBlock fills a buffer and answers the data's full size (-1 = absent, -2 = error). Retry with a bigger buffer when it did not fit."
+	| buffer size |
+	buffer := ByteArray new: 4096.
+	[size := aBlock value: buffer value: buffer size.
+	 size > buffer size] whileTrue: [buffer := ByteArray new: size].
+	size = -1 ifTrue: [^ absentBlock value].
+	size < 0 ifTrue: [^ self error: 'redaw-peer: ', (self lastError ifNil: ['unknown error'])].
+	^ buffer copyFrom: 1 to: size
 ]
 
 { #category : #helpers }

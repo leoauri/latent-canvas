@@ -23,9 +23,23 @@ Class {
 		'name',
 		'store'
 	],
+	#classVars : [
+		'Resume',
+		'Stash'
+	],
 	#category : #'Redaw-Peer',
 	#'squeak_changestamp' : 'redaw 11/19/2026 12:00'
 }
+
+{
+	#category : #'class initialization',
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
+RedawPeer class >> initialize [
+	"Take part in image snapshots, so no native handle is ever used after a reload."
+	Smalltalk addToStartUpList: self.
+	Smalltalk addToShutDownList: self
+]
 
 { #category : #'instance creation' }
 RedawPeer class >> link: linkString [
@@ -44,6 +58,44 @@ RedawPeer class >> link: linkString name: nameString store: fileNameOrNil [
 	^ self new setLink: linkString name: nameString store: fileNameOrNil
 ]
 
+{
+	#category : #snapshots,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
+RedawPeer class >> shutDown: quitting [
+	"Before a snapshot. Stop the sessions' processes and take every native handle out of the peers: quitting, leave the rooms; otherwise keep the handles aside to put back in #startUp:."
+	Resume := (RedawSession allInstances select: [:s | s isRunning]) asArray.
+	Resume do: [:s | s stop].
+	quitting
+		ifTrue: [
+			Stash := nil.
+			Resume := nil.
+			self allInstancesDo: [:p | [p close] on: Error do: [:e | p forgetHandle]]]
+		ifFalse: [
+			Stash := IdentityDictionary new.
+			self allInstancesDo: [:p | p stashHandleIn: Stash]]
+]
+
+{
+	#category : #snapshots,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
+RedawPeer class >> startUp: resuming [
+	"After a snapshot. resuming: the image was started from the file; no handle from before is valid, nothing rejoins by itself (send #reopen). Otherwise (saved, still running): put the handles back and resume the sessions."
+	| stash resume |
+	stash := Stash.
+	resume := Resume.
+	Stash := nil.
+	Resume := nil.
+	resuming ifTrue: [
+		self allInstancesDo: [:p | p forgetHandle].
+		RedawSession allInstancesDo: [:s | s stop].
+		RedawPeerLibrary resetDefault.
+		^ self].
+	stash ifNotNil: [self allInstancesDo: [:p | p restoreHandleFrom: stash]].
+	resume ifNotNil: [resume do: [:s | s start]]
+]
+
 { #category : #accessing }
 RedawPeer >> at: pathString [
 	"The value at pathString parsed from JSON (JsonObject, Array, String, Number, Boolean), or nil."
@@ -58,24 +110,52 @@ RedawPeer >> at: pathString put: anObject [
 ]
 
 {
+	#category : #blobs,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:47'
+}
+RedawPeer >> blobAt: hashString [
+	"The blob's bytes (a ByteArray) if it is here completely, else nil (see #fetchBlob:)."
+	self checkOpen.
+	^ library
+		readBytes: [:buffer :capacity | library blob: handle hash: hashString squeakToUtf8 into: buffer capacity: capacity]
+		ifAbsent: [nil]
+]
+
+{
+	#category : #blobs,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:47'
+}
+RedawPeer >> blobStatus: hashString [
+	"Where a blob is: hash, state ('absent', 'waiting' for a peer that has it, 'fetching', 'done'), bytes, total, name, peers."
+	self checkOpen.
+	^ Json readFrom: (library
+		readText: [:buffer :capacity | library blobStatus: handle hash: hashString squeakToUtf8 into: buffer capacity: capacity]
+		ifAbsent: ['{}']) readStream
+]
+
+{
 	#category : #private,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/19/2026 15:12'
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
 }
 RedawPeer >> checkOpen [
-	"Native handles do not survive an image restart (they come back NULL): rejoin the room then."
-	handle ifNil: [self error: 'redaw-peer: closed'].
-	handle isNull ifTrue: [self reopen]
+	"Native handles are never used across an image save and reload: they are nilled before every snapshot (see RedawPeer class>>shutDown:). After a reload a peer stays closed until sent #reopen."
+	(handle isNil or: [handle isNull]) ifTrue: [
+		handle := nil.
+		library := nil.
+		self error: 'redaw-peer: closed (after an image restart, send #reopen)']
 ]
 
 {
 	#category : #lifecycle,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/19/2026 15:12'
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
 }
 RedawPeer >> close [
 	"Leave the room."
-	handle ifNil: [^ self].
-	handle isNull ifFalse: [library close: handle].
-	handle := nil
+	| h |
+	h := handle.
+	handle := nil.
+	(h notNil and: [h isNull not and: [library notNil]]) ifTrue: [library close: h].
+	library := nil
 ]
 
 { #category : #accessing }
@@ -84,9 +164,33 @@ RedawPeer >> document [
 	^ self at: ''
 ]
 
-{ #category : #status }
+{
+	#category : #blobs,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:47'
+}
+RedawPeer >> fetchBlob: hashString [
+	"Start fetching a blob ('sha256-...', e.g. a clip's dataHash) from the room, unless it is here or on its way. Answers immediately; see #blobStatus: and #blobAt:."
+	self checkOpen.
+	(library blobFetch: handle hash: hashString squeakToUtf8) = 0
+		ifFalse: [self error: 'redaw-peer: ', library lastError]
+]
+
+{
+	#category : #snapshots,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
+RedawPeer >> forgetHandle [
+	"After the image was started from a snapshot: the native peer of the old process is gone."
+	handle := nil.
+	library := nil
+]
+
+{
+	#category : #status,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
 RedawPeer >> isOpen [
-	^ handle notNil
+	^ handle notNil and: [handle isNull not]
 ]
 
 { #category : #status }
@@ -116,14 +220,26 @@ RedawPeer >> jsonAt: pathString put: jsonString [
 		ifFalse: [self error: 'redaw-peer: ', library lastError]
 ]
 
+{
+	#category : #blobs,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:47'
+}
+RedawPeer >> latentsAt: hashString dim: anInteger [
+	"A clip's latents (its dataHash blob: little-endian float32, frame-major) as an Array of FloatArrays, one per frame of anInteger values; nil if the blob is not here yet."
+	^ (self blobAt: hashString) ifNotNil: [:bytes | RedawClip framesFrom: bytes dim: anInteger]
+]
+
 { #category : #accessing }
 RedawPeer >> link [
 	^ link
 ]
 
-{ #category : #printing }
+{
+	#category : #printing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
 RedawPeer >> printOn: aStream [
-	aStream nextPutAll: 'a RedawPeer('; nextPutAll: (handle ifNil: ['closed'] ifNotNil: ['open']); nextPut: $)
+	aStream nextPutAll: 'a RedawPeer('; nextPutAll: (self isOpen ifTrue: ['open'] ifFalse: ['closed']); nextPut: $)
 ]
 
 { #category : #accessing }
@@ -141,6 +257,17 @@ RedawPeer >> removeKey: pathString [
 RedawPeer >> reopen [
 	"Join the room again (after an image restart). The document is fetched from the peers again, or loaded from the store file if one was given."
 	self setLink: link name: name store: store
+]
+
+{
+	#category : #snapshots,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
+RedawPeer >> restoreHandleFrom: aDictionary [
+	"After a snapshot, in the same VM: the native peer is still running; take its handle back."
+	(aDictionary at: self ifAbsent: [nil]) ifNotNil: [:pair |
+		handle := pair first.
+		library := pair second]
 ]
 
 { #category : #lifecycle }
@@ -169,6 +296,18 @@ RedawPeer >> setLink: linkString name: nameString store: storeStringOrNil [
 		self error: 'redaw-peer: ', (library lastError ifNil: ['cannot open'])]
 ]
 
+{
+	#category : #snapshots,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
+}
+RedawPeer >> stashHandleIn: aDictionary [
+	"Before a snapshot: take the native handle out of the peer, so the saved image has none in use."
+	handle ifNil: [^ self].
+	aDictionary at: self put: {handle. library}.
+	handle := nil.
+	library := nil
+]
+
 { #category : #status }
 RedawPeer >> status [
 	"Connection and sync status: self_id, doc, signal, peers (id, state, name, ...), heads, version, synced."
@@ -183,6 +322,19 @@ RedawPeer >> version [
 	"Increases whenever the document or the connection status changes."
 	self checkOpen.
 	^ library version: handle
+]
+
+{
+	#category : #blobs,
+	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:47'
+}
+RedawPeer >> waitBlob: hashString timeout: milliseconds [
+	"Fetch a blob and block (the whole VM) up to milliseconds for it. Answers its bytes, or nil on timeout."
+	| size |
+	self checkOpen.
+	size := library blobWait: handle hash: hashString squeakToUtf8 timeout: milliseconds.
+	size = -2 ifTrue: [^ self error: 'redaw-peer: ', library lastError].
+	^ size < 0 ifFalse: [self blobAt: hashString]
 ]
 
 { #category : #status }
