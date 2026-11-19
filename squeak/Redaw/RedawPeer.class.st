@@ -96,9 +96,13 @@ RedawPeer >> isSynced [
 	^ (library isSynced: handle) = 1
 ]
 
-{ #category : #accessing }
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'SqueakXR 11/19/2026 16:00'
+}
 RedawPeer >> jsonAt: pathString [
 	"The JSON text at pathString ('' = the whole document), or nil if nothing is there."
+	
 	self checkOpen.
 	^ library
 		readText: [:buffer :capacity | library get: handle path: pathString squeakToUtf8 into: buffer capacity: capacity]
