@@ -112,7 +112,7 @@ export function dispose() {
   raf = 0;
 }
 
-const isTyping = (el) => !!el?.closest?.('input, textarea, select, button, [contenteditable]');
+const isTyping = (el) => !!el?.closest?.('input, textarea, select, [contenteditable]');
 const FOLLOW_MARGIN = 24; // px: while playing, page the view when the playhead leaves it
 
 const DOT_MIN = 6; // px diameter at silence
