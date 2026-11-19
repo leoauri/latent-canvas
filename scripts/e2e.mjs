@@ -17,7 +17,13 @@
 //   node scripts/e2e.mjs <tab> screenshot      saves a PNG, prints its path
 //   node scripts/e2e.mjs <tab> console         console messages and page errors since the last call
 //   node scripts/e2e.mjs <tab> reload | close
+//   node scripts/e2e.mjs <tab> init '<js>'      run this script in the tab before each page load
 //   node scripts/e2e.mjs tabs
+//   node scripts/e2e.mjs log '<text>'          append a note to the event log
+//
+// Event log: e2e/out/<run>/events.jsonl gets one JSON line per event from every tab (console
+// messages, page errors, crashes, failed requests) plus notes from drivers ({ t, tab, kind, text }),
+// so a test can be followed in one place: tail -f e2e/out/<run>/events.jsonl.
 //
 // Tabs are created on first use. The live copy is e2e/out/<run>/live, so changes the tabs commit
 // never touch the repo. E2E_PORT (default 5199) picks the server port; the control port is one below.
@@ -53,6 +59,7 @@ async function main() {
   if (cmd === 'down') return print(await request({ op: 'down' }).catch((e) => e.message));
   if (cmd === 'status') return print(await request({ op: 'status' }));
   if (cmd === 'tabs') return print(await request({ op: 'tabs' }));
+  if (cmd === 'log') return print(await request({ op: 'log', args: rest }));
   if (!cmd || !rest.length) {
     console.log(fsSync.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\nimport ')[0]);
     process.exitCode = 2;
@@ -115,18 +122,31 @@ async function daemon(runDir) {
   const browser = await chromium.launch({ headless: true });
   const tabs = new Map(); // name -> { context, page, logs }
   let shots = 0;
+  const events = fsSync.createWriteStream(path.join(runDir, 'events.jsonl'), { flags: 'a' });
+  const emit = (tab, kind, text) => events.write(JSON.stringify({ t: Date.now(), tab, kind, text }) + '\n');
 
   async function tab(name) {
     if (tabs.has(name)) return tabs.get(name);
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     const t = { context, page, logs: [] };
-    page.on('console', (m) => t.logs.push(`[${m.type()}] ${m.text()}`));
-    page.on('pageerror', (e) => t.logs.push(`[pageerror] ${e.message}`));
+    page.on('console', (m) => {
+      t.logs.push(`[${m.type()}] ${m.text()}`);
+      if (t.logs.length > 5000) t.logs.splice(0, t.logs.length - 5000);
+      emit(name, m.type(), m.text());
+    });
+    page.on('pageerror', (e) => {
+      t.logs.push(`[pageerror] ${e.message}`);
+      emit(name, 'pageerror', loaderless(e.stack || e.message));
+    });
+    page.on('crash', () => emit(name, 'crash', 'page crashed'));
+    page.on('requestfailed', (r) => emit(name, 'requestfailed', `${r.url()} ${r.failure()?.errorText ?? ''}`));
+    page.on('load', () => emit(name, 'load', page.url()));
     tabs.set(name, t);
     return t;
   }
 
+  const loaderless = (s) => String(s).split('\n').slice(0, 8).join('\n');
   const asFn = (src) => `(async () => { const __v = (${src}); return typeof __v === 'function' ? await __v() : await __v; })()`;
   const json = (v) => JSON.parse(JSON.stringify(v ?? null));
 
@@ -177,6 +197,10 @@ async function daemon(runDir) {
     async console(t) {
       return t.logs.splice(0);
     },
+    async init(t, [src]) {
+      await t.context.addInitScript(src);
+      return true;
+    },
     async reload(t) {
       await t.page.reload();
       await t.page.waitForFunction(() => globalThis.__redaw?.runtime?.loader.get('main.jsx'), null, { timeout: 30000 });
@@ -190,7 +214,11 @@ async function daemon(runDir) {
     const reply = (o) => res.end(JSON.stringify(o));
     try {
       const { tab: name, op, args = [] } = JSON.parse(body);
-      if (op === 'status') return reply({ result: { url: URL_, liveDir: path.relative(ROOT, liveDir), runDir: path.relative(ROOT, runDir), tabs: [...tabs.keys()] } });
+      if (op === 'status') return reply({ result: { url: URL_, events: path.relative(ROOT, path.join(runDir, 'events.jsonl')), liveDir: path.relative(ROOT, liveDir), runDir: path.relative(ROOT, runDir), tabs: [...tabs.keys()] } });
+      if (op === 'log') {
+        emit(name ?? 'driver', 'note', args.join(' '));
+        return reply({ result: true });
+      }
       if (op === 'tabs') return reply({ result: [...tabs].map(([n, t]) => ({ tab: n, url: t.page.url() })) });
       if (op === 'down') {
         reply({ result: 'stopped' });
@@ -203,6 +231,7 @@ async function daemon(runDir) {
       if (op === 'close') {
         await tabs.get(name)?.context.close();
         tabs.delete(name);
+        emit(name, 'close', 'tab closed');
         return reply({ result: true });
       }
       if (!ops[op]) throw new Error(`unknown op ${op}`);

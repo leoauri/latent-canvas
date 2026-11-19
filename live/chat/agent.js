@@ -2,7 +2,8 @@
 // The transcript is stored as content blocks (text, thinking, tool_use / tool_result) so the UI
 // and the chat log stay provider-neutral; toWire() converts it to Chat Completions messages.
 import { env } from '@live/runtime';
-import { toolDefs, runTool } from './tools.js';
+import { toolDefs, runTool, showApprovalGuide, unpublishedEntries } from './tools.js';
+import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
 
@@ -33,6 +34,7 @@ function endpoint() {
 export async function sendMessage(s, text) {
   if (s.running.value) return;
   s.error.value = null;
+  dismissGuide(`chat:${s.id}`); // iterating on it: the agent attaches a fresh one
   pushMessage(s, { role: 'user', content: text });
   const controller = new AbortController();
   s.controller.value = controller;
@@ -50,6 +52,9 @@ export async function sendMessage(s, text) {
     s.running.value = false;
     s.controller.value = null;
   }
+  // A finished feature: show its onboarding guide while it waits for the user's approval.
+  if (!s.error.value && s.approval?.value?.guide && unpublishedEntries(s).length && !queueOf(s).value.length)
+    showApprovalGuide(s)?.catch((e) => console.warn('guide:', e));
   // After a stop or error the queue is held so the user can decide what to do with it.
   const queue = queueOf(s);
   if (!s.error.value && queue.value.length) {

@@ -41,7 +41,9 @@ function upsert(s) {
 
 /** Creates a session (a new document and room) and opens it. `seed` marks the doc to adopt local state. */
 export async function create({ name = 'Untitled session', signal: signalURL = room.defaultSignalURL(), seed = false } = {}) {
-  const h = repo.create({ meta: { name, created: Date.now(), seed }, state: {} });
+  // Containers exist from the start: maps two peers create concurrently don't merge (one wins, the
+  // other's contents are lost), so nobody may have to create them later.
+  const h = repo.create({ meta: { name, created: Date.now(), seed }, state: {}, code: { changes: {}, incorporated: {} } });
   const s = { doc: h.url, room: newRoomSecret(), signal: signalURL, name, created: Date.now(), lastOpened: Date.now() };
   upsert(s);
   await open(s.doc);
@@ -90,6 +92,15 @@ export async function open(docUrl) {
     };
     h.on('change', onChange);
     offChange = () => h.off('change', onChange);
+    // Older documents: add the containers in a change of their own, before anything goes into them.
+    const d0 = h.doc();
+    if (!d0?.state || !d0?.code?.changes || !d0?.code?.incorporated)
+      h.change((d) => {
+        d.state ??= {};
+        d.code ??= {};
+        d.code.changes ??= {};
+        d.code.incorporated ??= {};
+      });
     handle.value = h;
     status.value = 'ready';
     onChange();

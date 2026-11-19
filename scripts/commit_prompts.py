@@ -91,7 +91,8 @@ def prompt_text(content):
 
 def is_noise(text):
     s = text.lstrip()
-    return s.startswith(("<local-command-", "<command-name>", "<command-message>", "Caveat: ", "[Request interrupted"))
+    return s.startswith(("<local-command-", "<command-name>", "<command-message>", "Caveat: ", "[Request interrupted",
+                        "<task-notification>"))
 
 
 def from_transcripts(root, since):
@@ -104,7 +105,8 @@ def from_transcripts(root, since):
                     e = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if e.get("isSidechain") or e.get("isMeta") or "timestamp" not in e:
+                if (e.get("isSidechain") or e.get("isMeta") or e.get("isCompactSummary")
+                        or e.get("isVisibleInTranscriptOnly") or "timestamp" not in e):
                     continue
                 ts = iso_ts(e["timestamp"])
                 if ts <= since:

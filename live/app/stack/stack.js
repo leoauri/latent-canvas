@@ -2,8 +2,10 @@
 // through each layer towards the user (last index = front).
 import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
-import { clearMask } from '../timeline/layers.js';
+import { effect } from '@preact/signals';
+import { clearMask, layers as maskList, masked } from '../timeline/layers.js';
 import { shared } from '../../net/shared.js';
+import { handle } from '../../net/session.js';
 
 /**
  * @typedef {'audio-in' | 'latent' | 'operator' | 'audio-out'} StackLayerType
@@ -57,9 +59,32 @@ const unbind = [
     local: ['inputDevice', 'funcChat', 'armed'],
     seedFrom: () => db.get('kv', 'stack.layers'),
     empty: initialStack,
+    valid: (l) => typeof l.id === 'string' && !!LAYER_TYPES[l.type] && typeof l.name === 'string' && l.name.length < 1000,
   }),
   db.sync(activeLayerId, 'stack.activeLayerId'),
+  orphanSweeper(),
 ];
+
+// A peer can mask a layer while another removes it: the masks outlive their layer. Masks of layers
+// that are gone from the document (not merely unreadable here) are removed, after a pause so a
+// session switch or a sync in progress settles first. Peers doing this at once is harmless.
+function orphanSweeper() {
+  let timer = 0;
+  const sweep = () => {
+    const items = handle.peek()?.doc()?.state?.['stack.layers']?.items;
+    if (!items) return;
+    const gone = new Set([...maskList.peek().map((m) => m.layerId), ...Object.keys(masked.peek())].filter((id) => id && !items[id]));
+    for (const id of gone) clearMask(id);
+  };
+  const off = effect(() => {
+    stack.value;
+    maskList.value;
+    masked.value;
+    clearTimeout(timer);
+    timer = setTimeout(sweep, 1500);
+  });
+  return () => (off(), clearTimeout(timer));
+}
 export function dispose() {
   unbind.forEach((f) => f());
 }

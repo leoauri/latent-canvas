@@ -144,3 +144,8 @@
 .chat-history-row .chat-history-item { flex: 1; min-width: 0; }
 .chat .chat-history-delete { padding: 0 6px; color: var(--muted); }
 .chat-changes .chat-trial span { color: #f5a623; }
+
+/* A chat's committed change waiting for the user's approval (publishing). */
+.chat-changes .chat-approve span { color: oklch(0.5 0.12 75); font-weight: 600; }
+.chat-changes .chat-approve-btn { background: oklch(0.88 0.17 95); color: #1b1b1b; border-color: transparent; font-weight: 600; }
+.msg-note { opacity: 0.7; font-style: italic; font-size: 0.9em; }

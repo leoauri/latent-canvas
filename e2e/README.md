@@ -16,6 +16,13 @@ node scripts/e2e.mjs down
 Run `node scripts/e2e.mjs` without arguments for every command. In the page,
 `__redaw.runtime.loader.get('<path under live/>')` is a live module's namespace.
 
+Every tab's console, page errors (with stacks), crashes and failed requests also go to one central
+log, `e2e/out/<run>/events.jsonl`. Each line is `{t, tab, kind, text}`, and `status` names the file.
+`node scripts/e2e.mjs log '<text>'` adds a note to that log. The `init` op adds a script that runs
+before the page's own code in a tab: `{tab, op: 'init', script}` on the control port.
+
+`stress.mjs` (see `stress/README.md`) is a scripted multi-peer stress test on the same rig.
+
 ## Briefing a test agent
 
 > Run the scenario in `e2e/scenarios/<name>.md` with the rig `node scripts/e2e.mjs` (run it without

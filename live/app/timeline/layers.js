@@ -38,8 +38,13 @@ export function closeMaskTools() {
 }
 // Shared with the session (net/shared.js); the kv records are only read once, to migrate.
 const unbind = [
-  shared('timeline.layers', layers, { kind: 'list', label: 'edit masks', seedFrom: () => db.get('kv', 'timeline.layers') }),
-  shared('timeline.masked', masked, { kind: 'map', label: 'toggle mask', seedFrom: () => db.get('kv', 'timeline.masked') }),
+  shared('timeline.layers', layers, {
+    kind: 'list',
+    label: 'edit masks',
+    seedFrom: () => db.get('kv', 'timeline.layers'),
+    valid: (m) => ['t', 'dur', 'y', 'h'].every((f) => Number.isFinite(m[f])) && (m.layerId === null || typeof m.layerId === 'string'),
+  }),
+  shared('timeline.masked', masked, { kind: 'map', label: 'toggle mask', seedFrom: () => db.get('kv', 'timeline.masked'), valid: (v) => v === true }),
 ];
 export function dispose() {
   unbind.forEach((f) => f());

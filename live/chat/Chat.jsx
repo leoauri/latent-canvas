@@ -19,6 +19,9 @@ import {
 } from './store.js';
 import * as changes from '../net/changes.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
+import { approve, unpublishedEntries, showApprovalGuide, showingGuideOf } from './tools.js';
+import { requestTrial } from '../net/trials.js';
+import { dismissGuide } from '../ui/guide/guide.js';
 // Loaded with the chat so other modules (e.g. a Changes window) can hand tasks to the agent.
 export { startAgentTask } from './tasks.js';
 import { scopeLabel } from './extensions.js';
@@ -361,9 +364,32 @@ function Changes({ s }) {
   const labelOf = (id) =>
     id.startsWith('chat:') && findSession(id.slice(5)) ? sessionTitle(findSession(id.slice(5))) : vfs.overlays().find((o) => o.id === id)?.label ?? id;
   const trialLabel = trial && labelOf(trial.overlayId);
-  if (!pending.length && !unassigned.length && !trial && !last) return null;
+  const unpublished = unpublishedEntries(s);
+  const approval = s.approval.value;
+  const showing = showingGuideOf(s);
+  if (!pending.length && !unassigned.length && !trial && !last && !unpublished.length) return null;
   return (
     <div class="chat-changes">
+      {unpublished.length > 0 && (
+        <div class="chat-approve" title="Committed here, not yet published to the session. Ask for more changes first if you like: they join this change.">
+          <span>
+            Ready: “{approval?.label || labelOf(ovId)}”{unpublished.length > 1 ? ` (${unpublished.length} commits)` : ''}
+          </span>
+          {approval?.guide && (
+            <button disabled={busy.value} onClick={() => (showing ? dismissGuide(`chat:${s.id}`) : showApprovalGuide(s))}>
+              {showing ? 'Hide guide' : 'Show guide'}
+            </button>
+          )}
+          <button
+            class="chat-approve-btn"
+            disabled={busy.value || s.running.value}
+            title="Hide the guide and publish this chat's committed changes to the session as one change"
+            onClick={() => run(async () => approve(s))}
+          >
+            Approve & publish
+          </button>
+        </div>
+      )}
       {trial && (
         <div class="chat-trial" title={`Overlay ${trial.overlayId} runs live without being committed`}>
           <span>
@@ -393,9 +419,9 @@ function Changes({ s }) {
           >
             Apply
           </button>
-          {!trial && (
-            <button disabled={busy.value} onClick={() => run(() => own.trial())} title="Run these edits live without committing">
-              Try
+          {trial?.overlayId !== ovId && (
+            <button disabled={busy.value} onClick={() => run(() => requestTrial(own.id, () => own.trial(), { label: labelOf(ovId), kind: 'agent' }))} title={trial ? 'Another preview is running: start this one when it ends' : 'Run these edits live without committing'}>
+              {trial ? 'Queue try' : 'Try'}
             </button>
           )}
           <button disabled={busy.value} onClick={() => own.discard()}>
@@ -543,8 +569,9 @@ function Message({ message, results, streaming }) {
   if (typeof content === 'string') return <div class={`msg msg-${role}`}>{content}</div>;
   const blocks = content.filter((b) => b.type !== 'tool_result');
   if (!blocks.length) return null;
+  const note = blocks.every((b) => b.note);
   return (
-    <div class={`msg msg-${role}${streaming ? ' msg-streaming' : ''}`}>
+    <div class={`msg msg-${role}${streaming ? ' msg-streaming' : ''}${note ? ' msg-note' : ''}`}>
       {blocks.map((b, i) => (
         <Block key={i} block={b} result={b.type === 'tool_use' ? results.get(b.id) : null} streaming={streaming} />
       ))}

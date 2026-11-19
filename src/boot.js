@@ -28,6 +28,9 @@ const env = {
 
 const loader = new Loader({ vendor, entry: ENTRY });
 let runtime;
+// A page can be kept off the shared live/ folder after reading it once (e2e stress tabs, which must
+// get each other's code only by publishing): set globalThis.__REDAW_NO_DISK__ before boot.
+const useDisk = isDev && !globalThis.__REDAW_NO_DISK__;
 const vfs = new VFS({ loader, disk: isDev, bundle: liveBundle, runCheck: (code) => runtime.runScript(code) });
 runtime = createRuntime({ vfs, loader, env });
 vendor['@live/runtime'] = runtime;
@@ -53,7 +56,7 @@ function Recovery({ title, detail }) {
     h('button', { onClick, style: 'margin-right:8px;padding:6px 12px;font:inherit;cursor:pointer' }, label);
   return h(
     'div',
-    { style: 'font:14px/1.5 system-ui;padding:24px;max-width:900px;margin:auto;color:#222;background:#fff;min-height:100vh' },
+    { 'data-recovery': title, style: 'font:14px/1.5 system-ui;padding:24px;max-width:900px;margin:auto;color:#222;background:#fff;min-height:100vh' },
     h('h2', { style: 'color:#b00020;margin-top:0' }, title),
     h('pre', { style: 'white-space:pre-wrap;background:#f6f6f6;padding:12px;border-radius:6px;max-height:50vh;overflow:auto' }, detail),
     h('p', null, last ? `Last applied change: ${last.label} (${new Date(last.at).toLocaleTimeString()})` : 'No history to revert.'),
@@ -102,7 +105,8 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-if (import.meta.hot) import.meta.hot.on('live:change', (data) => vfs.external(data));
+if (import.meta.hot && useDisk) import.meta.hot.on('live:change', (data) => vfs.external(data));
 
 await vfs.init();
+if (!useDisk) vfs.disk = false;
 await start();

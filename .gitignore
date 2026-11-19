@@ -24,3 +24,5 @@ Thumbs.db
 
 # e2e runs (scripts/e2e.mjs)
 e2e/out/
+
+scripts/__pycache__

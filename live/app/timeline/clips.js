@@ -53,6 +53,12 @@ const unbind = [
     kind: 'list',
     label: 'edit clips',
     keepLocal: (c) => c.recording || !hashes.value.has(c.data),
+    valid: (c) =>
+      ['t', 'y'].every((f) => Number.isFinite(c[f])) &&
+      c.rate > 0 && Number.isFinite(c.rate) &&
+      Number.isInteger(c.dim) && c.dim > 0 && c.dim <= 4096 &&
+      Number.isInteger(c.length) && c.length >= 0 &&
+      typeof c.dataHash === 'string',
     encode: ({ data, recording, ...m }) => ({ ...m, dataHash: hashes.value.get(data) }),
     decode: ({ dataHash, ...m }, prev) => {
       if (!dataHash) return null;

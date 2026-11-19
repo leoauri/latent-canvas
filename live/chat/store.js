@@ -41,7 +41,8 @@ db.once('chats', async () => {
 
 /**
  * id -> { id, scope, messages, draft, running, error, controller (signals), hydrated,
- *         overlayId (explicit working overlay, or null = 'chat:<id>'), title, published (signal: vfs history ids already published) }.
+ *         overlayId (explicit working overlay, or null = 'chat:<id>'), title, published (signal: vfs history ids already published),
+ *         approval (signal: { label, intent, follows, guide } of the change waiting for the user's approval, or null) }.
  * Not reactive itself.
  */
 const sessions = persist('chat.sessions', () => new Map()).value;
@@ -58,6 +59,7 @@ function adoptFields(s) {
   if (s.overlayId === undefined) s.overlayId = indexEntry(s.id)?.overlayId ?? null;
   if (s.title === undefined) s.title = indexEntry(s.id)?.title ?? null;
   s.published ??= signal([]);
+  s.approval ??= signal(null);
   return s;
 }
 
@@ -109,6 +111,7 @@ function createSession(id, hydrated, scope = null, { overlayId = null, title = n
     overlayId,
     title,
     published: signal([]),
+    approval: signal(null),
   };
   sessions.set(id, s);
   track(s);
@@ -130,6 +133,7 @@ export function getSession(id) {
       if (stored?.overlayId) s.overlayId = stored.overlayId;
       if (stored?.title) s.title = stored.title;
       if (Array.isArray(stored?.published)) s.published.value = stored.published;
+      if (stored?.approval) s.approval.value = stored.approval;
     })
     .catch((e) => console.warn('chat: loading session failed', e))
     .finally(() => (s.hydrated = true));
@@ -142,6 +146,19 @@ export const queueOf = (s) => (s.queue ??= signal([]));
 export const composerTextOf = (s) => (s.composerText ??= signal(''));
 
 export const findSession = (id) => sessions.get(id);
+/** The chat session working in an overlay (loaded or saved), or null. */
+export function sessionOfOverlay(ovId) {
+  for (const s of sessions.values()) if (overlayIdOf(s) === ovId) return s;
+  const e = chat.index.peek().find((c) => (c.overlayId || `chat:${c.id}`) === ovId);
+  return e ? getSession(e.id) : null;
+}
+/** Sessions with a change waiting for the user's approval (loaded or only in the saved index; reactive). */
+export function pendingSessions() {
+  sessionsVersion.value;
+  const ids = new Set([...sessions.values()].filter((s) => s.approval?.value).map((s) => s.id));
+  for (const e of chat.index.value) if (e.ready) ids.add(e.id);
+  return [...ids].map(getSession);
+}
 export const runningSessions = () => [...sessions.values()].filter((s) => s.running.value);
 
 /** Whether any session in the given scope is running (reactive, including sessions created later). */
@@ -211,10 +228,12 @@ function persistSession(s) {
     created: prev?.created ?? now,
     updated: now,
     changes: changesOf(messages),
+    // The label of a change waiting for approval, so it can be listed without loading the transcript.
+    ...(s.approval?.value ? { ready: s.approval.value.label } : {}),
     preview: messages.find((m) => m.role === 'user' && typeof m.content === 'string')?.content.slice(0, 120) ?? '',
   };
   chat.index.value = [entry, ...chat.index.value.filter((c) => c.id !== id)];
-  return Promise.all([db.put('chats', id, { id, scope, messages, ...extra, published: s.published?.value ?? [] }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
+  return Promise.all([db.put('chats', id, { id, scope, messages, ...extra, published: s.published?.value ?? [], approval: s.approval?.value ?? null }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
     console.warn('chat: saving failed', e),
   );
 }

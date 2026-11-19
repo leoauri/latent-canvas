@@ -3,7 +3,9 @@
 //
 // In the document: code.changes[id] = Change
 //   { id, name, intent?, author, at, files: [{ path, source (null = deleted), baseHash, afterHash }],
-//     deps: [change id] (declared by the publisher), supersedes?: change id }
+//     deps: [change id] (declared by the publisher, plus follows), follows?: change id, supersedes?: change id }
+// follows: the earlier change this one refines (a follow-up request to an agent, say).
+// code.incorporated[id][name] = time: who has the change in their code (applied or published it).
 // baseHash/afterHash are vfs.hash() of the file before/after the change (null = absent).
 //
 // Locally, a change's dependencies are computed from hashes: if a file's baseHash isn't what we
@@ -14,9 +16,12 @@
 // Trying a change runs it live in an overlay without committing (vfs trial); meanwhile the session
 // document is forked (session.js), so whatever the trial code writes stays local until it's kept.
 import { signal, computed } from '@preact/signals';
+import { Automerge } from '@automerge/automerge-repo';
 import { vfs, persist } from '@live/runtime';
 import { handle } from './session.js';
 import * as db from '../lib/db.js';
+import { requestTrial } from './trials.js';
+import { validateGuide, parseGuide } from '../ui/guide/guide.js';
 
 /** This peer's display name (shown as a change's author). */
 export const myName = persist('net.myName', () => localStorage.getItem('redaw.net.name') || `peer-${Math.random().toString(36).slice(2, 6)}`);
@@ -37,15 +42,42 @@ const hash = (s) => vfs.hash(s ?? null);
 const overlayId = (id) => `peer:${id}`;
 const newId = () => Math.random().toString(36).slice(2, 10);
 
+const plain = (v) => JSON.parse(JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? Number(x) : x)));
+
+/** A change as this code expects it (a peer's buggy or newer code may write others: they're ignored). */
+const wellFormed = (c) =>
+  !!c && typeof c.id === 'string' && typeof c.name === 'string' && typeof c.author === 'string' && Number.isFinite(c.at) &&
+  Array.isArray(c.files) && c.files.every((f) => f && typeof f.path === 'string' && (f.source === null || typeof f.source === 'string')) &&
+  (c.deps === undefined || (Array.isArray(c.deps) && c.deps.every((x) => typeof x === 'string'))) &&
+  (c.follows === undefined || typeof c.follows === 'string') &&
+  (c.guide === undefined || typeof c.guide === 'string');
+
+/** Changes others published while this page was open (or shortly before): { id, name, author, at }, newest last. */
+export const arrivals = signal([]);
+const ARRIVAL_WINDOW_MS = 60000;
+let seen = null; // ids already read from this session's document
+
 function readPublished(doc) {
-  const list = Object.values(doc?.code?.changes ?? {}).map((c) => JSON.parse(JSON.stringify(c, (_k, x) => (typeof x === 'bigint' ? Number(x) : x))));
+  const inc = doc?.code?.incorporated ?? {};
+  const list = Object.values(doc?.code?.changes ?? {})
+    .map(plain)
+    .filter(wellFormed)
+    .map((c) => ({ ...c, incorporatedBy: plain(inc[c.id] ?? {}) }));
   list.sort((a, b) => b.at - a.at);
   published.value = list;
+  const first = !seen;
+  seen ??= new Set();
+  const fresh = list.filter((c) => !seen.has(c.id));
+  for (const c of fresh) seen.add(c.id);
+  const now = Date.now();
+  const news = fresh.filter((c) => c.author !== myName.peek() && (!first || now - c.at < ARRIVAL_WINDOW_MS));
+  if (news.length) arrivals.value = [...arrivals.peek(), ...news.reverse().map(({ id, name, author, at }) => ({ id, name, author, at }))].slice(-20);
 }
 let offChange = null;
 const offHandle = handle.subscribe((h) => {
   offChange?.();
   offChange = null;
+  seen = null;
   if (!h) return void (published.value = []);
   const on = ({ doc }) => readPublished(doc);
   h.on('change', on);
@@ -83,7 +115,7 @@ export function filesOfEntries(entryIds) {
  *   deps: ids of published changes it needs (in addition to what hashes imply)
  * Returns the change.
  */
-export function publish({ name, intent, from, deps = [], supersedes } = {}) {
+export function publish({ name, intent, from, deps = [], follows, supersedes, guide } = {}) {
   const h = handle.value;
   if (!h) throw new Error('no open session');
   if (!name?.trim()) throw new Error('a change needs a name');
@@ -95,6 +127,7 @@ export function publish({ name, intent, from, deps = [], supersedes } = {}) {
   } else if (from?.files) files = from.files;
   else throw new Error('publish: from must name entries, an overlay or files');
   if (!files.length) throw new Error('publish: the change is empty');
+  if (follows && !byId(follows)) throw new Error(`publish: follows names no published change: ${follows}`);
   const change = {
     id: newId(),
     name: name.trim(),
@@ -107,17 +140,36 @@ export function publish({ name, intent, from, deps = [], supersedes } = {}) {
       baseHash: f.baseHash !== undefined ? f.baseHash : hash(f.before),
       afterHash: hash(f.after),
     })),
-    deps: [...new Set([...deps, ...impliedDeps(files.map((f) => ({ path: f.path, baseHash: f.baseHash !== undefined ? f.baseHash : hash(f.before) })))])],
+    deps: [...new Set([...deps, ...(follows ? [follows] : []), ...impliedDeps(files.map((f) => ({ path: f.path, baseHash: f.baseHash !== undefined ? f.baseHash : hash(f.before) })))])],
+    ...(follows ? { follows } : {}),
     ...(supersedes ? { supersedes } : {}),
+    // The onboarding guide (ui/guide), as JSON: shown to whoever previews the change.
+    ...(guide ? { guide: JSON.stringify(validateGuide(guide)) } : {}),
   };
-  h.change((d) => {
-    d.code ??= {};
-    d.code.changes ??= {};
-    d.code.changes[change.id] = change;
-  }, { message: JSON.stringify({ label: `publish ${change.name}`, origin: 'publish' }) });
+  write(h, change);
   applied.value = new Set([...applied.value, change.id]);
   saveApplied();
   return change;
+}
+
+function write(h, change) {
+  h.change((d) => {
+    d.code ??= {};
+    d.code.changes ??= {};
+    // Sources stored whole, not as per-character text (see net/shared.js toDoc).
+    d.code.changes[change.id] = { ...change, ...(change.guide ? { guide: new Automerge.ImmutableString(change.guide) } : {}), files: change.files.map((f) => (f.source == null ? f : { ...f, source: new Automerge.ImmutableString(f.source) })) };
+    d.code.incorporated ??= {};
+    d.code.incorporated[change.id] ??= {};
+    d.code.incorporated[change.id][change.author] ??= change.at;
+  }, { message: JSON.stringify({ label: `publish ${change.name}`, origin: 'publish' }) });
+}
+
+/** Puts a change this page unpublished back, as it was (same id, so applies and follow-ups still match). */
+export function republish(change) {
+  const h = handle.value;
+  if (!h) throw new Error('no open session');
+  if (!wellFormed(change)) throw new Error('republish: not a change');
+  write(h, change);
 }
 
 /** Published changes whose result is the base a file builds on. */
@@ -130,6 +182,9 @@ function impliedDeps(files, exclude) {
   }
   return out;
 }
+
+/** Whether there's a session to publish to. */
+export const canPublish = () => !!handle.value;
 
 /** Withdraws a change this page published (others who applied it keep it). */
 export function unpublish(id) {
@@ -213,8 +268,12 @@ export async function preview(id) {
 /** Runs the change live without committing (and forks the session document meanwhile). */
 export async function tryChange(id, opts) {
   const ovId = await stage(id);
-  return vfs.startTrial(ovId, opts);
+  const c = byId(id);
+  return requestTrial(ovId, () => vfs.startTrial(ovId, opts), { label: c ? `“${c.name}” by ${c.author}` : ovId, kind: 'peer' });
 }
+
+/** A published change's onboarding guide (parsed), or null. */
+export const guideOf = (id) => parseGuide(byId(id)?.guide);
 
 /** Ends a trial: keep commits it, discard swaps our code back. */
 export async function endTrial(keep) {
@@ -235,9 +294,30 @@ export async function apply(id, opts = {}) {
 /** Records change `id` (and what it built on) as applied here, e.g. after an agent committed its adapted overlay. */
 export function markApplied(id) {
   const p = byId(id) ? plan(id) : { order: [id] };
-  applied.value = new Set([...applied.value, id, ...p.order]);
+  const ids = [...new Set([id, ...p.order])];
+  applied.value = new Set([...applied.value, ...ids]);
   saveApplied();
+  // Everyone sees who has it.
+  const name = myName.peek();
+  handle.value?.change((d) => {
+    d.code ??= {};
+    d.code.incorporated ??= {};
+    for (const cid of ids) {
+      if (!d.code.changes?.[cid]) continue;
+      d.code.incorporated[cid] ??= {};
+      d.code.incorporated[cid][name] = Date.now();
+    }
+  }, { message: JSON.stringify({ label: `incorporate ${ids.map((x) => byId(x)?.name ?? x).join(', ')}`, origin: 'publish' }) });
 }
+
+/** The changes a change extends: what it follows up on, and what it builds on (declared and implied by hashes). */
+export function basesOf(c) {
+  const builds = [...new Set([...(c.deps ?? []), ...impliedDeps(c.files, c.id)])].filter((x) => x !== c.follows);
+  return { follows: c.follows ?? null, builds };
+}
+
+/** Is the change in our code, as recorded (applied, published, or the same files)? */
+export const incorporatedBy = (c) => Object.keys(c.incorporatedBy ?? {});
 const labelFor = (ovId) => (ovId.startsWith('peer:') ? byId(ovId.slice(5))?.name : undefined);
 
 export function dismiss(id) {

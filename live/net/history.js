@@ -121,9 +121,11 @@ function writePaths(paths, values, label, origin, undoes) {
       paths.forEach((p, i) => {
         const v = values[i];
         let o = d.state;
-        for (const k of p.slice(0, -1)) {
+        for (const [j, k] of p.slice(0, -1).entries()) {
           if (o[k] === undefined) {
             if (v === undefined) return;
+            // A field of an entity someone removed meanwhile: don't bring back a partial entity.
+            if (j === 2 && p[1] === 'items') return;
             o[k] = {};
           }
           o = o[k];

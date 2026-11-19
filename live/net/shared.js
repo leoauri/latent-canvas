@@ -12,6 +12,9 @@
 // - `encode(entity)` / `decode(entity, prev)`: map an entity to/from its document form (e.g. a
 //   clip's Float32Array to a blob hash). decode may return null (leave it out) or a promise; the
 //   entity then shows up (or updates) once it resolves.
+// - `valid(entity, id)`: entities from the document that fail it are skipped (and reported once):
+//   a peer's buggy or newer code can't feed this page values its rendering would crash on. They
+//   stay in the document; nothing is deleted for others. Malformed containers read as empty.
 // - `keepLocal(entity)`: entities not (yet) shared, e.g. a clip still recording: neither written
 //   nor removed by remote changes.
 // - A key missing from the document is seeded from the local value (or `seedFrom()`) when the session adopts local
@@ -39,7 +42,12 @@ let applying = false; // true while writing doc → signals
 const noBig = (_k, x) => (typeof x === 'bigint' ? Number(x) : x);
 const plain = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v, noBig)));
 const same = (a, b) => a === b || JSON.stringify(a, noBig) === JSON.stringify(b, noBig);
+// Long strings (function sources, …) are stored whole: as collaborative text Automerge keeps an op
+// per character, which makes writing, loading and syncing them orders of magnitude slower. Reading
+// goes through JSON, which turns them back into strings.
+const LONG = 256;
 const toDoc = (v) => {
+  if (typeof v === 'string') return v.length >= LONG ? new Automerge.ImmutableString(v) : v;
   if (typeof v === 'number') return Number.isInteger(v) && !Number.isSafeInteger(v) ? new Automerge.Float64(v) : v;
   if (Array.isArray(v)) return v.map(toDoc);
   if (v && typeof v === 'object') {
@@ -76,6 +84,7 @@ export function shared(key, sig, opts = {}) {
     attachGen: 0,
     decoded: new Map(), // id -> { json, value } of async decodes
     keepLocal: opts.keepLocal ?? (() => false),
+    valid: opts.valid ?? (() => true),
     pending: 0, // decode generation
     // value to adopt when this machine's first session is created (e.g. migrated from kv)
     seedFrom: opts.seedFrom ?? (() => sig.value),
@@ -143,7 +152,7 @@ function attach(b, h) {
     setSignal(b, v);
     h.change((d) => {
       d.state ??= {};
-      if (d.state[b.key] === undefined) d.state[b.key] = b.kind === 'list' ? { items: {}, order: [] } : {};
+      { const cur = d.state[b.key]; const c = container(b, cur); if (c !== cur) d.state[b.key] = c; }
       writeInto(b, d.state[b.key], v);
     }, { message: JSON.stringify({ label: `share ${b.key}`, origin: 'seed' }) });
   }, (e) => console.warn(`shared: seeding ${b.key} failed`, e));
@@ -168,16 +177,46 @@ function saveLocals(b, list) {
 
 // ---- doc → signal ----------------------------------------------------------------------------
 
+const isObj = (x) => !!x && typeof x === 'object' && !Array.isArray(x);
+const reported = new Set();
+function invalid(b, id, why) {
+  const k = `${b.key}:${id}:${why}`;
+  if (reported.has(k)) return;
+  reported.add(k);
+  console.warn(`shared: ignoring ${b.key} ${id}: ${why}`);
+}
+function check(b, e, id) {
+  try {
+    if (b.valid(e, id)) return true;
+    invalid(b, id, 'fails validation');
+  } catch (err) {
+    invalid(b, id, `validation threw: ${err.message}`);
+  }
+  return false;
+}
+
 function readDoc(b, d) {
   const s = d?.state?.[b.key];
-  if (!s) return b.kind === 'list' ? [] : {};
-  if (b.kind === 'map') return plain(s);
-  const items = s.items ?? {};
+  if (b.kind === 'map') {
+    if (!isObj(s)) return (s != null && invalid(b, '(all)', 'not a map'), {});
+    const out = {};
+    for (const [k, v] of Object.entries(plain(s))) if (check(b, v, k)) out[k] = v;
+    return out;
+  }
+  if (!isObj(s) || !isObj(s.items)) return (s != null && invalid(b, '(all)', 'not a list'), []);
+  const items = s.items;
+  const order = Array.isArray(s.order) ? s.order : [];
   const ids = [];
   const seenIds = new Set();
-  for (const id of s.order ?? []) if (items[id] && !seenIds.has(id)) (ids.push(id), seenIds.add(id));
+  for (const id of order) if (typeof id === 'string' && items[id] && !seenIds.has(id)) (ids.push(id), seenIds.add(id));
   for (const id of Object.keys(items).sort()) if (!seenIds.has(id)) ids.push(id); // concurrently added
-  return ids.map((id) => plain(items[id]));
+  const out = [];
+  for (const id of ids) {
+    const e = plain(items[id]);
+    if (!isObj(e) || e.id !== id) invalid(b, id, 'not an entity');
+    else if (check(b, e, id)) out.push(e);
+  }
+  return out;
 }
 
 function fromDoc(b, d) {
@@ -229,6 +268,51 @@ function fromDoc(b, d) {
   setSignal(b, out);
 }
 
+/**
+ * After writing, the signal should show what the document holds. If it doesn't (a bug in the
+ * diffing: seen out of step with the document), every later read would look unchanged and the view
+ * would stay wrong until the next edit: report what differs and re-read from the document.
+ */
+const sameDeep = (a, b) => {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b || Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a).filter((k) => a[k] !== undefined);
+  const kb = Object.keys(b).filter((k) => b[k] !== undefined);
+  return ka.length === kb.length && ka.every((k) => sameDeep(a[k], b[k]));
+};
+function checkDrift(b) {
+  if (!b?.attachedTo || !b.seen) return;
+  const enc = (e) => {
+    const o = clean(plain(clean(b.encode(e))));
+    for (const f of b.local) delete o[f];
+    return o;
+  };
+  let mine, theirs;
+  if (b.kind === 'map') {
+    mine = {};
+    for (const k in b.sig.peek() ?? {}) if (b.sig.peek()[k] !== undefined) mine[k] = plain(b.encode(b.sig.peek()[k]));
+    theirs = b.seen;
+  } else {
+    mine = (b.sig.peek() ?? []).filter((e) => e && e.id != null && !b.keepLocal(e)).map(enc);
+    theirs = [...b.seen.values()].map((e) => (b.local.size ? Object.fromEntries(Object.entries(e).filter(([f]) => !b.local.has(f))) : e));
+  }
+  if (sameDeep(mine, theirs)) return;
+  const same = sameDeep;
+  const ids = (l) => (Array.isArray(l) ? l.map((e) => e.id) : Object.keys(l));
+  const diff = Array.isArray(mine)
+    ? {
+        order: same(ids(mine), ids(theirs)) ? 'same' : { mine: ids(mine), doc: ids(theirs) },
+        fields: mine.flatMap((e) => {
+          const t = theirs.find((x) => x.id === e.id);
+          if (!t) return [];
+          return Object.keys({ ...e, ...t }).filter((f) => !same(e[f], t[f])).map((f) => `${e.id}.${f}`);
+        }),
+      }
+    : Object.keys({ ...mine, ...theirs }).filter((k) => !same(mine[k], theirs[k]));
+  console.warn(`shared: drift in ${b.key} after writing; re-reading`, JSON.stringify(diff).slice(0, 2000));
+  queueMicrotask(() => refresh(b));
+}
+
 /** Re-reads a binding from its document (after an async decode finished). */
 function refresh(b) {
   if (!b.attachedTo) return;
@@ -265,7 +349,7 @@ export function flush(label, origin = 'local') {
         for (const k of keys) {
           const b = bindings.get(k);
           if (b.attachedTo !== h) continue;
-          d.state[k] ??= b.kind === 'list' ? { items: {}, order: [] } : {};
+          { const cur = d.state[k]; const c = container(b, cur); if (c !== cur) d.state[k] = c; }
           writeInto(b, d.state[k], b.sig.value);
         }
       },
@@ -274,12 +358,21 @@ export function flush(label, origin = 'local') {
   } finally {
     flushing = false;
   }
+  for (const k of keys) checkDrift(bindings.get(k));
   const after = h.heads();
   if (same(before, after)) return null;
   return history.record({ label: label ?? keys.map((k) => bindings.get(k).label).join(', '), origin, keys, before, after, coalesce: !label });
 }
 
 /** Writes value v (signal form) into the doc's state[key] object `s`, as a diff against b.seen. */
+/** The key's container in the document, replaced if a peer left something malformed there. */
+function container(b, s) {
+  if (b.kind === 'map') return isObj(s) ? s : (s !== undefined && invalid(b, '(all)', 'replacing malformed map'), {});
+  if (isObj(s) && isObj(s.items) && Array.isArray(s.order)) return s;
+  if (s !== undefined) invalid(b, '(all)', 'replacing malformed list');
+  return { items: isObj(s?.items) ? plain(s.items) : {}, order: Array.isArray(s?.order) ? plain(s.order) : [] };
+}
+
 function writeInto(b, s, v) {
   if (b.kind === 'map') {
     const enc = {};

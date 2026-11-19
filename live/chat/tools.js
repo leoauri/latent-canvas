@@ -3,9 +3,12 @@
 // ('chat:<session id>', or the one the session was started on) and only run after apply_changes.
 import { vfs, loader, logs, runScript } from '@live/runtime';
 import { extensionTool, extensionToolDefs } from './extensions.js';
-import { overlayIdOf, sessionTitle, saveSession } from './store.js';
+import { overlayIdOf, sessionTitle, saveSession, pushMessage } from './store.js';
+import { requestTrial } from '../net/trials.js';
+import { checkGuide, showGuide, dismissGuide, validateGuide, activeGuide } from '../ui/guide/guide.js';
 import * as history from '../net/history.js';
 import * as changes from '../net/changes.js';
+import * as bundles from '../net/bundles.js';
 
 const custom = (name, description, properties, required = []) => ({
   type: 'function',
@@ -45,10 +48,11 @@ export const tools = [
   ),
   custom(
     'apply_changes',
-    'Atomically apply your overlay\'s edits: merge them onto the committed files, evaluate the new versions of changed modules and their importers, swap them into the running page, re-render, then watch the whole page for errors (from any module) for observe_ms, optionally running a check script. If anything fails the swap is rolled back, the page returns to its previous state, and the buffer is kept so you can fix and re-apply. On success the changes are committed (persisted, and written to disk under the dev server). If the files changed underneath you and the edits overlap, nothing is applied and the files get conflict markers to resolve.',
+    'Atomically apply your overlay\'s edits: merge them onto the committed files, evaluate the new versions of changed modules and their importers, swap them into the running page, re-render, then watch the whole page for errors (from any module) for observe_ms, optionally running a check script. If anything fails the swap is rolled back, the page returns to its previous state, and the buffer is kept so you can fix and re-apply. On success the changes are committed (persisted, and written to disk under the dev server). They are not published yet: the user approves this chat\'s committed changes in the chat, which publishes them to everyone in the session as one change under your latest label (adapting a peer\'s change is not published). If the files changed underneath you and the edits overlap, nothing is applied and the files get conflict markers to resolve.',
     {
       label: { type: 'string', description: 'Always give one: a short, meaningful name of what the change does, e.g. "add reverb operator" (shown in history; not file names).' },
       intent: { type: 'string', description: 'Optional: one or two sentences on why / how to use it.' },
+      follows: { type: 'string', description: 'If this change refines, fixes or extends a change published earlier (one you published in this chat, or a peer\'s from list_published), that change\'s id. Omit for unrelated changes.' },
       observe_ms: { type: 'integer', description: 'How long to watch for errors after the swap. Default 800.' },
       check: {
         type: 'string',
@@ -68,7 +72,7 @@ export const tools = [
   ),
   custom(
     'try_changes',
-    'Run your overlay\'s edits live without committing them (a trial), so you or the user can try them out. Only one trial runs at a time. Shared-session state written meanwhile stays local until the trial is kept. Fails and swaps back on errors like apply_changes. End it with end_trial.',
+    'Run your overlay\'s edits live without committing them (a trial), so you or the user can try them out. Only one trial runs at a time: if another is running (e.g. the user previews a peer\'s change) yours is queued and this call waits until it starts. Shared-session state written meanwhile stays local until the trial is kept. Fails and swaps back on errors like apply_changes. End it with end_trial.',
     {
       observe_ms: { type: 'integer', description: 'How long to watch for errors after the swap. Default 800.' },
       check: { type: 'string', description: 'Optional async JS check, as in apply_changes.' },
@@ -77,11 +81,12 @@ export const tools = [
   ),
   custom(
     'end_trial',
-    'End your running trial. keep: true commits what is running (like apply_changes, give a label); keep: false swaps the committed code back (your edits stay in the overlay).',
+    'End your running trial. keep: true commits what is running (like apply_changes: give a label, follows as there; the user approves publishing); keep: false swaps the committed code back (your edits stay in the overlay).',
     {
       keep: { type: 'boolean' },
       label: { type: 'string', description: 'keep: short meaningful name of the change.' },
       intent: { type: 'string' },
+      follows: { type: 'string', description: 'If this change refines, fixes or extends a change published earlier (one you published in this chat, or a peer\'s from list_published), that change\'s id. Omit for unrelated changes.' },
     },
     ['keep'],
   ),
@@ -118,14 +123,24 @@ export const tools = [
   ),
   custom(
     'publish_change',
-    'Publish applied code changes to everyone in the session as a named change they can try, apply or adapt. Default: the transactions this chat applied since its last publish. Pick a short meaningful name unless the user gives one.',
+    'Publish committed code changes right away, without the user\'s approval step. Only when the user asks you to publish, or for commits outside this chat (e.g. edits made in the editor). Your own apply_changes/end_trial keep are published when the user approves them in the chat. Default: the transactions this chat applied since its last publish. Pick a short meaningful name unless the user gives one.',
     {
       name: { type: 'string' },
       intent: { type: 'string', description: 'What it does and how to use it.' },
       entries: { type: 'array', items: { type: 'string' }, description: 'Code history ids to publish instead (from list_modules).' },
       deps: { type: 'array', items: { type: 'string' }, description: 'Ids of published changes this one needs.' },
+      follows: { type: 'string', description: 'If this change refines, fixes or extends a change published earlier (one you published in this chat, or a peer\'s from list_published), that change\'s id. Omit for unrelated changes.' },
     },
     ['name'],
+  ),
+  custom(
+    'onboarding_guide',
+    'Attach a tiny "this is new" guide to the change waiting for approval: arrows with a few words pointing at what you built. Call it after your last apply_changes of a feature with visible UI (skip it for invisible changes). It is checked now (each step resolved in the live page, windows opened and closed again) and the result says per step what it found; fix steps that fail. It is shown to the user when your turn ends, and to peers who preview the published change. Steps (1-4 is best, max 6), all shown at once: { target: CSS selector or list (first visible match), text: 3-10 words, side?: top|bottom|left|right, open?: { window: kind, props?, match? } (look inside a floating window of that kind; one is opened if none is: windows are local UI, so this has no side effects), within?: selector to search in, click?: selector(s) of inert navigation to click first (only [role=tab], summary, [aria-expanded] or [data-inert]; mark your own view-only toggles data-inert), fallback?: { target, text } }. Never cause side effects to show something: when the new thing only exists after a real action (e.g. adding a layer), point a fallback at the nearest inert element that would do it (the button) and say in 5-10 words what would happen. Give your new elements stable class names so selectors stay valid.',
+    {
+      title: { type: 'string', description: 'Short name of the feature, shown as "New: <title>".' },
+      steps: { type: 'array', items: { type: 'object' } },
+    },
+    ['steps'],
   ),
   custom('list_published', 'Code changes published in the session (by anyone), with whether each applies cleanly here.', {}),
   custom(
@@ -175,16 +190,17 @@ function validate(input, spec) {
 const SPECS = {
   list_modules: {},
   delete_file: { path: 'string' },
-  apply_changes: { label: 'string?', intent: 'string?', observe_ms: 'integer?', check: 'string?', include_console_errors: 'boolean?' },
+  apply_changes: { label: 'string?', intent: 'string?', follows: 'string?', observe_ms: 'integer?', check: 'string?', include_console_errors: 'boolean?' },
   discard_changes: { paths: 'array?' },
   try_changes: { observe_ms: 'integer?', check: 'string?', include_console_errors: 'boolean?' },
-  end_trial: { keep: 'boolean', label: 'string?', intent: 'string?' },
+  end_trial: { keep: 'boolean', label: 'string?', intent: 'string?', follows: 'string?' },
   revert_applied: { count: 'integer?' },
   history_list: { limit: 'integer?' },
   history_diff: { id: 'string' },
   history_undo: { id: 'string?' },
   history_restore: { at: 'string', key: 'string?', id: 'string?' },
-  publish_change: { name: 'string', intent: 'string?', entries: 'array?', deps: 'array?' },
+  publish_change: { name: 'string', intent: 'string?', entries: 'array?', deps: 'array?', follows: 'string?' },
+  onboarding_guide: { title: 'string?', steps: 'array' },
   list_published: {},
   eval_js: { code: 'string', timeout_ms: 'integer?' },
   read_console: { since_id: 'integer?', limit: 'integer?', errors_only: 'boolean?' },
@@ -222,13 +238,13 @@ export async function runTool(block, ctx = {}) {
         fs.remove(livePath(input.path));
         return ok(id, `Buffered deletion of ${livePath(input.path)}. Call apply_changes to run it.`);
       case 'apply_changes':
-        return applyChanges(id, input, fs);
+        return applyChanges(id, input, fs, ctx.session);
       case 'discard_changes':
         return ok(id, `Discarded buffered changes: ${fs.discard(input.paths?.map(livePath)).join(', ') || '(none)'}`);
       case 'try_changes':
-        return tryChanges(id, input, fs);
+        return tryChanges(id, input, fs, ctx.session);
       case 'end_trial':
-        return endTrial(id, input, fs);
+        return endTrial(id, input, fs, ctx.session);
       case 'history_list':
         return ok(id, historyList(input.limit ?? 30));
       case 'history_diff':
@@ -247,6 +263,8 @@ export async function runTool(block, ctx = {}) {
         return publishChange(id, input, fs, ctx.session);
       case 'list_published':
         return ok(id, listPublished());
+      case 'onboarding_guide':
+        return onboardingGuide(id, input, ctx.session);
       case 'revert_applied': {
         const r = await vfs.revert(input.count ?? 1);
         if (!r.ok) return fail(id, `Revert failed${r.message ? ': ' + r.message : ''}\n${formatErrors(r.errors)}`);
@@ -382,11 +400,61 @@ const txOpts = (input) => ({
   includeConsole: input.include_console_errors ?? true,
 });
 
-async function applyChanges(id, input, fs) {
+/** A follows id that names no published change: fail before anything is applied. */
+function badFollows(id, input) {
+  if (!input.follows || changes.published.value.some((c) => c.id === input.follows)) return null;
+  return fail(id, `follows: no published change has id ${JSON.stringify(input.follows)}. See list_published, or omit follows.`);
+}
+
+async function applyChanges(id, input, fs, session) {
+  const bad = badFollows(id, input);
+  if (bad) return bad;
   const r = await fs.apply({ ...txOpts(input), label: input.label, intent: input.intent, markConflicts: true });
-  // An adapted peer change ('peer:<change id>' overlay) is now in our code.
-  if (r.ok && fs.id?.startsWith('peer:')) changes.markApplied(fs.id.slice(5));
-  return applyResult(id, r);
+  return afterCommit(id, r, input, fs, session);
+}
+
+/**
+ * After a commit: an adapted peer change ('peer:<change id>' overlay) is marked incorporated;
+ * a chat's own change is published to the session as one change.
+ */
+function afterCommit(id, r, input, fs, session) {
+  const res = applyResult(id, r);
+  if (!r.ok && r.phase !== 'committed') return res; // 'committed': in our code, despite reported errors
+  if (fs.id?.startsWith('peer:')) {
+    changes.markApplied(fs.id.slice(5));
+    return res;
+  }
+  if (session) {
+    const a = stageApproval(session, input);
+    return {
+      ...res,
+      content:
+        res.content +
+        `\nNot published yet: the user approves it in the chat, which publishes everything this chat committed since its last publish as one change "${a.label}"${a.follows ? `, following ${a.follows}` : ''}. ${a.guide ? 'Your onboarding guide is kept; call onboarding_guide again if the UI changed.' : 'If it has visible UI, add an onboarding_guide.'} Then end your turn; the user may also ask for more changes first (they join this change).`,
+    };
+  }
+  let note;
+  try {
+    const c = autoPublish(input, fs, session);
+    note = c ? `\nPublished to the session as change ${c.id} "${c.name}"${c.follows ? `, following ${c.follows}` : ''}${c.deps.length ? `; builds on ${c.deps.join(', ')}` : ''}. Pass this id as follows when a later request refines it.` : '';
+  } catch (e) {
+    note = `\nNot published: ${e.message || e}`;
+  }
+  return { ...res, content: res.content + note };
+}
+
+function autoPublish(input, fs, session) {
+  if (!changes.canPublish()) return null; // no session open
+  const done = new Set(session?.published.value ?? []);
+  const entries = vfs.history.filter((e) => e.overlayId === fs.id && !done.has(e.id)).map((e) => e.id);
+  if (!entries.length) return null;
+  const label = input.label?.trim() || vfs.history.find((e) => e.id === entries[entries.length - 1])?.label || 'change';
+  const c = changes.publish({ name: label, intent: input.intent, from: { entries }, follows: input.follows });
+  if (session) {
+    session.published.value = [...done, ...entries];
+    saveSession(session);
+  }
+  return c;
 }
 
 function applyResult(id, r) {
@@ -406,12 +474,19 @@ function applyResult(id, r) {
   return fail(id, r.phase === 'trial' ? what : `${what}\n${formatErrors(r.errors)}`);
 }
 
-async function tryChanges(id, input, fs) {
-  const r = await fs.trial(txOpts(input));
+async function tryChanges(id, input, fs, session) {
+  const waiting = vfs.trial && vfs.trial.overlayId !== fs.id ? vfs.trial.overlayId : null;
+  const r = await requestTrial(fs.id, () => fs.trial(txOpts(input)), {
+    label: session ? sessionTitle(session) : fs.info?.label || fs.id,
+    kind: 'agent',
+    wait: true,
+    signal: session?.controller.value?.signal,
+  });
+  if (r.phase === 'queue') return fail(id, `No trial started: ${r.message}.`);
   if (r.ok)
     return ok(
       id,
-      `On trial (running, not committed): ${r.changed.join(', ')}. Re-evaluated: ${r.rebuilt.join(', ') || '-'}. Shared-session edits made now stay local until kept. Check it, then end_trial with keep: true (commit, give a label) or keep: false (swap back; edits stay).`,
+      `${waiting ? `(Queued behind the preview of ${waiting} until it ended.) ` : ''}On trial (running, not committed): ${r.changed.join(', ')}. Re-evaluated: ${r.rebuilt.join(', ') || '-'}. Shared-session edits made now stay local until kept. Check it, then end_trial with keep: true (commit, give a label) or keep: false (swap back; edits stay).`,
     );
   if (r.phase === 'conflict') {
     fs.rebase({ markConflicts: true });
@@ -421,14 +496,20 @@ async function tryChanges(id, input, fs) {
   return fail(id, `Trial failed and was swapped back; your edits are kept.\n${formatErrors(r.errors)}`);
 }
 
-async function endTrial(id, { keep, label, intent }, fs) {
+async function endTrial(id, input, fs, session) {
+  const { keep, label, intent } = input;
+  if (keep) {
+    const bad = badFollows(id, input);
+    if (bad) return bad;
+  }
   const t = vfs.trial;
   if (!t) return fail(id, 'No trial is running.');
   if (t.overlayId !== fs.id) return fail(id, `The running trial is overlay ${t.overlayId}, not yours (${fs.id}); ask the user to keep or discard it.`);
   // A staged peer change goes through changes.js, which also marks it applied.
   const r = t.overlayId.startsWith('peer:') ? await changes.endTrial(keep) : await vfs.endTrial(keep ? 'keep' : 'discard', keep ? { label, intent, markConflicts: true } : {});
   if (!keep) return r.ok ? ok(id, 'Trial discarded: the committed code runs again. Your edits stay in the overlay.') : fail(id, r.message || 'discard failed');
-  return applyResult(id, r);
+  // changes.endTrial already marked a peer change incorporated.
+  return t.overlayId.startsWith('peer:') ? applyResult(id, r) : afterCommit(id, r, input, fs, session);
 }
 
 function historyList(limit) {
@@ -437,11 +518,38 @@ function historyList(limit) {
   return ['id | time | origin | label | keys', ...list.map((e) => `${e.id} | ${new Date(e.at).toLocaleTimeString()} | ${e.origin} | ${e.label} | ${e.keys.join(', ')}`)].join('\n');
 }
 
+/**
+ * The user ends a chat's trial from outside the chat (the preview frame): keep commits it like the
+ * agent's end_trial would (a chat's change then waits for approval). Returns { ok, message }.
+ */
+export async function endTrialAsUser(keep, session) {
+  const t = vfs.trial;
+  if (!t) return { ok: false, message: 'No trial is running.' };
+  if (t.overlayId.startsWith('peer:')) return changes.endTrial(keep);
+  const fs = vfs.overlay(t.overlayId);
+  if (!keep) return vfs.endTrial('discard');
+  const label = (session ? sessionTitle(session) : null) || fs?.info?.label || 'preview';
+  const r = await vfs.endTrial('keep', { label, markConflicts: true });
+  if (!r.ok && r.phase !== 'committed') return { ok: false, message: r.message || r.errors?.map((e) => `${e.path}: ${e.message}`).join('\n') || 'keep failed' };
+  if (session) {
+    stageApproval(session, { label });
+    return { ok: true, message: `Applied. Approve “${session.approval.value.label}” in its chat to publish it.` };
+  }
+  let message = 'Applied.';
+  try {
+    const c = autoPublish({ label }, fs ?? { id: t.overlayId }, session);
+    if (c) message = `Applied and published as “${c.name}”.`;
+  } catch (e) {
+    message = `Applied, not published: ${e.message || e}`;
+  }
+  return { ok: true, message };
+}
+
 function publishChange(id, input, fs, session) {
   const done = new Set(session?.published.value ?? []);
   const entries = input.entries ?? vfs.history.filter((e) => e.overlayId === fs.id && !done.has(e.id)).map((e) => e.id);
   if (!entries.length) return fail(id, 'Nothing to publish: this chat applied no code changes since its last publish. Pass entries (transaction ids from list_modules) to publish others.');
-  const c = changes.publish({ name: input.name, intent: input.intent, from: { entries }, deps: input.deps ?? [] });
+  const c = changes.publish({ name: input.name, intent: input.intent, from: { entries }, deps: input.deps ?? [], follows: input.follows });
   if (session) {
     session.published.value = [...done, ...entries];
     saveSession(session);
@@ -461,7 +569,7 @@ function listPublished() {
       state = p.missing.length ? `needs unpublished ${p.missing.join(', ')}` : p.clean ? 'applies cleanly' : `needs adapting (stale: ${p.files.filter((f) => f.state === 'stale').map((f) => f.path).join(', ')})`;
     }
     const intent = c.intent ? `\n  intent (author's words): ${JSON.stringify(c.intent)}` : '';
-    lines.push(`- ${c.id} ${JSON.stringify(c.name)} by ${c.author}, ${new Date(c.at).toLocaleString()} | ${state} | files: ${c.files.map((f) => f.path).join(', ')}${c.deps?.length ? ` | deps: ${c.deps.join(', ')}` : ''}${intent}`);
+    lines.push(`- ${c.id} ${JSON.stringify(c.name)} by ${c.author}, ${new Date(c.at).toLocaleString()} | ${state} | files: ${c.files.map((f) => f.path).join(', ')}${c.follows ? ` | follows: ${c.follows}` : ''}${c.deps?.length ? ` | builds on: ${c.deps.join(', ')}` : ''}${intent}`);
   }
   return lines.join('\n');
 }
@@ -486,3 +594,80 @@ async function evalJs(id, { code, timeout_ms = 10000 }) {
 }
 
 const clip = (s, n = 20000) => (s.length > n ? s.slice(0, n) + `… (${s.length - n} more chars)` : s);
+
+// ---- approval ------------------------------------------------------------------------------
+
+/** Code history ids this chat committed and hasn't published yet. */
+export function unpublishedEntries(session) {
+  const done = new Set(session.published.value);
+  const ov = overlayIdOf(session);
+  return vfs.history.filter((e) => e.overlayId === ov && !done.has(e.id)).map((e) => e.id);
+}
+
+/** Records what the next approval publishes: the latest label/intent, the first follows, the guide. */
+function stageApproval(session, input) {
+  const prev = session.approval.peek() ?? {};
+  const a = {
+    label: input.label?.trim() || prev.label || sessionTitle(session),
+    ...((input.intent || prev.intent) ? { intent: input.intent || prev.intent } : {}),
+    ...((prev.follows || input.follows) ? { follows: prev.follows || input.follows } : {}),
+    ...(prev.guide ? { guide: prev.guide } : {}),
+  };
+  session.approval.value = a;
+  saveSession(session);
+  return a;
+}
+
+async function onboardingGuide(id, input, session) {
+  if (!session) return fail(id, 'onboarding_guide needs a chat session.');
+  let g;
+  try {
+    g = validateGuide({ title: input.title, steps: input.steps });
+  } catch (e) {
+    return fail(id, `Invalid guide: ${e.message}`);
+  }
+  const report = await checkGuide(g);
+  const bad = report.filter((r) => !r.ok || r.notes?.length);
+  const text = report.map((r) => `step ${r.step}: ${r.ok ? `found ${r.element}${r.via === 'fallback' ? ' (fallback)' : ''}` : `NOT FOUND: ${r.note}`}${r.notes?.length ? ` [${r.notes.join('; ')}]` : ''}`).join('\n');
+  if (report.some((r) => !r.ok)) return fail(id, `Guide not attached; fix these steps and call again:\n${text}`);
+  if (!unpublishedEntries(session).length && !session.approval.peek()) return fail(id, `Nothing waits for approval: apply your change first, then attach the guide.\n${text}`);
+  session.approval.value = { ...(session.approval.peek() ?? { label: sessionTitle(session) }), guide: g };
+  saveSession(session);
+  return ok(id, `Guide attached${bad.length ? ' (with notes)' : ''}; it shows when your turn ends.\n${text}`);
+}
+
+/** Shows a chat's pending guide (if any): returns the per-step report, or null. */
+export function showApprovalGuide(session) {
+  const g = session.approval.peek()?.guide;
+  if (!g) return null;
+  return showGuide(g, { source: `chat:${session.id}` });
+}
+
+/**
+ * The user approves a chat's committed changes: dismisses its guide and publishes everything it
+ * committed since its last publish as one change. Returns { ok, message, change }.
+ */
+export function approve(session) {
+  dismissGuide(`chat:${session.id}`);
+  const entries = unpublishedEntries(session);
+  const a = session.approval.peek() ?? {};
+  if (!entries.length) {
+    session.approval.value = null;
+    saveSession(session);
+    return { ok: false, message: 'Nothing to publish: this chat committed nothing since its last publish.' };
+  }
+  if (!changes.canPublish()) return { ok: false, message: 'No multiplayer session is open to publish to.' };
+  const label = a.label || vfs.history.find((e) => e.id === entries[entries.length - 1])?.label || 'change';
+  const follows = a.follows && changes.published.value.some((c) => c.id === a.follows) ? a.follows : undefined;
+  const c = changes.publish({ name: label, intent: a.intent, from: { entries }, follows, guide: a.guide });
+  session.published.value = [...session.published.value, ...entries];
+  bundles.record(c, { sessionId: session.id, entries, guide: a.guide });
+  session.approval.value = null;
+  saveSession(session);
+  // So the agent knows the id for follows when the user asks for more.
+  pushMessage(session, { role: 'user', content: [{ type: 'text', note: true, text: `[The user approved; published as change ${c.id} "${c.name}"${c.follows ? `, following ${c.follows}` : ''}.]` }] });
+  return { ok: true, message: `Published “${c.name}”.`, change: c };
+}
+
+/** Whether the guide on screen is this chat's. */
+export const showingGuideOf = (session) => activeGuide.value?.source === `chat:${session.id}`;

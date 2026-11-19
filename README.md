@@ -78,6 +78,9 @@ scripts/e2e.mjs end-to-end rig: dev server + headless tabs with separate profile
 - Export `dispose()` to clean up timers and listeners when a module is replaced.
 - Importing a `.css` file injects it, and the style is swapped with the module.
 - Floating windows (draggable, resizable, collapsible, persisted) are shared: register a kind with `registerWindowKind(kind, { render })` from `live/ui/FloatingWindow.jsx` at import time, export the returned function as (or call it from) `dispose()`, and open windows with `openWindow(kind, props)` from `live/ui/windows.js`. See the comment at the top of `windows.js`.
+- To point users at something new, use the guide library in `live/ui/guide/guide.js`
+  (`showGuide`, `checkGuide`; the comment at its top describes steps and navigation). Mark
+  view-only controls (tabs, disclosures) `data-inert` so a guide may click them to navigate.
 - State that everyone in a session should see goes through `shared(key, signal, opts)` from `live/net/shared.js` instead of `db.sync`; name user-level changes with `act(label, fn)` so they show up as one undoable action. See Multiplayer.
 
 ## Multiplayer
@@ -99,6 +102,26 @@ connected, undo recent actions, switch between sessions or join one from a link.
   windows, chats, your code) is local unless a module shares it. Since everyone may run different
   code, writes are per entity and field, and fields that your code doesn't know about are kept.
   A module that starts sharing a new key just writes it; peers without that code ignore it.
+  Entities that fail the owning module's `valid` check (a buggy or newer peer's values) are skipped
+  on read, not rendered, so they can't crash your page.
+- **Code changes** (`net/changes.js`, the Changes pill): what an agent commits waits in its chat as
+  "Ready". You can keep asking for changes, which join it. **Approve & publish** hides its
+  onboarding guide and publishes everything as one change. The agent marks a follow-up to an
+  earlier change with that change's id (`follows`). A bubble over the pill announces new changes.
+  Each change shows what it follows or builds on and who has incorporated it.
+  The Changes window lists only these named bundles, each with its guide: the ones waiting for
+  approval, your own (`net/bundles.js`) and your peers'. There is no manual publishing. Your
+  bundles remember on this machine whether you publish them. A published bundle lives in the
+  session document like tracks, so every peer has it, including peers who join later. **Unpublish**
+  removes it from the session; peers who applied it keep it. **Publish again** restores it under
+  the same id.
+- **Onboarding guides** (`ui/guide/`): when an agent finishes a feature it attaches a small "this is
+  new" guide: arrows with a few words, pointing at what it built. The guide shows when the agent's
+  turn ends and travels with the published change, so peers who preview it see it too.
+- **Previews**: while code runs on trial (not committed; session edits stay local), a frame around
+  the screen names it, with Revert and Apply. It turns violet while an agent is still working on
+  its preview, so nobody edits underneath it. One preview runs at a time; others asked for
+  meanwhile queue up (`net/trials.js`), are listed in the frame, and start in turn.
 - **Presence** (`net/presence.js`): others' cursors (interpolated), playheads and selected clips
   show on the timeline in their colour, with their name. It's never stored. Toggle it in the Session
   window or with Alt+P. Other modules share more with `presence.publish(key, signal)`.
@@ -109,6 +132,9 @@ connected, undo recent actions, switch between sessions or join one from a link.
 - **Files** (`net/blobs.js`): large data (models, clip vectors) is stored by content hash in the
   browser's private file system (OPFS) and fetched from peers that have it, in chunks that are
   verified and resumable.
+
+`e2e/stress.mjs` runs many peers through edit storms, races, partitions, reloads, concurrent code
+changes and malformed writes. `e2e/stress/README.md` lists what each phase tries to break.
 
 ### Signaling server
 
