@@ -267,5 +267,27 @@ function toWire(messages) {
       }
     }
   }
+  return answerDangling(out);
+}
+
+/**
+ * Every tool call needs its result before the conversation goes on, or the API rejects the request.
+ * A reload between storing a tool call and storing its result leaves one without: answer it here.
+ */
+function answerDangling(wire) {
+  const out = [];
+  for (let i = 0; i < wire.length; i++) {
+    const m = wire[i];
+    out.push(m);
+    if (!m.tool_calls) continue;
+    const answered = new Set();
+    while (wire[i + 1]?.role === 'tool') {
+      answered.add(wire[i + 1].tool_call_id);
+      out.push(wire[++i]);
+    }
+    for (const c of m.tool_calls)
+      if (!answered.has(c.id))
+        out.push({ role: 'tool', tool_call_id: c.id, content: 'ERROR: Interrupted (the page reloaded) before this result was recorded. It may or may not have taken effect: check the current state before retrying.' });
+  }
   return out;
 }
