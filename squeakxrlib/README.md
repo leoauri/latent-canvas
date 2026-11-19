@@ -53,7 +53,7 @@ redaw-peer-cli "<invite link>" save session.automerge
 
 ## Squeak
 
-File in `squeak/RedawPeer.st` (needs the FFI and JSON packages), then:
+Load in the repo with Git/s (needs the FFI and JSON packages), then:
 
 ```smalltalk
 RedawPeerLibrary modulePath: 'C:\...\squeakxrlib\target\release\redaw_peer.dll'.
