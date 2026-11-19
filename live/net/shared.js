@@ -93,7 +93,10 @@ export function shared(key, sig, opts = {}) {
   bindings.set(key, b);
   const offSig = sig.subscribe((v) => {
     if (b.local.size && b.attachedTo && b.localsLoaded && Array.isArray(v)) saveLocals(b, v);
-    if (applying || !b.attachedTo) return;
+    // Our own write from the document isn't an edit. `applying` alone can't tell: a write made
+    // inside an effect (attach runs in handle.subscribe) notifies only after the effect, when
+    // `applying` is false again; so the value setSignal wrote is recognised by identity too.
+    if (applying || v === b.fromDocValue || !b.attachedTo) return;
     dirty.add(key);
     clearTimeout(timer);
     timer = setTimeout(flush, FLUSH_MS);
@@ -235,6 +238,9 @@ function fromDoc(b, d) {
   const prevById = new Map(prevList.map((e) => [e.id, e]));
   const prevSeen = b.seen;
   b.seen = seen;
+  // Entities in the document this page can't show yet (decode pending, no previous version): not
+  // in the signal, but they mustn't look deleted to writeInto.
+  b.loading = new Set();
   const out = [];
   for (const e of enc) {
     const prev = prevById.get(e.id);
@@ -258,7 +264,7 @@ function fromDoc(b, d) {
         // Keep showing the old version meanwhile; `seen` records it, so local edits of it diff right.
         out.push(prev);
         seen.set(e.id, clean(plain(clean(b.encode(prev)))));
-      }
+      } else b.loading.add(String(e.id));
       continue;
     }
     if (v) out.push({ ...v, ...local });
@@ -294,7 +300,7 @@ function checkDrift(b) {
     theirs = b.seen;
   } else {
     mine = (b.sig.peek() ?? []).filter((e) => e && e.id != null && !b.keepLocal(e)).map(enc);
-    theirs = [...b.seen.values()].map((e) => (b.local.size ? Object.fromEntries(Object.entries(e).filter(([f]) => !b.local.has(f))) : e));
+    theirs = [...b.seen.values()].filter((e) => !b.loading?.has(String(e.id))).map((e) => (b.local.size ? Object.fromEntries(Object.entries(e).filter(([f]) => !b.local.has(f))) : e));
   }
   if (sameDeep(mine, theirs)) return;
   const same = sameDeep;
@@ -321,6 +327,7 @@ function refresh(b) {
 }
 
 function setSignal(b, v) {
+  b.fromDocValue = v;
   applying = true;
   try {
     b.sig.value = v;
@@ -385,7 +392,8 @@ function writeInto(b, s, v) {
   }
   const all = (v ?? []).filter((e) => e && e.id != null);
   const list = all.filter((e) => !b.keepLocal(e));
-  const held = new Set(all.filter((e) => b.keepLocal(e)).map((e) => String(e.id)));
+  // Not written and never deleted here: local-only entities, and shared ones still loading.
+  const held = new Set([...all.filter((e) => b.keepLocal(e)).map((e) => String(e.id)), ...(b.loading ?? [])]);
   const prevSeen = b.seen ?? new Map();
   const seen = new Map();
   s.items ??= {};
@@ -406,7 +414,7 @@ function writeInto(b, s, v) {
   for (const id of prevSeen.keys()) if (!seen.has(id) && !held.has(id) && s.items[id]) delete s.items[id];
   const order = [...new Set(list.map((e) => String(e.id)))]; // two peers can add the same id
   // Ids a peer added that this page hasn't seen yet keep their place after ours.
-  const unseen = [...(s.order ?? [])].filter((id) => !order.includes(id) && s.items[id] && !prevSeen.has(id) && !held.has(id));
+  const unseen = [...(s.order ?? [])].filter((id) => !order.includes(id) && s.items[id] && ((!prevSeen.has(id) && !held.has(id)) || b.loading?.has(id)));
   if (!same([...(s.order ?? [])], [...order, ...unseen])) s.order = [...order, ...unseen];
   // Entities a peer added that this page hasn't seen yet stay (they're in items, appended on read).
   b.seen = new Map(readDoc(b, { state: { [b.key]: s } }).map((e) => [String(e.id), e]));
