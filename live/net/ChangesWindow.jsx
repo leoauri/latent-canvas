@@ -6,7 +6,7 @@
 // adapt, or dismissed. Nothing runs without a click. Changes are only published through a chat's
 // approval (or the agent's publish_change when asked); there is no manual publishing here.
 import { useState, useEffect } from 'preact/hooks';
-import { signal } from '@preact/signals';
+import { signal, computed } from '@preact/signals';
 import { vfs, vfsVersion, loader, persist } from '@live/runtime';
 import { registerWindowKind, FloatingWindow } from '../ui/FloatingWindow.jsx';
 import { toggleWindow, findWindow } from '../ui/windows.js';
@@ -44,11 +44,20 @@ function useTrialTick() {
   useEffect(() => vfs.onTrial(() => set((n) => n + 1)), []);
 }
 
+/** Incoming change ids already shown in this window: the pill's badge only counts the others. */
+const SEEN_KEY = 'redaw.net.changes.seen';
+const seen = persist('net.changesWindow.seen', () => new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]')));
+const offSeen = seen.subscribe((s) => localStorage.setItem(SEEN_KEY, JSON.stringify([...s].slice(-500))));
+const unseen = computed(() => changes.incoming.value.filter((c) => !seen.value.has(c.id)));
+
 function ChangesBody() {
   vfsVersion.value; // re-render on code changes (plan states, history, trial)
   useTrialTick();
   const list = changes.published.value;
   const incoming = changes.incoming.value;
+  useEffect(() => {
+    if (incoming.some((c) => !seen.peek().has(c.id))) seen.value = new Set([...seen.peek(), ...incoming.map((c) => c.id)]);
+  }, [incoming]);
   const [showAll, setShowAll] = useState(false);
   const trial = vfs.trial;
   const trialChange = trial?.overlayId.startsWith('peer:') ? list.find((c) => c.id === trial.overlayId.slice(5)) : null;
@@ -184,7 +193,13 @@ function ChangeItem({ c, trial }) {
     <li class={`net-change${applied ? ' net-change-applied' : ''}`}>
       <div class="net-row">
         <strong class="net-grow" title={c.id}>{c.name}</strong>
-        {applied ? <span class="net-tag net-tag-used" title="This change is in your code">incorporated</span> : dismissed ? <span class="net-tag">dismissed</span> : null}
+        {applied ? (
+          changes.applied.value.has(c.id) ? (
+            <span class="net-tag net-tag-used" title="You applied or published this change">incorporated</span>
+          ) : (
+            <span class="net-tag net-tag-used" title="Your files already equal this change's result (e.g. a shared dev-server folder synced them), though you never applied it">already in your code</span>
+          )
+        ) : dismissed ? <span class="net-tag">dismissed</span> : null}
       </div>
       <div class="net-muted">
         {mine ? 'you' : c.author} · {ago(c.at)}
@@ -469,7 +484,7 @@ function Bubble({ onOpen }) {
 /** Pill button that opens the changes window; the badge counts incoming changes. */
 export function ChangesPill() {
   const open = !!findWindow('changes');
-  const n = changes.incoming.value.length;
+  const n = unseen.value.length;
   const openWin = () => {
     bubble.value = [];
     if (!findWindow('changes')) toggleWindow('changes', {}, { rect: { w: 420, h: 620 } });
@@ -492,5 +507,6 @@ export function ChangesPill() {
 export function dispose() {
   unregister();
   offArrivals();
+  offSeen();
   clearTimeout(bubbleTimer);
 }

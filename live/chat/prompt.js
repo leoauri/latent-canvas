@@ -34,7 +34,7 @@ function base() {
 - Verify with eval_js and read_console rather than assuming. Errors that happen later (e.g. on click) are not caught by the transaction; check read_console after interacting with the page.
 
 # Working style
-- Start with list_modules, view files before editing them, and keep str_replace edits small and exact.
+- The user's first message comes with the list_modules output from when it was sent (<module_map>); call list_modules again only when you need a fresh view (e.g. after applying, or later in the conversation). View files before editing them, and keep str_replace edits small and exact.
 - Be careful with chat/ and main.jsx: breaking them breaks this conversation's UI. Transactions protect you from errors at apply time, not from logic mistakes.
 - Keep replies short. Say what you changed and whether it applied; don't paste code the user can see in the files.`;
 }

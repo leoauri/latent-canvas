@@ -147,10 +147,11 @@ export const tools = [
     'eval_js',
     'Run JavaScript in the page (async function body: top-level await works, `return` a value to see it). In scope: modules(path) -> namespace of the running module, vfs, loader, vendor, runtime, plus all browser globals. Console output during the run is returned. Not transactional: side effects stay. Use it to inspect the DOM, call into modules, and verify behaviour.',
     {
+      description: { type: 'string', description: 'What this run does, ~5 words (shown in the chat), e.g. "list chat modules".' },
       code: { type: 'string' },
       timeout_ms: { type: 'integer', description: 'Default 10000. Cannot interrupt synchronous infinite loops.' },
     },
-    ['code'],
+    ['description', 'code'],
   ),
   custom(
     'read_console',
@@ -202,7 +203,7 @@ const SPECS = {
   publish_change: { name: 'string', intent: 'string?', entries: 'array?', deps: 'array?', follows: 'string?' },
   onboarding_guide: { title: 'string?', steps: 'array' },
   list_published: {},
-  eval_js: { code: 'string', timeout_ms: 'integer?' },
+  eval_js: { description: 'string', code: 'string', timeout_ms: 'integer?' },
   read_console: { since_id: 'integer?', limit: 'integer?', errors_only: 'boolean?' },
 };
 
@@ -359,6 +360,8 @@ function editor(id, input, fs) {
 }
 
 // ---- other tools -----------------------------------------------------------------------
+
+export const moduleMapOf = (session) => moduleMap(workspaceOf(session));
 
 function moduleMap(fs) {
   const graph = new Map(loader.graph().map((g) => [g.path, g]));

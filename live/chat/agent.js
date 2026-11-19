@@ -2,7 +2,7 @@
 // The transcript is stored as content blocks (text, thinking, tool_use / tool_result) so the UI
 // and the chat log stay provider-neutral; toWire() converts it to Chat Completions messages.
 import { env } from '@live/runtime';
-import { toolDefs, runTool, showApprovalGuide, unpublishedEntries } from './tools.js';
+import { toolDefs, runTool, showApprovalGuide, unpublishedEntries, moduleMapOf } from './tools.js';
 import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
@@ -35,7 +35,9 @@ export async function sendMessage(s, text) {
   if (s.running.value) return;
   s.error.value = null;
   dismissGuide(`chat:${s.id}`); // iterating on it: the agent attaches a fresh one
-  pushMessage(s, { role: 'user', content: text });
+  // Stored with the message so the wire transcript stays byte-stable for prompt caching.
+  const first = !s.messages.value.some((m) => m.role === 'user' && typeof m.content === 'string');
+  pushMessage(s, { role: 'user', content: text, ...(first && { context: moduleMapOf(s) }) });
   const controller = new AbortController();
   s.controller.value = controller;
   s.running.value = true;
@@ -242,9 +244,9 @@ function describeUsage(usage) {
 
 function toWire(messages) {
   const out = [];
-  for (const { role, content } of messages) {
+  for (const { role, content, context } of messages) {
     if (typeof content === 'string') {
-      out.push({ role, content });
+      out.push({ role, content: context ? `${content}\n\n<module_map note="output of list_modules when this message was sent">\n${context}\n</module_map>` : content });
       continue;
     }
     if (role === 'assistant') {

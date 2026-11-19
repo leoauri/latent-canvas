@@ -63,10 +63,9 @@ function sendAll(to) {
 
 // ---- publishing --------------------------------------------------------------------------------
 
-const timers = new Map(); // key -> { timer, last }
+const timers = new Set(); // { timer, last } per live binding
 
-function flushKey(key) {
-  const t = timers.get(key);
+function flushKey(key, t) {
   t.timer = 0;
   t.last = performance.now();
   room.broadcast({ ...header(), state: { [key]: mine.get(key) ?? null } });
@@ -74,20 +73,21 @@ function flushKey(key) {
 
 /** Shares `sig`'s value with the room's peers under `key` while bound. */
 export function publish(key, sig) {
-  timers.set(key, timers.get(key) ?? { timer: 0, last: 0 });
+  // Per binding: on re-render the old binding's cleanup can run after the new one started.
+  const t = { timer: 0, last: 0 };
+  timers.add(t);
   const off = effect(() => {
     const v = sig.value ?? null;
     mine.set(key, v);
-    const t = timers.get(key);
     if (t.timer) return;
     const wait = THROTTLE_MS - (performance.now() - t.last);
-    if (wait <= 0) flushKey(key);
-    else t.timer = setTimeout(() => flushKey(key), wait);
+    if (wait <= 0) flushKey(key, t);
+    else t.timer = setTimeout(() => flushKey(key, t), wait);
   });
   return () => {
     off();
-    clearTimeout(timers.get(key)?.timer);
-    timers.delete(key);
+    clearTimeout(t.timer);
+    timers.delete(t);
     mine.delete(key);
     room.broadcast({ ...header(), state: { [key]: null } });
   };

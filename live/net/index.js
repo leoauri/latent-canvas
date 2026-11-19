@@ -15,3 +15,4 @@ export * as history from './history.js';
 export * as blobs from './blobs.js';
 export * as changes from './changes.js';
 export * as presence from './presence.js';
+import './undoKeys.js';

@@ -158,14 +158,35 @@ export function diff(id) {
  * Reverts entry `id`'s changes where the value is still what it wrote (others' later edits win).
  * Returns { entry, skipped: paths changed since }.
  */
-export function undo(id) {
+export function undo(id, { origin = 'undo' } = {}) {
   const e = find(id);
   if (!e) throw new Error(`no history entry ${id}`);
   const changes = diff(id);
   const apply = changes.filter((c) => same(c.now, c.after));
   const skipped = changes.filter((c) => !same(c.now, c.after)).map((c) => c.path);
-  const entry = writePaths(apply.map((c) => c.path), apply.map((c) => c.before), `undo ${e.label}`, 'undo', e.id);
+  const label = `${origin} ${e.label.replace(/^((undo|redo) )+/, '')}`;
+  const entry = writePaths(apply.map((c) => c.path), apply.map((c) => c.before), label, origin, e.id);
   return { entry, skipped };
+}
+
+/**
+ * Redoes the most recent undo not redone yet, as long as no new action came after it (a new
+ * action clears the redo stack). A redo entry is an ordinary action for undoLast. → { entry, skipped } or null.
+ */
+export function redoLast() {
+  const redone = new Set();
+  for (const e of [...entries.value].reverse()) {
+    if (e.origin === 'redo') {
+      redone.add(e.undoes);
+      continue;
+    }
+    if (e.origin === 'seed') continue;
+    if (e.origin !== 'undo') return null;
+    if (redone.has(e.id)) continue;
+    const r = undo(e.id, { origin: 'redo' });
+    if (r.entry) return r;
+  }
+  return null;
 }
 
 /**

@@ -192,7 +192,9 @@ export function dispose() {
   unregisterKind();
 }
 
-const toolLabel = (name) => name.replace('str_replace_based_edit_tool', 'edit');
+const FILE_COMMANDS = { view: 'view', create: 'create', str_replace: 'edit', insert: 'edit' };
+const toolLabel = (name, input) =>
+  name === 'str_replace_based_edit_tool' ? FILE_COMMANDS[input?.command] ?? 'file' : name;
 
 function activity(s) {
   if (!s.running.value) return s.error.value ? { kind: 'error', text: s.error.value.split('\n')[0] } : { kind: 'idle', text: 'Idle' };
@@ -201,11 +203,11 @@ function activity(s) {
     const b = blocks[blocks.length - 1];
     if (b.type === 'thinking') return { kind: 'busy', text: 'Thinking…' };
     if (b.type === 'text') return { kind: 'busy', text: 'Writing…' };
-    if (b.type === 'tool_use') return { kind: 'busy', text: `Preparing ${toolLabel(b.name)}…` };
+    if (b.type === 'tool_use') return { kind: 'busy', text: `Preparing ${toolLabel(b.name, b.input)}…` };
   }
   const last = s.messages.value[s.messages.value.length - 1];
   const use = last?.role === 'assistant' && Array.isArray(last.content) && last.content.findLast((b) => b.type === 'tool_use');
-  if (use) return { kind: 'busy', text: `Running ${toolLabel(use.name)}${use.input?.path ? ` ${use.input.path}` : ''}…` };
+  if (use) return { kind: 'busy', text: `Running ${toolLabel(use.name, use.input)}${use.input?.path || use.input?.description ? ` ${use.input.path || use.input.description}` : ''}…` };
   return { kind: 'busy', text: 'Waiting for model…' };
 }
 
@@ -592,12 +594,12 @@ function Block({ block, result, streaming }) {
       ) : null;
     case 'tool_use': {
       const input = block.input || {};
-      const summary = input.command ? `${input.command} ${input.path ?? ''}` : input.path || input.label || '';
+      const summary = input.path || input.label || input.description || '';
       const state = result ? (result.is_error ? 'error' : 'ok') : streaming ? 'streaming' : 'running';
       return (
         <details class={`blk-tool blk-tool-${state}`}>
           <summary>
-            <span class="blk-tool-name">{toolLabel(block.name)}</span> {summary}
+            <span class="blk-tool-name">{toolLabel(block.name, input)}</span> {summary}
           </summary>
           <pre>{JSON.stringify(input, null, 2)}</pre>
           {result && <pre class="blk-result">{resultText(result)}</pre>}
