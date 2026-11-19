@@ -24,6 +24,7 @@ import { createTap, createMixer } from '../../lib/audioBlocks.js';
 import { stack, updateStackLayer, stackLayerById, LAYER_TYPES } from './stack.js';
 import { playing, inputPointAt, setOutputDelay } from '../timeline/Playhead.jsx';
 import { operatesAt } from '../timeline/layers.js';
+import { runLayer } from './layerFunc.js';
 
 /**
  * @typedef {object} ModelRef  stored on an operator layer as `model`
@@ -62,6 +63,8 @@ const AUDIO_BLOCK = 1024; // samples per block an audio-in layer streams
 const VOICE_IDLE_MS = 250; // a voice that sent nothing this long has ended: its model voice is freed
 
 const fileKey = (layerId, name) => `model:${layerId}:${name}`;
+/** An operator without a model but with a layer function: it transforms the latents reaching it. */
+const isFuncOperator = (l) => l.type === 'operator' && !l.model && !!l.func;
 
 /** @type {import('@preact/signals').Signal<Record<string, ModelRuntime>>} by operator layer id */
 export const runtimes = persist('models.runtimes', {});
@@ -91,6 +94,10 @@ export function emit(producerId, msg) {
 export function producedKind(l) {
   if (l.type === 'audio-in') return inputs.value[l.id]?.status === 'open' ? 'audio' : null;
   if (l.type === 'operator') {
+    if (isFuncOperator(l)) {
+      const src = producerBehind(l);
+      return src && producedKind(src) === 'latent' ? 'latent' : null;
+    }
     const rt = runtimes.value[l.id];
     return rt?.status === 'ready' ? rt.model.output.kind : null;
   }
@@ -331,6 +338,49 @@ function modelVoices(l, model, prepare) {
 
 /** What a consumer does with the stream reaching it: { handler, stop? } or { error }. */
 function consumerOf(l, src, kind) {
+  if (l.type === 'operator' && isFuncOperator(l)) {
+    // Layer function on latents: transform(params, { msg, state }) returns the messages to send on.
+    // When a voice's input stops, it gets zero frames on its grid until the output dies down (tails).
+    const state = {};
+    const tails = new Map(); // voice -> last latent msg in
+    const ctx = audioContext();
+    const sr = ctx.sampleRate;
+    const run = (msg) => {
+      let out;
+      try {
+        out = runLayer(stackLayerById(l.id) ?? l, { msg, state, sampleRate: sr });
+      } catch (e) {
+        const text = `layer function: ${e?.message || e}`;
+        if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
+        out = msg;
+      }
+      const list = [out ?? []].flat();
+      for (const m of list) emit(l.id, m);
+      return list.some((m) => m.kind === 'latent' && m.data.some((x) => Math.abs(x) > 1e-3));
+    };
+    const timer = setInterval(() => {
+      const now = ctx.currentTime * sr;
+      for (const [voice, last] of tails) {
+        const hop = sr / last.rate;
+        if (now < last.start + 1.5 * hop) continue;
+        const msg = { ...last, data: new Float32Array(last.data.length), start: last.start + hop, missed: false, ...(last.t !== undefined && { t: last.t + 1 / last.rate }) };
+        msg.loudAt = run(msg) ? msg.start : (last.loudAt ?? last.start);
+        if (msg.start - msg.loudAt > 5 * sr) tails.delete(voice), delete state[voice];
+        else tails.set(voice, msg);
+      }
+    }, 5);
+    return {
+      handler: (msg) => {
+        if (msg.kind !== 'latent' || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) {
+          if (msg.kind === 'flush') for (const v of msg.voices) delete state[v], tails.delete(v);
+          return emit(l.id, msg);
+        }
+        tails.set(msg.voice, msg);
+        run(msg);
+      },
+      stop: () => clearInterval(timer),
+    };
+  }
   if (l.type === 'operator') {
     const model = runtimes.value[l.id]?.model;
     const want = model.input.kind;
@@ -397,13 +447,13 @@ const stopWiring = effect(() => {
   const next = {};
   for (const l of stack.value) {
     if (l.type !== 'operator' && l.type !== 'audio-out' && l.type !== 'latent') continue;
-    if (l.type === 'operator' && runtimes.value[l.id]?.status !== 'ready') continue;
+    if (l.type === 'operator' && !isFuncOperator(l) && runtimes.value[l.id]?.status !== 'ready') continue;
     const src = producerBehind(l);
     const kind = src ? producedKind(src) : null;
     next[l.id] = { sourceId: src?.id ?? null, kind, error: null };
     const sub = subs.get(l.id);
     // Rewire when the producer, either side's model, or a latent layer's pass-through changes.
-    const key = src ? `${src.id}:${kind}:${runtimes.value[src.id]?.ref.added ?? ''}:${runtimes.value[l.id]?.ref.added ?? ''}:${l.passThrough !== false}` : null;
+    const key = src ? `${src.id}:${kind}:${runtimes.value[src.id]?.ref.added ?? ''}:${runtimes.value[l.id]?.ref.added ?? ''}:${l.passThrough !== false}:${isFuncOperator(l) ? l.funcUpdated ?? l.func : ''}` : null;
     if (sub?.key === key) {
       next[l.id].error = sub.error;
       continue;

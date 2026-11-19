@@ -18,6 +18,7 @@ const fmt = (x, digits = 3) => String(+x.toPrecision(digits));
 export function ModelPanel({ layer: l }) {
   useTick();
   const lastUnits = useRef(0);
+  if (!l.model && l.func) return null;
   if (!l.model) return <p class="layer-panel-desc">Drop a model folder (an encoder or decoder: its anira config and model file) on this layer's card.</p>;
   const rt = runtimes.value[l.id];
   const model = rt?.status === 'ready' ? rt.model : null;
