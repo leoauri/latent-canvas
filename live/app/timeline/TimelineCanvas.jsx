@@ -4,8 +4,18 @@
 // Presses on empty space bubble to the container (the playhead uses them); presses on clips don't.
 import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
-import { view, panBy, zoomAt, worldToScreenY } from './view.js';
-import { clips, selectedId, CLIP_HEIGHT, duration, updateClip, removeClip, bringToFront } from './clips.js';
+import { view, panBy, zoomAt, worldToScreenY, xToTime, screenToWorldY } from './view.js';
+import { clips, selectedId, CLIP_HEIGHT, duration, updateClip, removeClip, bringToFront, addClip } from './clips.js';
+import { isAssetDrag, assetOf, assetKind, clipFromAsset } from '../assetDrag.js';
+
+// Brief message over the timeline (the HUD has no error slot).
+function showDropError(msg) {
+  const el = document.createElement('div');
+  el.className = 'timeline-drop-error';
+  el.textContent = msg;
+  document.querySelector('.timeline')?.append(el);
+  setTimeout(() => el.remove(), 4000);
+}
 import { layers as masks, masked } from './layers.js';
 import { stack, activeLayer, activeLayerId, highlightedLayerId, stackLayerColor } from '../stack/stack.js';
 
@@ -225,7 +235,30 @@ export default function TimelineCanvas() {
       }
     };
 
+    // Latent assets dragged from the assets window become clips where they are dropped.
+    const offStack = (e) => !e.target.closest?.('.stack');
+    const onAssetOver = (e) => {
+      if (!isAssetDrag(e) || !offStack(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    };
+    const onAssetDrop = (e) => {
+      if (!isAssetDrag(e) || !offStack(e)) return;
+      e.preventDefault();
+      const a = assetOf(e.dataTransfer);
+      const [px, py] = local(e);
+      const v = view.value;
+      const at = { t: xToTime(px, v), y: screenToWorldY(py, v) - CLIP_HEIGHT / 2 / v.ys };
+      if (assetKind(a) !== 'clip') return showDropError(`“${a?.name ?? 'file'}” is not clip data: drop models on the layer stack`);
+      clipFromAsset(a.hash).then(
+        (c) => (addClip({ ...c, ...at }), (selectedId.value = c.id)),
+        (err) => showDropError(`Clip not added: ${err.message || err}`),
+      );
+    };
+
     const listeners = [
+      [host, 'dragover', onAssetOver],
+      [host, 'drop', onAssetDrop],
       // Pan/zoom on the whole timeline, not just the canvas: overlays above it (layer tabs and
       // edges) would otherwise let pinches through to browser zoom and stall scrolling.
       [host, 'wheel', onWheel, { passive: false }],

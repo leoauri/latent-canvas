@@ -31,6 +31,19 @@
   background: color-mix(in srgb, var(--bg) 85%, transparent);
   pointer-events: none;
 }
+.timeline-drop-error {
+  position: absolute;
+  left: 50%;
+  bottom: 36px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font: 12px/1.4 system-ui, sans-serif;
+  color: #fff;
+  background: oklch(0.55 0.2 25);
+  pointer-events: none;
+  z-index: 10;
+}
 .playhead-layer {
   position: absolute;
   inset: 0;

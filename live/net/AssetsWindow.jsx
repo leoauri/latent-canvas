@@ -8,6 +8,7 @@ import * as blobs from './blobs.js';
 import * as session from './session.js';
 import * as history from './history.js';
 import { repo } from './docs.js';
+import { startAssetDrag, prepareAssetDrag, isAssetDrag } from '../app/assetDrag.js';
 import './net.css';
 
 const HASH_RE = /^sha256-[0-9a-f]{64}$/;
@@ -230,7 +231,7 @@ function AssetsBody() {
     <div
       class={`net-body net-assets${dragging ? ' net-drop' : ''}`}
       onDragOver={(e) => {
-        if (![...(e.dataTransfer?.types ?? [])].includes('Files')) return;
+        if (isAssetDrag(e) || ![...(e.dataTransfer?.types ?? [])].includes('Files')) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -300,7 +301,14 @@ function AssetRow({ hash, e, t, places, inHistory, sessions, onRemove, run }) {
   const transferring = t && (t.state === 'fetching' || t.state === 'waiting');
   const pct = t?.total ? Math.min(100, (100 * t.bytes) / t.total) : e ? (100 * e.have) / Math.max(1, e.chunks) : 0;
   return (
-    <li class="net-asset">
+    <li
+      class={`net-asset${complete ? ' net-asset-draggable' : ''}`}
+      draggable={complete}
+      title={complete ? 'Drag clip data onto the canvas, model files onto the layer stack, or any file onto your desktop to save it' : undefined}
+      onPointerEnter={() => complete && prepareAssetDrag(hash)}
+      onPointerDown={() => complete && prepareAssetDrag(hash)}
+      onDragStart={(ev) => startAssetDrag(ev, hash)}
+    >
       <div class="net-row">
         <span class="net-grow net-asset-name" title={hash}>
           {e?.name ?? t?.name ?? <span class="net-mono">{short(hash)}</span>}

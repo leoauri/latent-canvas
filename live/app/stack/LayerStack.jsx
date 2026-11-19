@@ -8,6 +8,7 @@ import { readDrop, attachModel, runtimes } from './models.js';
 import { recordings } from './recorder.js';
 import { layers as masks, masked, isMasked, masksOf, maskTools, openMaskTools, closeMaskTools } from '../timeline/layers.js';
 import { LayerDetails } from './LayerConfig.jsx';
+import { isAssetDrag, assetOf, assetKind, modelFilesFor } from '../assetDrag.js';
 import './stack.css';
 
 const DRAG_SLOP = 4;
@@ -97,7 +98,7 @@ export default function LayerStack() {
 
   // Model drops: on an operator card that layer runs the model; anywhere else in the stack a new
   // operator layer gets it (in front of the card it was dropped on, else in front of everything).
-  const isFileDrag = (e) => e.dataTransfer?.types.includes('Files');
+  const isFileDrag = (e) => e.dataTransfer?.types.includes('Files') || isAssetDrag(e);
   const onDragOver = (e) => {
     if (!isFileDrag(e)) return;
     e.preventDefault();
@@ -114,9 +115,20 @@ export default function LayerStack() {
     e.preventDefault();
     const over = stackLayerById(fileDrag.value?.overId);
     fileDrag.value = null;
-    const read = readDrop(e.dataTransfer); // takes the entries now, inside the event
+    const asset = isAssetDrag(e) ? assetOf(e.dataTransfer) : null;
+    if (isAssetDrag(e) && assetKind(asset) !== 'model') {
+      dropError.value = assetKind(asset) === 'clip' ? 'clip data goes on the canvas, not the stack' : `“${asset?.name ?? 'file'}” is not a model file`;
+      return;
+    }
+    const read = asset ? modelFilesFor(asset.hash) : readDrop(e.dataTransfer); // takes the entries now, inside the event
     (async () => {
-      const { files, name } = await read;
+      let files, name;
+      try {
+        ({ files, name } = await read);
+      } catch (err) {
+        dropError.value = String(err?.message || err);
+        return;
+      }
       let id = over?.type === 'operator' ? over.id : null;
       const created = !id;
       if (created) id = insertLayer('operator', over ? stack.value.indexOf(over) + 1 : stack.value.length).id;

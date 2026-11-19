@@ -68,6 +68,7 @@
 .net-assets { position: relative; }
 .net-assets.net-drop { outline: 2px dashed var(--ok); outline-offset: -6px; background: var(--user-bg); }
 .net-assets-list { gap: 4px; }
+.net-assets-list li.net-asset-draggable { cursor: grab; }
 .net-assets-list li.net-asset { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; }
 .net-asset-name { font-weight: 600; }
 .net-asset-meta { gap: 8px; flex-wrap: wrap; font-size: 11px; }
