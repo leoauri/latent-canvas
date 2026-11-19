@@ -26,3 +26,6 @@ Thumbs.db
 e2e/out/
 
 scripts/__pycache__
+
+# always-on peer profile (scripts/peer.mjs)
+.peer/
