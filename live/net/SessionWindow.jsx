@@ -25,6 +25,8 @@ function SessionBody() {
   const [joinText, setJoinText] = useState('');
   const [joinError, setJoinError] = useState(null);
   const [signalText, setSignalText] = useState(null);
+  const [nameDraft, setNameDraft] = useState(null);
+  const [myNameDraft, setMyNameDraft] = useState(null);
   const copy = async () => {
     await navigator.clipboard?.writeText(link).catch(() => {});
     setCopied(true);
@@ -41,10 +43,15 @@ function SessionBody() {
         <label class="net-label">Session</label>
         <input
           class="net-name"
-          value={cur?.name ?? ''}
+          value={nameDraft ?? cur?.name ?? ''}
           disabled={session.status.value !== 'ready'}
+          onInput={(e) => setNameDraft(e.currentTarget.value)}
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-          onBlur={(e) => e.currentTarget.value.trim() && e.currentTarget.value !== cur?.name && session.rename(e.currentTarget.value.trim())}
+          onBlur={(e) => {
+            const v = e.currentTarget.value.trim();
+            if (v && v !== cur?.name) session.rename(v);
+            setNameDraft(null);
+          }}
         />
         <div class="net-status">
           {session.status.value === 'waiting' ? 'Waiting for a peer that has this session…' : session.status.value === 'error' ? `Error: ${session.error.value}` : session.status.value === 'loading' ? 'Loading…' : null}
@@ -75,11 +82,16 @@ function SessionBody() {
         <div class="net-row">
           <span class="net-dot" style={{ background: presence.myColor }} title="Your colour" />
           <input
-            value={myName.value}
+            value={myNameDraft ?? myName.value}
             placeholder="Your name"
             title="Your name, shown on your cursor and on changes you publish"
+            onInput={(e) => setMyNameDraft(e.currentTarget.value)}
             onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-            onBlur={(e) => e.currentTarget.value.trim() && (myName.value = e.currentTarget.value.trim().slice(0, 80))}
+            onBlur={(e) => {
+              const v = e.currentTarget.value.trim();
+              if (v) myName.value = v.slice(0, 80);
+              setMyNameDraft(null);
+            }}
           />
         </div>
         {peers.length ? (
