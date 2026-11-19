@@ -9,6 +9,7 @@ import { view, timeToX, xToTime, placeTimeAt, screenToWorldY, worldToScreenY } f
 import * as db from '../../lib/db.js';
 import { inputs, peaks, audioContext } from '../../lib/audio.js';
 import { stack } from '../stack/stack.js';
+import { engineOn } from '../../lib/engine.js';
 
 /** Where playback starts, seconds. */
 export const cue = persist('playhead.cue', 0);
@@ -82,6 +83,7 @@ function heardTime(t) {
 }
 
 export function play() {
+  if (!engineOn.peek()) return;
   anchorAt(cue.value);
   batch(() => {
     time.value = cue.value;
@@ -106,7 +108,11 @@ export function seek(t) {
   });
 }
 
+// The engine going off stops playback.
+const stopOnEngineOff = engineOn.subscribe((on) => on || !playing.peek() || stop());
+
 export function dispose() {
+  stopOnEngineOff();
   unbindCue();
   cancelAnimationFrame(raf);
   raf = 0;

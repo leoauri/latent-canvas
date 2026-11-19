@@ -6,6 +6,7 @@ import './net/index.js'; // multiplayer: sessions, sync, blobs
 import { SessionPill } from './net/SessionWindow.jsx';
 import { AssetsPill } from './net/AssetsWindow.jsx';
 import { ChangesPill } from './net/ChangesWindow.jsx';
+import { EnginePill } from './app/EnginePill.jsx';
 import { PreviewFrame } from './app/PreviewFrame.jsx';
 import { Guide } from './ui/guide/Guide.jsx';
 import './main.css';
@@ -18,6 +19,7 @@ export default function App() {
       </main>
       <Windows />
       <div class="net-pills">
+        <EnginePill />
         <AssetsPill />
         <ChangesPill />
         <SessionPill />

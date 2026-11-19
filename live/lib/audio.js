@@ -1,6 +1,8 @@
 // Shared AudioContext and live audio inputs (getUserMedia), one per audio-in stack layer.
 // Nothing is recorded here: an input exposes its source node for later analysis/encoding.
+import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
+import { engineOn } from './engine.js';
 
 /**
  * @typedef {object} AudioInput
@@ -31,6 +33,7 @@ export const SAMPLE_RATE = 48000;
  * callback, instead of a fixed 128 frames.
  */
 export function audioContext() {
+  if (!engineOn.peek()) throw new Error('the engine is off');
   if (!ctxBox.value || ctxBox.value.state === 'closed') {
     const options = { latencyHint: 'interactive', sampleRate: SAMPLE_RATE };
     if ('renderQuantumSize' in AudioContext.prototype) options.renderSizeHint = 'hardware';
@@ -54,6 +57,7 @@ const setInput = (id, v) => {
 /** Opens a device (default if empty) for a layer; call from a user gesture so the context can start. */
 export async function openInput(layerId, deviceId) {
   closeInput(layerId);
+  if (!engineOn.peek()) return void setInput(layerId, { status: 'error', deviceId, error: 'The engine is off' });
   const ctx = audioContext();
   setInput(layerId, { status: 'opening', deviceId });
   try {
@@ -116,6 +120,16 @@ const onDeviceChange = () => refreshDevices();
 navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
 refreshDevices();
 
+// Engine off: close every input and the context, which lets go of the audio device.
+const stopEngine = effect(() => {
+  if (engineOn.value) return;
+  for (const id of Object.keys(inputs.peek())) closeInput(id);
+  const ctx = ctxBox.peek();
+  ctxBox.value = null;
+  if (ctx && ctx.state !== 'closed') ctx.close().catch(() => {});
+});
+
 export function dispose() {
+  stopEngine();
   navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
 }

@@ -18,6 +18,7 @@ import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
 import * as blobs from '../../net/blobs.js';
 import { audioContext, inputs } from '../../lib/audio.js';
+import { engineOn } from '../../lib/engine.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
 import { createTap, createMixer } from '../../lib/audioBlocks.js';
 import { stack, updateStackLayer, stackLayerById } from './stack.js';
@@ -183,8 +184,6 @@ function stopModel(id) {
   if (rt && !stackLayerById(id)) dropLegacyFiles(id, rt.ref);
 }
 
-const storeOnly = new URLSearchParams(location.search).has('store-only');
-
 async function startModel(l) {
   const ref = l.model;
   setIn(runtimes, l.id, { status: 'loading', ref });
@@ -208,9 +207,6 @@ async function startModel(l) {
       updateStackLayer(l.id, { model: { ...ref, hashes } });
       ref.hashes = hashes; // same `added`: the runtime carries on
     }
-    // A page opened with ?store-only (the always-on peer, scripts/peer.mjs) keeps the files for
-    // peers but never runs the model.
-    if (storeOnly) return void (current() && setIn(runtimes, l.id, { status: 'stored', ref }));
     const model = await createStreamModel({ files, sampleRate: audioContext().sampleRate });
     if (!current()) return model.destroy();
     setIn(runtimes, l.id, { status: 'ready', ref, model });
@@ -220,9 +216,10 @@ async function startModel(l) {
   }
 }
 
-// Model runtimes follow the stack: start new models, stop removed or replaced ones.
+// Model runtimes follow the stack: start new models, stop removed or replaced ones (all of them
+// while the engine is off).
 const stopModels = effect(() => {
-  const want = new Map(stack.value.filter((l) => l.type === 'operator' && l.model).map((l) => [l.id, l]));
+  const want = new Map(!engineOn.value ? [] : stack.value.filter((l) => l.type === 'operator' && l.model).map((l) => [l.id, l]));
   const rts = runtimes.peek();
   for (const id of Object.keys(rts)) if (!want.has(id) || rts[id].ref.added !== want.get(id).model.added) stopModel(id);
   for (const [id, l] of want) if (!runtimes.peek()[id]) startModel(l);
@@ -368,9 +365,9 @@ function consumerOf(l, src, kind) {
   return null;
 }
 
-// Audio output layers each have a mixer while the stack holds them.
+// Audio output layers each have a mixer while the stack holds them and the engine runs.
 const stopMixers = effect(() => {
-  const ids = new Set(stack.value.filter((l) => l.type === 'audio-out').map((l) => l.id));
+  const ids = new Set(!engineOn.value ? [] : stack.value.filter((l) => l.type === 'audio-out').map((l) => l.id));
   for (const [id, p] of mixers) if (!ids.has(id)) (p.destroy?.(), mixers.delete(id));
   for (const id of ids)
     if (!mixers.has(id)) {
