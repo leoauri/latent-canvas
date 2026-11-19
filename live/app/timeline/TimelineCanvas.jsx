@@ -42,7 +42,7 @@ function projection(dim) {
 }
 
 const bitmaps = new WeakMap(); // clip.data -> canvas
-function bitmap(clip) {
+export function bitmap(clip) {
   let c = bitmaps.get(clip.data);
   if (c) return c;
   const { length: n, dim, data } = clip;

@@ -2,6 +2,7 @@ import TimelineCanvas from './TimelineCanvas.jsx';
 import Layers from './Layers.jsx';
 import Playhead from './Playhead.jsx';
 import Presence from './Presence.jsx';
+import Minimap from './Minimap.jsx';
 import LayerStack from '../stack/LayerStack.jsx';
 import { clips, selection, selectedId, duration } from './clips.js';
 import './timeline.css';
@@ -15,6 +16,7 @@ export default function Timeline() {
       <Layers />
       <Playhead />
       <Presence />
+      <Minimap />
       <LayerStack />
       <div class="timeline-hud">
         {n > 1
