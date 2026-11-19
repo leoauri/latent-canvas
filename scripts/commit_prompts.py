@@ -11,11 +11,12 @@ Prompts come from Claude Code transcripts of this repo and from the page chat lo
 the last run, plus prompts carried over because their work was still uncommitted.
 Prompts are split into numbered sentences, and Sonnet picks the sentences that contributed
 to the staged diff (copied here verbatim, it only returns ids; omissions are marked […]),
-which prompts still belong to uncommitted work (carried to the next commit), and, only if
-needed, agent decisions that explain a change.
+which prompts still belong to uncommitted or not yet started work (carried to the next
+commit, together with the agent replies that proposed that work), and, only if needed,
+agent decisions that explain a change.
 
-State lives in .git/commit-prompts/: pending.json is the carried-over set plus the scan
-cursor; prepare writes next.json, and post-commit promotes it, so an aborted commit
+State lives in .git/commit-prompts/: pending.json is the carried-over set (prompts and agent
+replies) plus the scan cursor; prepare writes next.json, and post-commit promotes it, so an aborted commit
 changes nothing.
 
 prepare aborts the commit on any error (missing `claude`, a failed Sonnet call, …), so a
@@ -180,9 +181,10 @@ SCHEMA = {
     "properties": {
         "sentence_ids": {"type": "array", "items": {"type": "string"}},
         "keep_ids": {"type": "array", "items": {"type": "integer"}},
+        "keep_agent_ids": {"type": "array", "items": {"type": "integer"}},
         "decisions": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["sentence_ids", "keep_ids", "decisions"],
+    "required": ["sentence_ids", "keep_ids", "keep_agent_ids", "decisions"],
 }
 
 
@@ -219,15 +221,15 @@ def excerpt(text, keep):
 def ask_sonnet(diff, rest, message, prompts, agent):
     timeline = sorted(
         [{"ts": p["ts"], "s": f"[HUMAN PROMPT id={p['id']} via {p['source']}]\n{numbered(p)}"} for p in prompts]
-        + [{"ts": a["ts"], "s": f"[AGENT via {a['source']}]\n{a['text']}"} for a in agent],
+        + [{"ts": a["ts"], "s": f"[AGENT id={a['id']} via {a['source']}]\n{a['text']}"} for a in agent],
         key=lambda x: x["ts"],
     )
     task = f"""You annotate a git commit with the human prompts that led to it.
 
 Below are the staged diff (what this commit contains), the changes that stay uncommitted,
 the draft commit message, and a timeline of human prompts and agent replies from coding
-sessions. Some prompts may be older than the agent replies shown; they were carried over
-from earlier commits because their work was not committed yet. Each human prompt is split
+sessions. Some entries may be older than the rest; they were carried over from earlier
+commits because their work was not committed, or not started, yet. Each human prompt is split
 into numbered sentences: [3.2] is sentence 2 of prompt 3.
 
 1. sentence_ids: ids (like "3.2") of every human prompt sentence that contributed to the
@@ -237,9 +239,16 @@ into numbered sentences: [3.2] is sentence 2 of prompt 3.
    questions, concern other work, or add no information, such as approving or confirming a
    plan the agent proposed ("Yes.", "go ahead", "sounds good"): the intent is already in the
    earlier prompt that led to the plan.
-2. keep_ids: integer ids of HUMAN PROMPTs that contributed to the uncommitted changes. A prompt
-   can count for both if its work is split across staged and uncommitted changes.
-3. decisions: usually empty. Only if the reason for a change in the staged diff cannot be
+2. keep_ids: integer ids of HUMAN PROMPTs whose work is not done by this commit: they
+   contributed to the uncommitted changes, or the discussion they started is still open
+   because the agent offered a concrete change and asked whether to make it, and that change
+   is in neither the staged diff nor the uncommitted changes. Don't keep remarks about some
+   unspecified future ("we should look at that someday"). A prompt can count for both 1 and 2
+   if its work is split across staged and uncommitted changes.
+3. keep_agent_ids: integer ids of AGENT replies that describe such open or uncommitted work,
+   for example the reply proposing the change. They are shown again next time, so that a
+   later approval like "Yes." can be understood.
+4. decisions: usually empty. Only if the reason for a change in the staged diff cannot be
    understood from the selected prompts, add one short sentence per agent decision that explains it.
 
 <draft_commit_message>
@@ -325,17 +334,18 @@ def prepare(msg_file, source):
     now = time.time()
     pending = load_pending()
     if pending is not None:
-        since, carried = pending["cursor"], pending["prompts"]
+        since, carried, carried_agent = pending["cursor"], pending["prompts"], pending.get("agent", [])
     else:
         try:
             since = int(git("log", "-1", "--format=%ct").strip())
         except subprocess.CalledProcessError:
             since = 0  # first commit
-        carried = []
-    fresh, agent = collect(root, since)
+        carried, carried_agent = [], []
+    fresh, fresh_agent = collect(root, since)
     prompts = [{**p, "id": i + 1} for i, p in enumerate(sorted(carried + fresh, key=lambda p: p["ts"]))]
+    agent = [{**a, "id": i + 1} for i, a in enumerate(sorted(carried_agent + fresh_agent, key=lambda a: a["ts"]))]
 
-    data = {"sentence_ids": [], "keep_ids": [], "decisions": []}
+    data = {"sentence_ids": [], "keep_ids": [], "keep_agent_ids": [], "decisions": []}
     if prompts:
         if not shutil.which("claude"):
             raise RuntimeError("`claude` (Claude Code CLI) not found on PATH")
@@ -345,6 +355,8 @@ def prepare(msg_file, source):
 
     by_id = {p["id"]: p for p in prompts}
     kept = [by_id[i] for i in sorted(set(data.get("keep_ids", []))) if i in by_id]
+    agent_by_id = {a["id"]: a for a in agent}
+    kept_agent = [agent_by_id[i] for i in sorted(set(data.get("keep_agent_ids", []))) if i in agent_by_id]
     sel = {}  # prompt id -> 0-based sentence indices; a bare "3" means the whole prompt
     for sid in data.get("sentence_ids", []):
         m = re.fullmatch(r"\s*(\d+)(?:\.(\d+))?\s*", str(sid))
@@ -357,9 +369,11 @@ def prepare(msg_file, source):
 
     sd.mkdir(parents=True, exist_ok=True)
     strip = lambda p: {k: p[k] for k in ("ts", "source", "text")}
-    (sd / "next.json").write_text(json.dumps({"cursor": now, "prompts": [strip(p) for p in kept]}, indent=1))
-    if kept:
-        print(f"commit-prompts: carrying {len(kept)} prompt(s) to a later commit", file=sys.stderr)
+    (sd / "next.json").write_text(json.dumps(
+        {"cursor": now, "prompts": [strip(p) for p in kept], "agent": [strip(a) for a in kept_agent]}, indent=1))
+    if kept or kept_agent:
+        print(f"commit-prompts: carrying {len(kept)} prompt(s) and {len(kept_agent)} agent reply(ies) to a later commit",
+              file=sys.stderr)
 
     section = []
     if chosen:
