@@ -7,7 +7,7 @@ GSMetadata {
 				#name : 'Redaw'
 			},
 			#path : FSAbsolutePath [
-				'src'
+				'squeak'
 			]
 		}
 	],
