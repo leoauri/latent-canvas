@@ -19,7 +19,7 @@ import {
 } from './store.js';
 import * as changes from '../net/changes.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
-import { approve, unpublishedEntries, showApprovalGuide, showingGuideOf } from './tools.js';
+import { approve, pendingBundle, showApprovalGuide, showingGuideOf } from './tools.js';
 import { requestTrial } from '../net/trials.js';
 import { dismissGuide } from '../ui/guide/guide.js';
 // Loaded with the chat so other modules (e.g. a Changes window) can hand tasks to the agent.
@@ -374,18 +374,17 @@ function Changes({ s }) {
   const labelOf = (id) =>
     id.startsWith('chat:') && findSession(id.slice(5)) ? sessionTitle(findSession(id.slice(5))) : vfs.overlays().find((o) => o.id === id)?.label ?? id;
   const trialLabel = trial && labelOf(trial.overlayId);
-  const unpublished = unpublishedEntries(s);
-  const approval = s.approval.value;
+  const approval = pendingBundle(s);
   const showing = showingGuideOf(s);
-  if (!pending.length && !unassigned.length && !trial && !last && !unpublished.length) return null;
+  if (!pending.length && !unassigned.length && !trial && !last && !approval) return null;
   return (
     <div class="chat-changes">
-      {unpublished.length > 0 && (
-        <div class="chat-approve" title="Committed here, not yet published to the session. Ask for more changes first if you like: they join this change.">
+      {approval && (
+        <div class="chat-approve" title={`A bundle the agent wrote for the session: ${approval.patch.map((f) => f.path).join(', ')}. Ask for changes first if you like: the agent proposes it again.`}>
           <span>
-            Ready: “{approval?.label || labelOf(ovId)}”{unpublished.length > 1 ? ` (${unpublished.length} commits)` : ''}
+            Ready: “{approval.label}” ({approval.patch.length} file{approval.patch.length === 1 ? '' : 's'})
           </span>
-          {approval?.guide && (
+          {approval.guide && (
             <button disabled={busy.value} onClick={() => (showing ? dismissGuide(`chat:${s.id}`) : showApprovalGuide(s))}>
               {showing ? 'Hide guide' : 'Show guide'}
             </button>
@@ -393,7 +392,7 @@ function Changes({ s }) {
           <button
             class="chat-approve-btn"
             disabled={busy.value || s.running.value}
-            title="Hide the guide and publish this chat's committed changes to the session as one change"
+            title="Hide the guide and publish this bundle to the session"
             onClick={() => run(async () => approve(s))}
           >
             Approve & publish

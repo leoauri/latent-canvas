@@ -2,7 +2,7 @@
 // The transcript is stored as content blocks (text, thinking, tool_use / tool_result) so the UI
 // and the chat log stay provider-neutral; toWire() converts it to Chat Completions messages.
 import { env } from '@live/runtime';
-import { toolDefs, runTool, showApprovalGuide, unpublishedEntries, moduleMapOf } from './tools.js';
+import { toolDefs, runTool, showApprovalGuide, pendingBundle, moduleMapOf } from './tools.js';
 import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
@@ -55,8 +55,8 @@ export async function sendMessage(s, text) {
     s.running.value = false;
     s.controller.value = null;
   }
-  // A finished feature: show its onboarding guide while it waits for the user's approval.
-  if (!s.error.value && s.approval?.value?.guide && unpublishedEntries(s).length && !queueOf(s).value.length)
+  // A proposed bundle: show its onboarding guide while it waits for the user's approval.
+  if (!s.error.value && pendingBundle(s)?.guide && !queueOf(s).value.length)
     showApprovalGuide(s)?.catch((e) => console.warn('guide:', e));
   // After a stop or error the queue is held so the user can decide what to do with it.
   const queue = queueOf(s);

@@ -48,11 +48,10 @@ export const tools = [
   ),
   custom(
     'apply_changes',
-    'Atomically apply your overlay\'s edits: merge them onto the committed files, evaluate the new versions of changed modules and their importers, swap them into the running page, re-render, then watch the whole page for errors (from any module) for observe_ms, optionally running a check script. If anything fails the swap is rolled back, the page returns to its previous state, and the buffer is kept so you can fix and re-apply. On success the changes are committed (persisted, and written to disk under the dev server). They are not published yet: the user approves this chat\'s committed changes in the chat, which publishes them to everyone in the session as one change under your latest label (adapting a peer\'s change is not published). If the files changed underneath you and the edits overlap, nothing is applied and the files get conflict markers to resolve.',
+    'Atomically apply your overlay\'s edits: merge them onto the committed files, evaluate the new versions of changed modules and their importers, swap them into the running page, re-render, then watch the whole page for errors (from any module) for observe_ms, optionally running a check script. If anything fails the swap is rolled back, the page returns to its previous state, and the buffer is kept so you can fix and re-apply. On success the changes are committed (persisted, and written to disk under the dev server) on this page only: commits are never published by themselves. When the composition depends on what you changed, describe that part with propose_bundle. If the files changed underneath you and the edits overlap, nothing is applied and the files get conflict markers to resolve.',
     {
       label: { type: 'string', description: 'Always give one: a short, meaningful name of what the change does, e.g. "add reverb operator" (shown in history; not file names).' },
       intent: { type: 'string', description: 'Optional: one or two sentences on why / how to use it.' },
-      follows: { type: 'string', description: 'If this change refines, fixes or extends a change published earlier (one you published in this chat, or a peer\'s from list_published), that change\'s id. Omit for unrelated changes.' },
       observe_ms: { type: 'integer', description: 'How long to watch for errors after the swap. Default 800.' },
       check: {
         type: 'string',
@@ -81,12 +80,11 @@ export const tools = [
   ),
   custom(
     'end_trial',
-    'End your running trial. keep: true commits what is running (like apply_changes: give a label, follows as there; the user approves publishing); keep: false swaps the committed code back (your edits stay in the overlay).',
+    'End your running trial. keep: true commits what is running on this page (like apply_changes: give a label); keep: false swaps the committed code back (your edits stay in the overlay).',
     {
       keep: { type: 'boolean' },
       label: { type: 'string', description: 'keep: short meaningful name of the change.' },
       intent: { type: 'string' },
-      follows: { type: 'string', description: 'If this change refines, fixes or extends a change published earlier (one you published in this chat, or a peer\'s from list_published), that change\'s id. Omit for unrelated changes.' },
     },
     ['keep'],
   ),
@@ -122,20 +120,23 @@ export const tools = [
     ['at'],
   ),
   custom(
-    'publish_change',
-    'Publish committed code changes right away, without the user\'s approval step. Only when the user asks you to publish, or for commits outside this chat (e.g. edits made in the editor). Your own apply_changes/end_trial keep are published when the user approves them in the chat. Default: the transactions this chat applied since its last publish. Pick a short meaningful name unless the user gives one.',
+    'propose_bundle',
+    'Propose a bundle for the user to approve and publish to everyone in the session: a diff, written by you, of the code changes the composition depends on (how sound is produced or transformed, models, layer functions, data formats), and nothing else: leave out this page\'s own views, tools and UI tweaks. Peers\' agents read it to understand the intent and apply or adapt it to their own code, so make it a minimal, coherent diff of the shared code. Write it as exact-text edits against the code as it now is (you applied the change already): each new_str must be in the committed file, each old_str is what the code was before (it must be unique in a peer\'s copy of the file, so include enough context). Calling it again replaces the proposal. The user approves it in the chat; after that a note gives the published change\'s id.',
     {
-      name: { type: 'string' },
-      intent: { type: 'string', description: 'What it does and how to use it.' },
-      entries: { type: 'array', items: { type: 'string' }, description: 'Code history ids to publish instead (from list_modules).' },
-      deps: { type: 'array', items: { type: 'string' }, description: 'Ids of published changes this one needs.' },
-      follows: { type: 'string', description: 'If this change refines, fixes or extends a change published earlier (one you published in this chat, or a peer\'s from list_published), that change\'s id. Omit for unrelated changes.' },
+      name: { type: 'string', description: 'Short meaningful name of what the bundle does, e.g. "pitch layer function".' },
+      intent: { type: 'string', description: 'What it does for the composition and how to use it: peers and their agents read this to adapt it.' },
+      patch: {
+        type: 'array',
+        items: { type: 'object' },
+        description: 'Files: { path, edits: [{ old_str, new_str }] } | { path, create: full text } | { path, delete: true }.',
+      },
+      follows: { type: 'string', description: 'If this bundle refines, fixes or extends a change published earlier (yours or a peer\'s, see list_published), that change\'s id. Omit for unrelated changes.' },
     },
-    ['name'],
+    ['name', 'intent', 'patch'],
   ),
   custom(
     'onboarding_guide',
-    'Attach a tiny "this is new" guide to the change waiting for approval: arrows with a few words pointing at what you built. Call it after your last apply_changes of a feature with visible UI that the user explicitly asked to have built (skip it for invisible changes and for quick in-the-moment tools). It is checked now (each step resolved in the live page, windows opened and closed again) and the result says per step what it found; fix steps that fail. It is shown to the user when your turn ends, and to peers who preview the published change. Steps (1-4 is best, max 6), all shown at once: { target: CSS selector or list (first visible match), text: 3-10 words, side?: top|bottom|left|right, open?: { window: kind, props?, match? } (look inside a floating window of that kind; one is opened if none is: windows are local UI, so this has no side effects), within?: selector to search in, click?: selector(s) of inert navigation to click first (only [role=tab], summary, [aria-expanded] or [data-inert]; mark your own view-only toggles data-inert), fallback?: { target, text } }. Never cause side effects to show something: when the new thing only exists after a real action (e.g. adding a layer), point a fallback at the nearest inert element that would do it (the button) and say in 5-10 words what would happen. Give your new elements stable class names so selectors stay valid.',
+    'A tiny "this is new" guide: arrows with a few words pointing at controls. With a bundle waiting for approval it is attached to it: shown to the user when your turn ends, and to peers who preview the published change (add one when a bundle brings visible controls). Without a bundle it is shown right away, for this page only: use it only when a new control of yours might be missed. It is checked now (each step resolved in the live page, windows opened and closed again) and the result says per step what it found; fix steps that fail. Steps (1-4 is best, max 6), all shown at once: { target: CSS selector or list (first visible match), text: 3-10 words, side?: top|bottom|left|right, open?: { window: kind, props?, match? } (look inside a floating window of that kind; one is opened if none is: windows are local UI, so this has no side effects), within?: selector to search in, click?: selector(s) of inert navigation to click first (only [role=tab], summary, [aria-expanded] or [data-inert]; mark your own view-only toggles data-inert), fallback?: { target, text } }. Never cause side effects to show something: when the new thing only exists after a real action (e.g. adding a layer), point a fallback at the nearest inert element that would do it (the button) and say in 5-10 words what would happen. Give your new elements stable class names so selectors stay valid.',
     {
       title: { type: 'string', description: 'Short name of the feature, shown as "New: <title>".' },
       steps: { type: 'array', items: { type: 'object' } },
@@ -194,13 +195,13 @@ const SPECS = {
   apply_changes: { label: 'string?', intent: 'string?', follows: 'string?', observe_ms: 'integer?', check: 'string?', include_console_errors: 'boolean?' },
   discard_changes: { paths: 'array?' },
   try_changes: { observe_ms: 'integer?', check: 'string?', include_console_errors: 'boolean?' },
-  end_trial: { keep: 'boolean', label: 'string?', intent: 'string?', follows: 'string?' },
+  end_trial: { keep: 'boolean', label: 'string?', intent: 'string?' },
   revert_applied: { count: 'integer?' },
   history_list: { limit: 'integer?' },
   history_diff: { id: 'string' },
   history_undo: { id: 'string?' },
   history_restore: { at: 'string', key: 'string?', id: 'string?' },
-  publish_change: { name: 'string', intent: 'string?', entries: 'array?', deps: 'array?', follows: 'string?' },
+  propose_bundle: { name: 'string', intent: 'string', patch: 'array', follows: 'string?' },
   onboarding_guide: { title: 'string?', steps: 'array' },
   list_published: {},
   eval_js: { description: 'string', code: 'string', timeout_ms: 'integer?' },
@@ -239,7 +240,7 @@ export async function runTool(block, ctx = {}) {
         fs.remove(livePath(input.path));
         return ok(id, `Buffered deletion of ${livePath(input.path)}. Call apply_changes to run it.`);
       case 'apply_changes':
-        return applyChanges(id, input, fs, ctx.session);
+        return applyChanges(id, input, fs);
       case 'discard_changes':
         return ok(id, `Discarded buffered changes: ${fs.discard(input.paths?.map(livePath)).join(', ') || '(none)'}`);
       case 'try_changes':
@@ -260,8 +261,8 @@ export async function runTool(block, ctx = {}) {
         const e = history.restore(input.at, { key: input.key, id: input.id });
         return ok(id, e ? `Restored as action ${e.id} "${e.label}" (keys: ${e.keys.join(', ')}).` : 'Nothing to restore: the state already matches.');
       }
-      case 'publish_change':
-        return publishChange(id, input, fs, ctx.session);
+      case 'propose_bundle':
+        return proposeBundle(id, input, ctx.session);
       case 'list_published':
         return ok(id, listPublished());
       case 'onboarding_guide':
@@ -409,55 +410,17 @@ function badFollows(id, input) {
   return fail(id, `follows: no published change has id ${JSON.stringify(input.follows)}. See list_published, or omit follows.`);
 }
 
-async function applyChanges(id, input, fs, session) {
-  const bad = badFollows(id, input);
-  if (bad) return bad;
+async function applyChanges(id, input, fs) {
   const r = await fs.apply({ ...txOpts(input), label: input.label, intent: input.intent, markConflicts: true });
-  return afterCommit(id, r, input, fs, session);
+  return afterCommit(id, r, input, fs);
 }
 
-/**
- * After a commit: an adapted peer change ('peer:<change id>' overlay) is marked incorporated;
- * a chat's own change is published to the session as one change.
- */
-function afterCommit(id, r, input, fs, session) {
+/** After a commit: an adapted peer change ('peer:<change id>' overlay) is marked incorporated. */
+function afterCommit(id, r, input, fs) {
   const res = applyResult(id, r);
   if (!r.ok && r.phase !== 'committed') return res; // 'committed': in our code, despite reported errors
-  if (fs.id?.startsWith('peer:')) {
-    changes.markApplied(fs.id.slice(5));
-    return res;
-  }
-  if (session) {
-    const a = stageApproval(session, input);
-    return {
-      ...res,
-      content:
-        res.content +
-        `\nNot published yet: the user approves it in the chat, which publishes everything this chat committed since its last publish as one change "${a.label}"${a.follows ? `, following ${a.follows}` : ''}. ${a.guide ? 'Your onboarding guide is kept; call onboarding_guide again if the UI changed.' : 'If it has visible UI, add an onboarding_guide.'} Then end your turn; the user may also ask for more changes first (they join this change).`,
-    };
-  }
-  let note;
-  try {
-    const c = autoPublish(input, fs, session);
-    note = c ? `\nPublished to the session as change ${c.id} "${c.name}"${c.follows ? `, following ${c.follows}` : ''}${c.deps.length ? `; builds on ${c.deps.join(', ')}` : ''}. Pass this id as follows when a later request refines it.` : '';
-  } catch (e) {
-    note = `\nNot published: ${e.message || e}`;
-  }
-  return { ...res, content: res.content + note };
-}
-
-function autoPublish(input, fs, session) {
-  if (!changes.canPublish()) return null; // no session open
-  const done = new Set(session?.published.value ?? []);
-  const entries = vfs.history.filter((e) => e.overlayId === fs.id && !done.has(e.id)).map((e) => e.id);
-  if (!entries.length) return null;
-  const label = input.label?.trim() || vfs.history.find((e) => e.id === entries[entries.length - 1])?.label || 'change';
-  const c = changes.publish({ name: label, intent: input.intent, from: { entries }, follows: input.follows });
-  if (session) {
-    session.published.value = [...done, ...entries];
-    saveSession(session);
-  }
-  return c;
+  if (fs.id?.startsWith('peer:')) changes.markApplied(fs.id.slice(5));
+  return res;
 }
 
 function applyResult(id, r) {
@@ -501,10 +464,6 @@ async function tryChanges(id, input, fs, session) {
 
 async function endTrial(id, input, fs, session) {
   const { keep, label, intent } = input;
-  if (keep) {
-    const bad = badFollows(id, input);
-    if (bad) return bad;
-  }
   const t = vfs.trial;
   if (!t) return fail(id, 'No trial is running.');
   if (t.overlayId !== fs.id) return fail(id, `The running trial is overlay ${t.overlayId}, not yours (${fs.id}); ask the user to keep or discard it.`);
@@ -512,7 +471,7 @@ async function endTrial(id, input, fs, session) {
   const r = t.overlayId.startsWith('peer:') ? await changes.endTrial(keep) : await vfs.endTrial(keep ? 'keep' : 'discard', keep ? { label, intent, markConflicts: true } : {});
   if (!keep) return r.ok ? ok(id, 'Trial discarded: the committed code runs again. Your edits stay in the overlay.') : fail(id, r.message || 'discard failed');
   // changes.endTrial already marked a peer change incorporated.
-  return t.overlayId.startsWith('peer:') ? applyResult(id, r) : afterCommit(id, r, input, fs, session);
+  return t.overlayId.startsWith('peer:') ? applyResult(id, r) : afterCommit(id, r, input, fs);
 }
 
 function historyList(limit) {
@@ -523,7 +482,7 @@ function historyList(limit) {
 
 /**
  * The user ends a chat's trial from outside the chat (the preview frame): keep commits it like the
- * agent's end_trial would (a chat's change then waits for approval). Returns { ok, message }.
+ * agent's end_trial would. Returns { ok, message }.
  */
 export async function endTrialAsUser(keep, session) {
   const t = vfs.trial;
@@ -534,30 +493,7 @@ export async function endTrialAsUser(keep, session) {
   const label = (session ? sessionTitle(session) : null) || fs?.info?.label || 'preview';
   const r = await vfs.endTrial('keep', { label, markConflicts: true });
   if (!r.ok && r.phase !== 'committed') return { ok: false, message: r.message || r.errors?.map((e) => `${e.path}: ${e.message}`).join('\n') || 'keep failed' };
-  if (session) {
-    stageApproval(session, { label });
-    return { ok: true, message: `Applied. Approve “${session.approval.value.label}” in its chat to publish it.` };
-  }
-  let message = 'Applied.';
-  try {
-    const c = autoPublish({ label }, fs ?? { id: t.overlayId }, session);
-    if (c) message = `Applied and published as “${c.name}”.`;
-  } catch (e) {
-    message = `Applied, not published: ${e.message || e}`;
-  }
-  return { ok: true, message };
-}
-
-function publishChange(id, input, fs, session) {
-  const done = new Set(session?.published.value ?? []);
-  const entries = input.entries ?? vfs.history.filter((e) => e.overlayId === fs.id && !done.has(e.id)).map((e) => e.id);
-  if (!entries.length) return fail(id, 'Nothing to publish: this chat applied no code changes since its last publish. Pass entries (transaction ids from list_modules) to publish others.');
-  const c = changes.publish({ name: input.name, intent: input.intent, from: { entries }, deps: input.deps ?? [], follows: input.follows });
-  if (session) {
-    session.published.value = [...done, ...entries];
-    saveSession(session);
-  }
-  return ok(id, `Published "${c.name}" as ${c.id}: ${c.files.map((f) => f.path).join(', ')}${c.deps.length ? `; needs ${c.deps.join(', ')}` : ''}.`);
+  return { ok: true, message: 'Applied.' };
 }
 
 function listPublished() {
@@ -569,10 +505,10 @@ function listPublished() {
     if (changes.isApplied(c)) state = 'applied here';
     else {
       const p = changes.plan(c.id);
-      state = p.missing.length ? `needs unpublished ${p.missing.join(', ')}` : p.clean ? 'applies cleanly' : `needs adapting (stale: ${p.files.filter((f) => f.state === 'stale').map((f) => f.path).join(', ')})`;
+      state = p.missing.length ? `needs unpublished ${p.missing.join(', ')}` : p.clean ? 'applies cleanly' : `needs adapting (stale: ${[...new Set(p.files.filter((f) => f.state === 'stale').map((f) => f.path))].join(', ')})`;
     }
     const intent = c.intent ? `\n  intent (author's words): ${JSON.stringify(c.intent)}` : '';
-    lines.push(`- ${c.id} ${JSON.stringify(c.name)} by ${c.author}, ${new Date(c.at).toLocaleString()} | ${state} | files: ${c.files.map((f) => f.path).join(', ')}${c.follows ? ` | follows: ${c.follows}` : ''}${c.deps?.length ? ` | builds on: ${c.deps.join(', ')}` : ''}${intent}`);
+    lines.push(`- ${c.id} ${JSON.stringify(c.name)} by ${c.author}, ${new Date(c.at).toLocaleString()} | ${state} | ${c.patch ? 'bundle' : 'whole files'}: ${changes.pathsOf(c).join(', ')}${c.follows ? ` | follows: ${c.follows}` : ''}${c.deps?.length ? ` | builds on: ${c.deps.join(', ')}` : ''}${intent}`);
   }
   return lines.join('\n');
 }
@@ -600,25 +536,53 @@ const clip = (s, n = 20000) => (s.length > n ? s.slice(0, n) + `… (${s.length 
 
 // ---- approval ------------------------------------------------------------------------------
 
-/** Code history ids this chat committed and hasn't published yet. */
-export function unpublishedEntries(session) {
-  const done = new Set(session.published.value);
-  const ov = overlayIdOf(session);
-  return vfs.history.filter((e) => e.overlayId === ov && !done.has(e.id)).map((e) => e.id);
+/** The bundle this chat proposed, waiting for the user's approval ({ label, intent?, follows?, patch, guide? }), or null. */
+export function pendingBundle(session) {
+  const a = session.approval?.value;
+  return a?.patch ? a : null;
 }
 
-/** Records what the next approval publishes: the latest label/intent, the first follows, the guide. */
-function stageApproval(session, input) {
-  const prev = session.approval.peek() ?? {};
-  const a = {
-    label: input.label?.trim() || prev.label || sessionTitle(session),
-    ...((input.intent || prev.intent) ? { intent: input.intent || prev.intent } : {}),
-    ...((prev.follows || input.follows) ? { follows: prev.follows || input.follows } : {}),
-    ...(prev.guide ? { guide: prev.guide } : {}),
+/** Checks a proposed bundle against our committed code and stages it for the user's approval. */
+function proposeBundle(id, input, session) {
+  if (!session) return fail(id, 'propose_bundle needs a chat session.');
+  const bad = badFollows(id, input);
+  if (bad) return bad;
+  let patch;
+  try {
+    patch = changes.validatePatch(input.patch);
+  } catch (e) {
+    return fail(id, `Invalid patch: ${e.message}`);
+  }
+  // The diff must describe code this page has, so it carries the change as it actually runs.
+  const problems = [];
+  for (const f of patch) {
+    const have = vfs.readCommitted(f.path) ?? null;
+    if (f.delete) {
+      if (have != null) problems.push(`${f.path}: delete, but the file still exists here (apply the deletion first)`);
+    } else if (f.create != null) {
+      if (have !== f.create) problems.push(`${f.path}: create must equal the committed file${have == null ? ' (it does not exist here)' : ''}`);
+    } else if (have == null) problems.push(`${f.path}: no such committed file`);
+    else
+      f.edits.forEach((e, i) => {
+        if (e.old_str === e.new_str) problems.push(`${f.path} edit ${i + 1}: old_str equals new_str`);
+        else if (e.new_str && !have.includes(e.new_str)) problems.push(`${f.path} edit ${i + 1}: new_str is not in the committed file (apply the change first, or copy it exactly)`);
+        else if (have.includes(e.old_str) && !e.new_str.includes(e.old_str)) problems.push(`${f.path} edit ${i + 1}: old_str is still in the committed file, so this edit is not applied here`);
+      });
+  }
+  if (problems.length) return fail(id, `Bundle not proposed:\n${problems.join('\n')}`);
+  const prev = pendingBundle(session);
+  session.approval.value = {
+    label: input.name.trim(),
+    intent: input.intent,
+    ...(input.follows ? { follows: input.follows } : {}),
+    patch,
+    ...(prev?.guide ? { guide: prev.guide } : {}),
   };
-  session.approval.value = a;
   saveSession(session);
-  return a;
+  return ok(
+    id,
+    `Proposed "${input.name.trim()}" (${patch.map((f) => f.path).join(', ')}) for the user's approval${input.follows ? `, following ${input.follows}` : ''}. ${prev?.guide ? 'Its onboarding guide is kept; call onboarding_guide again if the controls changed.' : 'If it brings visible controls, add an onboarding_guide.'} Then end your turn.`,
+  );
 }
 
 async function onboardingGuide(id, input, session) {
@@ -633,7 +597,10 @@ async function onboardingGuide(id, input, session) {
   const bad = report.filter((r) => !r.ok || r.notes?.length);
   const text = report.map((r) => `step ${r.step}: ${r.ok ? `found ${r.element}${r.via === 'fallback' ? ' (fallback)' : ''}` : `NOT FOUND: ${r.note}`}${r.notes?.length ? ` [${r.notes.join('; ')}]` : ''}`).join('\n');
   if (report.some((r) => !r.ok)) return fail(id, `Guide not attached; fix these steps and call again:\n${text}`);
-  if (!unpublishedEntries(session).length && !session.approval.peek()) return fail(id, `Nothing waits for approval: apply your change first, then attach the guide.\n${text}`);
+  if (!pendingBundle(session)) {
+    showGuide(g, { source: `chat:${session.id}` });
+    return ok(id, `No bundle waits for approval, so the guide is shown now, on this page only${bad.length ? ' (with notes)' : ''}.\n${text}`);
+  }
   session.approval.value = { ...(session.approval.peek() ?? { label: sessionTitle(session) }), guide: g };
   saveSession(session);
   return ok(id, `Guide attached${bad.length ? ' (with notes)' : ''}; it shows when your turn ends.\n${text}`);
@@ -647,24 +614,21 @@ export function showApprovalGuide(session) {
 }
 
 /**
- * The user approves a chat's committed changes: dismisses its guide and publishes everything it
- * committed since its last publish as one change. Returns { ok, message, change }.
+ * The user approves the bundle a chat proposed: dismisses its guide and publishes it to the
+ * session. Returns { ok, message, change }.
  */
 export function approve(session) {
   dismissGuide(`chat:${session.id}`);
-  const entries = unpublishedEntries(session);
-  const a = session.approval.peek() ?? {};
-  if (!entries.length) {
+  const a = pendingBundle(session);
+  if (!a) {
     session.approval.value = null;
     saveSession(session);
-    return { ok: false, message: 'Nothing to publish: this chat committed nothing since its last publish.' };
+    return { ok: false, message: 'Nothing to publish: this chat proposed no bundle.' };
   }
   if (!changes.canPublish()) return { ok: false, message: 'No multiplayer session is open to publish to.' };
-  const label = a.label || vfs.history.find((e) => e.id === entries[entries.length - 1])?.label || 'change';
   const follows = a.follows && changes.published.value.some((c) => c.id === a.follows) ? a.follows : undefined;
-  const c = changes.publish({ name: label, intent: a.intent, from: { entries }, follows, guide: a.guide });
-  session.published.value = [...session.published.value, ...entries];
-  bundles.record(c, { sessionId: session.id, entries, guide: a.guide });
+  const c = changes.publish({ name: a.label, intent: a.intent, patch: a.patch, follows, guide: a.guide });
+  bundles.record(c, { sessionId: session.id, entries: [], guide: a.guide });
   session.approval.value = null;
   saveSession(session);
   // So the agent knows the id for follows when the user asks for more.

@@ -3,8 +3,8 @@
 // bundles (bundles.js), each published or not, which you can toggle; then your peers' bundles
 // published in the open session (changes.js). Incoming ones can be reviewed, previewed
 // (merge conflicts), tried live (which shows their guide in place), applied, handed to an agent to
-// adapt, or dismissed. Nothing runs without a click. Changes are only published through a chat's
-// approval (or the agent's publish_change when asked); there is no manual publishing here.
+// adapt, or dismissed. Nothing runs without a click. Bundles are only published by approving what a
+// chat's agent proposed (propose_bundle); there is no manual publishing here.
 import { useState, useEffect } from 'preact/hooks';
 import { signal, computed } from '@preact/signals';
 import { vfs, vfsVersion, loader, persist } from '@live/runtime';
@@ -229,11 +229,14 @@ function ChangeItem({ c, trial }) {
       <details class="net-codefold">
         <summary>
           Code · {plan.files.length} file{plan.files.length === 1 ? '' : 's'}
-          {!applied && plan.files.some((f) => f.state === 'stale') && <span class="net-muted"> · needs merging</span>}
+          {!applied && plan.files.some((f) => f.state === 'stale') && <span class="net-muted"> · {plan.failures?.length ? 'needs adapting' : 'needs merging'}</span>}
         </summary>
       <ul class="net-files">
         {plan.files.map((f) => {
-          const src = changes.published.value.find((x) => x.id === f.change)?.files.find((g) => g.path === f.path)?.source;
+          const from = changes.published.value.find((x) => x.id === f.change);
+          const pf = from?.patch?.find((g) => g.path === f.path);
+          // A bundle's file shows as its diff; a whole-file change's as the file.
+          const src = pf ? changes.formatPatch([pf], plan.failures?.filter((x) => x.change === f.change) ?? []) : from?.files?.find((g) => g.path === f.path)?.source;
           return (
             <li key={`${f.change}:${f.path}`}>
               <details>
@@ -278,7 +281,7 @@ function ChangeItem({ c, trial }) {
       {!applied && (
         <div class="net-row net-actions">
           <button class="net-small" disabled={!!busy} onClick={preview} title="Check how it merges onto your code">Preview</button>
-          <button class="net-small" disabled={!!busy || !!trial || !!plan.missing.length} onClick={tryIt} title="Run it live without committing">Try</button>
+          <button class="net-small" disabled={!!busy || !!trial || !!plan.missing.length || !!plan.failures?.length} onClick={tryIt} title="Run it live without committing">Try</button>
           <button class="net-small" disabled={!!busy || !canApply} onClick={apply} title={canApply ? 'Commit it' : 'Only when it merges cleanly (preview first) and nothing is on trial'}>Apply</button>
           <button class="net-small" disabled={!!busy || !!trial} onClick={adapt} title="Have a chat agent adapt it to your code">Adapt with agent</button>
           {!dismissed && !mine && <button class="net-small" disabled={!!busy} onClick={() => changes.dismiss(c.id)}>Dismiss</button>}
@@ -325,7 +328,7 @@ function ReadySection() {
   const store = loader.get('chat/store.js');
   const tools = loader.get('chat/tools.js');
   if (!store?.pendingSessions || !tools?.approve) return null;
-  const list = store.pendingSessions().filter((s) => tools.unpublishedEntries(s).length);
+  const list = store.pendingSessions().filter((s) => tools.pendingBundle?.(s));
   if (!list.length) return null;
   return (
     <section>
@@ -342,7 +345,7 @@ function ReadySection() {
 function ReadyItem({ s, store, tools }) {
   const a = s.approval.value ?? {};
   const [msg, setMsg] = useState(null);
-  const n = tools.unpublishedEntries(s).length;
+  const n = a.patch?.length ?? 0;
   const approve = () => {
     try {
       const r = tools.approve(s);
@@ -358,7 +361,7 @@ function ReadyItem({ s, store, tools }) {
         <span class="net-tag net-state-ready">not published</span>
       </div>
       <div class="net-muted">
-        from the chat “{store.sessionTitle(s)}” · {n} commit{n === 1 ? '' : 's'}
+        from the chat “{store.sessionTitle(s)}” · {n} file{n === 1 ? '' : 's'}
       </div>
       {a.intent && <p class="net-intent">{a.intent}</p>}
       <GuideBlock guide={a.guide} source={`chat:${s.id}`} live onShow={() => tools.showApprovalGuide(s)} />
