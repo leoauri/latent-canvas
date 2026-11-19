@@ -46,6 +46,20 @@ enum Command {
     Delete { path: String },
     /// Save the document (Automerge binary) to a file.
     Save { file: String },
+    /// Fetch a blob ("sha256-…", e.g. a clip's dataHash) from the room and write it to a file
+    /// (or stdout).
+    Blob {
+        hash: String,
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Fetch every clip's latents from the room and print the clips as JSON:
+    /// { id, t, y, rate, dim, length, dataHash, frames: [[dim floats] × length] }.
+    Clips {
+        /// Per-dimension min / max / mean instead of the frames.
+        #[arg(long)]
+        summary: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -112,8 +126,60 @@ fn run(peer: &Peer, command: &Command, timeout: Duration) -> Result<()> {
             std::fs::write(file, peer.save())?;
             eprintln!("saved to {file}");
         }
+        Command::Blob { hash, out } => {
+            let bytes = peer.wait_blob(hash, timeout)?;
+            let s = peer.blob_status(hash);
+            match out {
+                Some(file) => std::fs::write(file, &*bytes).with_context(|| format!("cannot write {file}"))?,
+                None => std::io::Write::write_all(&mut std::io::stdout(), &bytes)?,
+            }
+            eprintln!("{} bytes{}", bytes.len(), s.name.map(|n| format!(" ({n})")).unwrap_or_default());
+        }
+        Command::Clips { summary } => println!("{}", serde_json::to_string_pretty(&clips(peer, *summary, timeout)?)?),
     }
     Ok(())
+}
+
+/// The timeline's clips in draw order, each with its latents fetched from the room.
+fn clips(peer: &Peer, summary: bool, timeout: Duration) -> Result<serde_json::Value> {
+    use serde_json::{json, Value};
+    let clips = peer.get("state/timeline.clips")?.unwrap_or_default();
+    let order: Vec<String> = clips["order"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect();
+    let items: Vec<Value> = order.iter().filter_map(|id| clips["items"].get(id).cloned()).collect();
+    // Ask for every clip first, so they come in together.
+    for c in &items {
+        if let Some(h) = c["dataHash"].as_str() {
+            peer.fetch_blob(h)?;
+        }
+    }
+    let mut out = vec![];
+    for mut c in items {
+        let dim = c["dim"].as_u64().unwrap_or(0) as usize;
+        let data = match c["dataHash"].as_str() {
+            Some(h) => peer.wait_blob(h, timeout).map(|b| redaw_peer::blobs::f32s(&b)),
+            None => Err(anyhow::anyhow!("clip has no dataHash")),
+        };
+        match data {
+            Err(e) => c["error"] = json!(format!("{e:#}")),
+            Ok(values) if dim == 0 => c["error"] = json!(format!("dim is 0 ({} values)", values.len())),
+            Ok(values) => {
+                let frames: Vec<&[f32]> = values.chunks_exact(dim).collect();
+                if summary {
+                    let stat = |f: &dyn Fn(&[f32]) -> f32| -> Vec<f32> {
+                        (0..dim).map(|d| f(&frames.iter().map(|fr| fr[d]).collect::<Vec<_>>())).collect()
+                    };
+                    c["frames"] = json!(frames.len());
+                    c["min"] = json!(stat(&|v| v.iter().copied().fold(f32::INFINITY, f32::min)));
+                    c["max"] = json!(stat(&|v| v.iter().copied().fold(f32::NEG_INFINITY, f32::max)));
+                    c["mean"] = json!(stat(&|v| v.iter().sum::<f32>() / v.len().max(1) as f32));
+                } else {
+                    c["frames"] = json!(frames);
+                }
+            }
+        }
+        out.push(c);
+    }
+    Ok(Value::Array(out))
 }
 
 fn confirm(peer: &Peer, timeout: Duration) -> Result<()> {

@@ -43,7 +43,7 @@ int32_t rp_is_synced(RpPeer *peer);
 /* Block up to timeout_ms for rp_is_synced; returns it. */
 int32_t rp_wait_synced(RpPeer *peer, uint32_t timeout_ms);
 /* {"self_id","doc","signal","peers":[{"id","state","name","repo_peer","unavailable"}],
- *  "heads","version","synced"} */
+ *  "heads","version","synced","blobs":[blob status, see rp_blob_status_buf]} */
 char *rp_status(RpPeer *peer);
 /* Save the document (Automerge binary) to a file. 0 or -1. */
 int32_t rp_save_file(RpPeer *peer, const char *path);
@@ -57,6 +57,18 @@ const char *rp_last_error(void);
 int64_t rp_get_buf(RpPeer *peer, const char *path, uint8_t *buf, int64_t cap);
 int64_t rp_status_buf(RpPeer *peer, uint8_t *buf, int64_t cap);
 int64_t rp_last_error_buf(uint8_t *buf, int64_t cap);
+
+/* Blobs: what the document refers to by hash ("sha256-<64 hex>"), e.g. a clip's dataHash (its
+ * latents: little-endian float32, frame-major, length x dim). Fetched from the room on the
+ * library's threads; rp_version increases as a fetch moves on. */
+/* Start fetching a blob (no-op if here or on its way). 0 or -1. */
+int32_t rp_blob_fetch(RpPeer *peer, const char *hash);
+/* The blob's bytes, if complete: its size (nothing written if > cap), -1 if not here, -2 error. */
+int64_t rp_blob_buf(RpPeer *peer, const char *hash, uint8_t *buf, int64_t cap);
+/* Fetch and block up to timeout_ms: size, -1 on timeout, -2 on error. Blocks the caller. */
+int64_t rp_blob_wait(RpPeer *peer, const char *hash, uint32_t timeout_ms);
+/* {"hash","state":"absent|waiting|fetching|done","bytes","total","name","peers"}: length or -2. */
+int64_t rp_blob_status_buf(RpPeer *peer, const char *hash, uint8_t *buf, int64_t cap);
 
 #ifdef __cplusplus
 }

@@ -9,8 +9,12 @@
 //! # anyhow::Ok(())
 //! ```
 //!
+//! Blobs the document refers to by hash (a clip's `dataHash`, a model's files) are fetched from
+//! the room with [`Peer::fetch_blob`] / [`Peer::wait_blob`] (see [`blobs`]).
+//!
 //! `ffi` exposes the same as a C API (`include/redaw_peer.h`) for Squeak and other FFI hosts.
 
+pub mod blobs;
 pub mod crypto;
 pub mod doc;
 pub mod ffi;
@@ -18,5 +22,6 @@ pub mod link;
 mod peer;
 pub mod signaling;
 
+pub use blobs::BlobStatus;
 pub use link::Link;
 pub use peer::{Options, Peer, PeerStatus, Status};

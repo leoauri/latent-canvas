@@ -5,10 +5,13 @@
 //!
 //! [`Peer`] owns its own Tokio runtime, so it can be driven from plain threads (the CLI, FFI).
 //! All network state lives in one actor task; the document is shared behind a mutex.
+//!
+//! Blobs (clip latents, model files; see [`crate::blobs`]) are fetched on request over the `blob`
+//! channel, kept in memory, and served to peers that ask for them.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use automerge::sync::{self, SyncDoc};
@@ -28,6 +31,7 @@ use webrtc::peer_connection::{
     RTCSessionDescription, SettingEngineBuilder,
 };
 
+use crate::blobs::{self, BlobStatus, Stored};
 use crate::crypto::RoomCrypto;
 use crate::link::Link;
 use crate::signaling::{self, SignalEvent};
@@ -37,6 +41,14 @@ use crate::doc;
 const LABELS: [&str; 3] = ["mesh", "sync", "blob"];
 const MESH: usize = 0;
 const SYNC: usize = 1;
+const BLOB: usize = 2;
+/// Blob fetching (blobs.js): chunk requests in flight per peer, timeouts, re-asking, bans.
+const BLOB_WINDOW: usize = 8;
+const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+const MANIFEST_TIMEOUT: Duration = Duration::from_secs(15);
+const WANT_EVERY: Duration = Duration::from_secs(5);
+const BAN: Duration = Duration::from_secs(60);
+const TICK: Duration = Duration::from_secs(1);
 const FRAGMENT: usize = 64 * 1024;
 const HEADER: usize = 8;
 const RETRY_ANNOUNCE: Duration = Duration::from_secs(3);
@@ -85,6 +97,8 @@ pub struct Status {
     pub version: u64,
     /// True once a peer has confirmed it has exactly our heads.
     pub synced: bool,
+    /// Blobs fetched or being fetched, by hash order.
+    pub blobs: Vec<BlobStatus>,
 }
 
 struct Shared {
@@ -93,6 +107,10 @@ struct Shared {
     changed: Condvar,
     status: Mutex<Status>,
     tx: UnboundedSender<Event>,
+    /// Complete blobs, by hash.
+    blobs: Mutex<HashMap<String, Stored>>,
+    /// Fetches in progress, by hash.
+    transfers: Mutex<HashMap<String, BlobStatus>>,
 }
 
 impl Shared {
@@ -133,8 +151,11 @@ impl Peer {
                 heads: vec![],
                 version: 0,
                 synced: false,
+                blobs: vec![],
             }),
             tx: tx.clone(),
+            blobs: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
         });
         let crypto = RoomCrypto::new(&link.room);
         let (sig_tx, sig_rx) = unbounded_channel();
@@ -166,9 +187,22 @@ impl Peer {
             next_gen: 0,
             next_msg_id: 0,
             retry_pending: false,
+            fetches: HashMap::new(),
         };
         actor.update_status();
         rt.spawn(actor.run(rx));
+        {
+            let tx = shared.tx.clone();
+            rt.spawn(async move {
+                let mut every = tokio::time::interval(TICK);
+                loop {
+                    every.tick().await;
+                    if tx.send(Event::Tick).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         Ok(Peer { shared, rt: Some(rt) })
     }
 
@@ -219,7 +253,71 @@ impl Peer {
     pub fn status(&self) -> Status {
         let mut s = self.shared.status.lock().unwrap().clone();
         s.version = self.version();
+        let mut blobs: Vec<BlobStatus> = self.shared.transfers.lock().unwrap().values().cloned().collect();
+        blobs.extend(self.shared.blobs.lock().unwrap().iter().map(|(h, b)| BlobStatus::done(h, b)));
+        blobs.sort_by(|a, b| a.hash.cmp(&b.hash));
+        s.blobs = blobs;
         s
+    }
+
+    // ---- blobs ----------------------------------------------------------------------------------
+
+    /// Starts fetching a blob from the room (no-op if it is here or on its way). Fetches keep
+    /// asking every few seconds until a peer has it.
+    pub fn fetch_blob(&self, hash: &str) -> Result<()> {
+        if !blobs::is_hash(hash) {
+            return Err(anyhow!("not a blob id: {hash:?} (expected sha256-<64 hex digits>)"));
+        }
+        if !self.shared.blobs.lock().unwrap().contains_key(hash) {
+            let _ = self.shared.tx.send(Event::BlobFetch(hash.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// The blob's bytes, if it is here completely.
+    pub fn blob(&self, hash: &str) -> Option<Arc<Vec<u8>>> {
+        self.shared.blobs.lock().unwrap().get(hash).map(|b| b.bytes.clone())
+    }
+
+    /// Where a blob is (absent, waiting, fetching, done) and how much of it arrived.
+    pub fn blob_status(&self, hash: &str) -> BlobStatus {
+        if let Some(b) = self.shared.blobs.lock().unwrap().get(hash) {
+            return BlobStatus::done(hash, b);
+        }
+        self.shared.transfers.lock().unwrap().get(hash).cloned().unwrap_or_else(|| BlobStatus::absent(hash))
+    }
+
+    /// Fetches a blob and blocks until it is here or `timeout` passes.
+    pub fn wait_blob(&self, hash: &str, timeout: Duration) -> Result<Arc<Vec<u8>>> {
+        self.fetch_blob(hash)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(b) = self.blob(hash) {
+                return Ok(b);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                let s = self.blob_status(hash);
+                return Err(anyhow!(
+                    "blob {} not here after {}s ({}, {} of {} bytes)",
+                    &hash[..hash.len().min(20)],
+                    timeout.as_secs(),
+                    s.state,
+                    s.bytes,
+                    s.total
+                ));
+            }
+            self.wait_change(self.version(), (deadline - now).min(Duration::from_millis(100)));
+        }
+    }
+
+    /// Adds bytes to the local store (served to peers that ask); returns their id.
+    pub fn put_blob(&self, bytes: Vec<u8>, name: Option<String>, mime: Option<String>) -> String {
+        let s = Stored::new(bytes, name, mime);
+        let hash = s.hash();
+        self.shared.blobs.lock().unwrap().insert(hash.clone(), s);
+        self.shared.bump();
+        hash
     }
 
     /// Blocks until a peer has confirmed our heads (see [`Status::synced`]) or `timeout` passes.
@@ -278,7 +376,36 @@ enum Event {
     ChannelMessage { peer: String, gen: u64, label: usize, data: BytesMut, is_string: bool },
     LocalChange,
     Retry,
+    BlobFetch(String),
+    Tick,
     Shutdown(oneshot::Sender<()>),
+}
+
+/// A blob's manifest, as received (and verified against its id).
+struct Manifest {
+    size: u64,
+    chunks: Vec<[u8; 32]>,
+    name: Option<String>,
+    mime: Option<String>,
+}
+
+/// One blob being fetched (blobs.js `startTransfer`).
+struct Fetch {
+    manifest: Option<Manifest>,
+    got: Vec<Option<Vec<u8>>>,
+    /// Peers that said HAVE: their chunk bitmap, None if complete.
+    holders: HashMap<String, Option<Vec<bool>>>,
+    manifest_req: Option<(String, Instant)>,
+    /// Chunk index -> (peer, asked at).
+    inflight: HashMap<usize, (String, Instant)>,
+    banned: HashMap<String, Instant>,
+    last_want: Instant,
+}
+
+impl Fetch {
+    fn received(&self) -> u64 {
+        self.got.iter().flatten().map(|c| c.len() as u64).sum()
+    }
 }
 
 struct ConnHandler {
@@ -345,6 +472,7 @@ struct Actor {
     next_gen: u64,
     next_msg_id: u32,
     retry_pending: bool,
+    fetches: HashMap<String, Fetch>,
 }
 
 impl Actor {
@@ -432,9 +560,13 @@ impl Actor {
                 } else if let Some(whole) = reassemble(c, label, data) {
                     if label == SYNC {
                         self.on_sync(&peer, &whole).await?;
+                    } else if label == BLOB {
+                        self.on_blob(&peer, &whole).await;
                     }
                 }
             }
+            Event::BlobFetch(hash) => self.start_fetch(hash).await,
+            Event::Tick => self.tick().await,
             Event::LocalChange => {
                 for id in self.repo.keys().cloned().collect::<Vec<_>>() {
                     self.sync_peer(&id).await;
@@ -618,6 +750,13 @@ impl Actor {
 
     async fn drop_conn(&mut self, id: &str) {
         self.repo.remove(id);
+        for f in self.fetches.values_mut() {
+            f.holders.remove(id);
+            f.inflight.retain(|_, (p, _)| p != id);
+            if f.manifest_req.as_ref().is_some_and(|(p, _)| p == id) {
+                f.manifest_req = None;
+            }
+        }
         if let Some(c) = self.conns.remove(id) {
             log::info!("room: peer {} gone", short(id));
             for ch in &c.channels {
@@ -672,6 +811,10 @@ impl Actor {
         self.send_binary(id, SYNC, &cbor_encode(&hello)).await;
         let presence = json!({ "type": "presence", "client": self.client_id, "name": self.name, "color": "", "state": {} });
         self.send_text(id, &presence).await;
+        let wanted: Vec<String> = self.fetches.keys().cloned().collect();
+        for hashes in wanted.chunks(256) {
+            self.send_blob(id, blobs::WANT, &json!({ "hashes": hashes }), &[]).await;
+        }
     }
 
     async fn on_mesh(&mut self, id: &str, msg: Json) {
@@ -805,6 +948,275 @@ impl Actor {
         self.send_binary(id, SYNC, &cbor_encode(&envelope)).await;
     }
 
+    // ---- blobs (blobs.js) --------------------------------------------------------------------
+
+    fn open_peers(&self) -> Vec<String> {
+        self.conns.iter().filter(|(_, c)| c.is_open).map(|(id, _)| id.clone()).collect()
+    }
+
+    async fn send_blob(&mut self, id: &str, op: u8, header: &Json, payload: &[u8]) {
+        let msg = blobs::encode(op, header, payload);
+        self.send_binary(id, BLOB, &msg).await;
+    }
+
+    async fn start_fetch(&mut self, hash: String) {
+        if self.fetches.contains_key(&hash) || self.shared.blobs.lock().unwrap().contains_key(&hash) {
+            return;
+        }
+        log::info!("blobs: fetching {}", short_hash(&hash));
+        self.fetches.insert(
+            hash.clone(),
+            Fetch {
+                manifest: None,
+                got: vec![],
+                holders: HashMap::new(),
+                manifest_req: None,
+                inflight: HashMap::new(),
+                banned: HashMap::new(),
+                last_want: Instant::now(),
+            },
+        );
+        for p in self.open_peers() {
+            self.send_blob(&p, blobs::WANT, &json!({ "hashes": [hash] }), &[]).await;
+        }
+        self.pump(&hash).await;
+    }
+
+    async fn on_blob(&mut self, from: &str, bytes: &[u8]) {
+        let Some((op, h, payload)) = blobs::decode(bytes) else { return };
+        let hash = h["hash"].as_str().unwrap_or("").to_owned();
+        if op != blobs::WANT && !blobs::is_hash(&hash) {
+            return;
+        }
+        let index = h["index"].as_u64().map(|i| i as usize);
+        match op {
+            blobs::WANT => {
+                let wanted: Vec<String> =
+                    h["hashes"].as_array().into_iter().flatten().take(256).filter_map(|v| v.as_str().map(str::to_owned)).collect();
+                for w in wanted {
+                    let have = self.shared.blobs.lock().unwrap().get(&w).map(|s| (s.bytes.len(), s.chunks.len()));
+                    if let Some((size, n)) = have {
+                        self.send_blob(from, blobs::HAVE, &json!({ "hash": w, "size": size, "chunks": n, "complete": true }), &[]).await;
+                    }
+                }
+            }
+            blobs::HAVE => {
+                let Some(f) = self.fetches.get_mut(&hash) else { return };
+                let Some(n) = h["chunks"].as_u64() else { return };
+                if h["complete"].as_bool() == Some(true) {
+                    f.holders.insert(from.to_owned(), None);
+                } else {
+                    let bits = blobs::unpack_bits(payload, n as usize);
+                    if bits.iter().any(|b| *b) {
+                        f.holders.insert(from.to_owned(), Some(bits));
+                    } else {
+                        f.holders.remove(from);
+                    }
+                }
+                self.pump(&hash).await;
+            }
+            blobs::MANIFEST_REQ => {
+                let reply = self.shared.blobs.lock().unwrap().get(&hash).map(|s| {
+                    let header = json!({ "hash": hash, "size": s.bytes.len(), "name": s.name, "type": s.mime });
+                    (header, s.chunks.concat())
+                });
+                match reply {
+                    Some((header, chunks)) => self.send_blob(from, blobs::MANIFEST, &header, &chunks).await,
+                    None => self.send_blob(from, blobs::ERROR, &json!({ "hash": hash, "index": null, "error": "unknown" }), &[]).await,
+                }
+            }
+            blobs::MANIFEST => {
+                let Some(f) = self.fetches.get_mut(&hash) else { return };
+                if f.manifest_req.as_ref().is_some_and(|(p, _)| p == from) {
+                    f.manifest_req = None;
+                }
+                if f.manifest.is_some() {
+                    return;
+                }
+                let size = h["size"].as_u64();
+                let chunks: Vec<[u8; 32]> = payload.chunks_exact(32).map(|c| c.try_into().unwrap()).collect();
+                let valid = size.is_some_and(|size| {
+                    payload.len() == blobs::chunk_count(size) * 32 && blobs::root_of(&chunks, size) == hash
+                });
+                if !valid {
+                    log::warn!("blobs: manifest of {} from {} failed verification", short_hash(&hash), short(from));
+                    f.banned.insert(from.to_owned(), Instant::now() + BAN);
+                } else {
+                    let text = |v: &Json| v.as_str().map(|s| s.chars().take(1024).collect::<String>());
+                    f.got = vec![None; chunks.len()];
+                    f.manifest = Some(Manifest { size: size.unwrap(), chunks, name: text(&h["name"]), mime: text(&h["type"]) });
+                }
+                self.pump(&hash).await;
+            }
+            blobs::CHUNK_REQ => {
+                let chunk = index.and_then(|i| self.shared.blobs.lock().unwrap().get(&hash).and_then(|s| s.chunk(i).map(<[u8]>::to_vec)));
+                match chunk {
+                    Some(bytes) => self.send_blob(from, blobs::CHUNK, &json!({ "hash": hash, "index": index }), &bytes).await,
+                    None => self.send_blob(from, blobs::ERROR, &json!({ "hash": hash, "index": index, "error": "missing" }), &[]).await,
+                }
+            }
+            blobs::CHUNK => {
+                let Some(i) = index else { return };
+                let Some(f) = self.fetches.get_mut(&hash) else { return };
+                let Some(m) = &f.manifest else { return };
+                if i >= m.chunks.len() {
+                    return;
+                }
+                if f.inflight.get(&i).is_some_and(|(p, _)| p == from) {
+                    f.inflight.remove(&i);
+                }
+                if f.got[i].is_none() {
+                    if payload.len() == blobs::chunk_len(m.size, i) && blobs::sha256(payload) == m.chunks[i] {
+                        f.got[i] = Some(payload.to_vec());
+                    } else {
+                        log::warn!("blobs: chunk {i} of {} from {} failed verification", short_hash(&hash), short(from));
+                        f.banned.insert(from.to_owned(), Instant::now() + BAN);
+                    }
+                }
+                self.pump(&hash).await;
+            }
+            blobs::ERROR => {
+                let Some(f) = self.fetches.get_mut(&hash) else { return };
+                match index {
+                    None => {
+                        // 'unknown': they don't have the manifest.
+                        if f.manifest_req.as_ref().is_some_and(|(p, _)| p == from) {
+                            f.manifest_req = None;
+                        }
+                        f.holders.remove(from);
+                    }
+                    Some(i) => {
+                        if f.inflight.get(&i).is_some_and(|(p, _)| p == from) {
+                            f.inflight.remove(&i);
+                        }
+                        match f.holders.get_mut(from) {
+                            Some(Some(bits)) if i < bits.len() => bits[i] = false,
+                            _ => {
+                                f.holders.remove(from);
+                            }
+                        }
+                    }
+                }
+                self.pump(&hash).await;
+            }
+            _ => {}
+        }
+    }
+
+    /// Moves a fetch on: asks for the manifest, then keeps up to BLOB_WINDOW chunk requests in
+    /// flight per holder; stores the blob once every chunk is in.
+    async fn pump(&mut self, hash: &str) {
+        if self.shared.blobs.lock().unwrap().contains_key(hash) {
+            self.fetches.remove(hash);
+            self.shared.transfers.lock().unwrap().remove(hash);
+            self.shared.bump();
+            return;
+        }
+        let open = self.open_peers();
+        let Some(f) = self.fetches.get_mut(hash) else { return };
+        let now = Instant::now();
+        f.banned.retain(|_, until| *until > now);
+        let mut peers: Vec<String> =
+            f.holders.keys().filter(|p| open.contains(p) && !f.banned.contains_key(*p)).cloned().collect();
+        peers.sort_by_key(|p| (f.holders[p].is_some(), p.clone())); // complete holders first
+        let mut sends: Vec<(String, u8, Json)> = vec![];
+
+        if let Some(m) = &f.manifest {
+            if f.got.iter().all(Option::is_some) {
+                let mut bytes = Vec::with_capacity(m.size as usize);
+                for c in f.got.iter().flatten() {
+                    bytes.extend_from_slice(c);
+                }
+                let stored = Stored { bytes: Arc::new(bytes), chunks: m.chunks.clone(), name: m.name.clone(), mime: m.mime.clone() };
+                log::info!("blobs: got {} ({} bytes)", short_hash(hash), m.size);
+                self.shared.blobs.lock().unwrap().insert(hash.to_owned(), stored);
+                self.shared.transfers.lock().unwrap().remove(hash);
+                self.fetches.remove(hash);
+                self.shared.bump();
+                return;
+            }
+            let mut load: HashMap<&String, usize> = peers.iter().map(|p| (p, 0)).collect();
+            for (p, _) in f.inflight.values() {
+                if let Some(n) = load.get_mut(p) {
+                    *n += 1;
+                }
+            }
+            let missing: Vec<usize> =
+                (0..f.got.len()).filter(|i| f.got[*i].is_none() && !f.inflight.contains_key(i)).collect();
+            let mut k = 0;
+            for i in missing {
+                // Round-robin over the holders with a free slot that have chunk i.
+                let pick = (0..peers.len()).map(|j| &peers[(k + j) % peers.len()]).find(|p| {
+                    load[p] < BLOB_WINDOW && f.holders[*p].as_ref().is_none_or(|bits| bits.get(i).copied().unwrap_or(false))
+                });
+                let Some(p) = pick.cloned() else { continue };
+                k += 1;
+                *load.get_mut(&p).unwrap() += 1;
+                f.inflight.insert(i, (p.clone(), now));
+                sends.push((p, blobs::CHUNK_REQ, json!({ "hash": hash, "index": i })));
+            }
+        } else if f.manifest_req.is_none() {
+            if let Some(p) = peers.first() {
+                f.manifest_req = Some((p.clone(), now));
+                sends.push((p.clone(), blobs::MANIFEST_REQ, json!({ "hash": hash })));
+            }
+        }
+
+        let mut busy: Vec<String> = f.inflight.values().map(|(p, _)| p.clone()).collect();
+        busy.extend(f.manifest_req.iter().map(|(p, _)| p.clone()));
+        busy.sort();
+        busy.dedup();
+        let status = BlobStatus {
+            hash: hash.to_owned(),
+            state: if busy.is_empty() { "waiting" } else { "fetching" }.into(),
+            bytes: f.received(),
+            total: f.manifest.as_ref().map_or(0, |m| m.size),
+            name: f.manifest.as_ref().and_then(|m| m.name.clone()),
+            peers: busy,
+        };
+        let changed = self.shared.transfers.lock().unwrap().insert(hash.to_owned(), status.clone()) != Some(status);
+        if changed {
+            self.shared.bump();
+        }
+        for (p, op, header) in sends {
+            self.send_blob(&p, op, &header, &[]).await;
+        }
+    }
+
+    /// Once a second: requests that timed out go back in the queue (and their peer is banned for
+    /// a while), and holders are asked for again every WANT_EVERY.
+    async fn tick(&mut self) {
+        let now = Instant::now();
+        let open = self.open_peers();
+        let mut want = vec![];
+        for (hash, f) in self.fetches.iter_mut() {
+            let late: Vec<usize> = f.inflight.iter().filter(|(_, (_, at))| now - *at > CHUNK_TIMEOUT).map(|(i, _)| *i).collect();
+            for i in late {
+                if let Some((p, _)) = f.inflight.remove(&i) {
+                    f.banned.insert(p, now + BAN);
+                }
+            }
+            if let Some((p, at)) = f.manifest_req.clone() {
+                if now - at > MANIFEST_TIMEOUT {
+                    f.manifest_req = None;
+                    f.banned.insert(p, now + BAN);
+                }
+            }
+            if now - f.last_want > WANT_EVERY {
+                f.last_want = now;
+                want.push(hash.clone());
+            }
+        }
+        for hash in &want {
+            for p in &open {
+                self.send_blob(p, blobs::WANT, &json!({ "hashes": [hash] }), &[]).await;
+            }
+        }
+        for hash in self.fetches.keys().cloned().collect::<Vec<_>>() {
+            self.pump(&hash).await;
+        }
+    }
+
     // ---- status ------------------------------------------------------------------------------
 
     fn set_signal(&self, s: &str) {
@@ -885,6 +1297,10 @@ fn sorted(h: &[automerge::ChangeHash]) -> Vec<automerge::ChangeHash> {
 
 fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
+}
+
+fn short_hash(hash: &str) -> &str {
+    &hash[..hash.len().min(19)]
 }
 
 fn now_ms() -> u64 {

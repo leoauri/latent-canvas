@@ -12,6 +12,10 @@ It speaks the same protocols as the page:
 - presence: a name in `presence`, and answers to `presence-ping`
 - writes follow `shared.js`: strings under 256 UTF-16 units become collaborative text, longer
   ones plain strings; integers become `int`, other numbers `f64`
+- blobs: `live/net/blobs.js` on the `blob` channel (WANT/HAVE, verified manifest, chunks checked
+  against it); what the document refers to by hash, e.g. a clip's latents (`dataHash`: little-endian
+  float32, frame-major) or a model layer's files, is fetched on request, kept in memory and served
+  to peers that ask
 
 Built with Rust: [`webrtc`](https://crates.io/crates/webrtc) 0.21 and
 [`automerge`](https://crates.io/crates/automerge) 0.12.
@@ -19,7 +23,8 @@ Built with Rust: [`webrtc`](https://crates.io/crates/webrtc) 0.21 and
 ## Layout
 
 ```
-src/peer.rs       the peer: room (signaling, WebRTC) and automerge-repo sync, in one actor task
+src/peer.rs       the peer: room (signaling, WebRTC), automerge-repo sync and blob transfers, in one actor task
+src/blobs.rs      blob ids, manifests and the blob channel's messages
 src/doc.rs        JSON paths into the document ("state/timeline.layers/order/0")
 src/crypto.rs     signaling topic and encryption (tested against the page's WebCrypto output)
 src/signaling.rs  y-webrtc-style signaling client
@@ -47,6 +52,9 @@ redaw-peer-cli "<invite link>" watch state/timeline.clips
 redaw-peer-cli "<invite link>" put state/some.key '{"a":1}'   # or "-" to read stdin, "@file"
 redaw-peer-cli "<invite link>" delete state/some.key
 redaw-peer-cli "<invite link>" save session.automerge
+redaw-peer-cli "<invite link>" blob sha256-… -o file          # a blob, e.g. a clip's dataHash
+redaw-peer-cli "<invite link>" clips                          # every clip with its latent frames
+redaw-peer-cli "<invite link>" clips --summary                # … per-dimension min / max / mean
 ```
 
 `RUST_LOG=info` shows the room's connection steps.
@@ -63,6 +71,20 @@ peer at: 'meta/name'.
 peer at: 'state/some.key' put: (Dictionary new at: 'a' put: 1; yourself).
 peer whenChangedDo: [Transcript showln: (peer jsonAt: 'state/timeline.clips')].
 peer close.
+```
+
+Latents and other blobs: `peer fetchBlob: hash` starts a fetch, `peer blobStatus: hash` tells how
+far it is, `peer blobAt: hash` answers the bytes once they are here, and
+`peer latentsAt: clip dataHash dim: 4` answers an Array of FloatArrays (one per frame).
+
+A live view for inspecting, kept up to date while the browsers change the session:
+
+```smalltalk
+session := RedawSession link: '<invite link>'.
+session inspect.                       "document, layers, clips: update in place"
+session clips first frames.            "RedawClip: an Array of FloatArrays"
+(session clips first) dimension: 1.    "one latent dimension over time"
+session close.
 ```
 
 Nothing calls back into the VM from network threads: Squeak polls (`version`, `whenChangedDo:`).

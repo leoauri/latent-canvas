@@ -198,6 +198,61 @@ pub unsafe extern "C" fn rp_status_buf(p: *mut RpPeer, buf: *mut u8, cap: i64) -
     guard(-2, || Ok(fill(buf, cap, &serde_json::to_string(&peer(p)?.status())?)))
 }
 
+// ---- blobs ----------------------------------------------------------------------------------
+//
+// Blobs are what the document refers to by hash ("sha256-…"): a clip's `dataHash` (its latents,
+// little-endian float32, frame-major), a model layer's files. Fetching runs on the library's
+// threads; poll `rp_blob_status_buf` / `rp_version` (it increases as a fetch moves on).
+
+/// Starts fetching a blob from the room (no-op if it is here or on its way). 0, or -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_blob_fetch(p: *mut RpPeer, hash: *const c_char) -> i32 {
+    guard(-1, || {
+        peer(p)?.fetch_blob(str_arg(hash, "hash")?)?;
+        Ok(0)
+    })
+}
+
+/// The blob's bytes into a buffer, if it is here completely: its size (nothing is written if
+/// that exceeds cap), -1 if it is not here (yet), -2 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_blob_buf(p: *mut RpPeer, hash: *const c_char, buf: *mut u8, cap: i64) -> i64 {
+    guard(-2, || {
+        Ok(match peer(p)?.blob(str_arg(hash, "hash")?) {
+            Some(bytes) => {
+                let n = bytes.len() as i64;
+                if n <= cap && !buf.is_null() {
+                    ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len());
+                }
+                n
+            }
+            None => -1,
+        })
+    })
+}
+
+/// Fetches a blob and blocks up to `timeout_ms` for it: its size, -1 on timeout, -2 on error.
+/// This blocks the calling (VM) thread; prefer rp_blob_fetch and polling.
+#[no_mangle]
+pub unsafe extern "C" fn rp_blob_wait(p: *mut RpPeer, hash: *const c_char, timeout_ms: u32) -> i64 {
+    guard(-2, || {
+        let peer = peer(p)?;
+        let hash = str_arg(hash, "hash")?;
+        Ok(match peer.wait_blob(hash, Duration::from_millis(timeout_ms as u64)) {
+            Ok(bytes) => bytes.len() as i64,
+            Err(_) if crate::blobs::is_hash(hash) => -1,
+            Err(e) => return Err(e),
+        })
+    })
+}
+
+/// A blob's status as JSON into a buffer: {"hash","state","bytes","total","name","peers"}, state
+/// one of "absent", "waiting" (no peer has offered it yet), "fetching", "done". Length, or -2.
+#[no_mangle]
+pub unsafe extern "C" fn rp_blob_status_buf(p: *mut RpPeer, hash: *const c_char, buf: *mut u8, cap: i64) -> i64 {
+    guard(-2, || Ok(fill(buf, cap, &serde_json::to_string(&peer(p)?.blob_status(str_arg(hash, "hash")?))?)))
+}
+
 /// `rp_last_error` into a buffer: its length, 0 if there was no error. Does not reset it.
 #[no_mangle]
 pub unsafe extern "C" fn rp_last_error_buf(buf: *mut u8, cap: i64) -> i64 {
