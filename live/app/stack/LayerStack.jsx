@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import {
   stack, LAYER_TYPES, typeColor, stackLayerColor, insertLayer, moveLayer, removeStackLayer,
-  activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, togglePassThrough, stackLayerById, hasMaskTools,
+  activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, togglePassThrough, stackLayerById,
 } from './stack.js';
 import { readDrop, attachModel, runtimes } from './models.js';
 import { recordings } from './recorder.js';
@@ -148,7 +148,7 @@ export default function LayerStack() {
           data-layer-id={l.id}
           class={`stack-card${moving ? ' stack-card-moving' : ''}${active?.id === l.id ? ' stack-card-active' : ''}${fileDrag.value?.overId === l.id ? ' stack-card-drop' : ''}`}
           style={{ '--c': stackLayerColor(l) }}
-          title={hasMaskTools(l) ? 'Click: select · ◩: mask tools · Drag: reorder' : 'Click: select · Drag: reorder'}
+          title="Click: select · ◩: mask tools · Drag: reorder"
           onPointerDown={(e) => expanded && startDrag(e, { kind: 'move', id: l.id, type: l.type })}
           onPointerEnter={() => (highlightedLayerId.value = l.id)}
           onPointerLeave={() => highlightedLayerId.value === l.id && (highlightedLayerId.value = null)}
@@ -160,7 +160,7 @@ export default function LayerStack() {
               {layerIo(l, runtimes.value[l.id]?.model)}
             </span>
           </span>
-          {hasMaskTools(l) && <button
+          <button
             class={`stack-mask${isMasked(l.id) ? ' stack-mask-on' : ''}${maskTools.value?.layerId === l.id ? ' stack-mask-open' : ''}`}
             title={`${isMasked(l.id) ? (masksOf(l.id).length ? 'Masked: operates only inside its mask' : 'Masked to nothing: operates nowhere') : 'Unmasked: operates everywhere'}. Click: mask tools`}
             onPointerDown={(e) => e.stopPropagation()}
@@ -174,7 +174,7 @@ export default function LayerStack() {
             }}
           >
             ◩
-          </button>}
+          </button>
           {l.type === 'latent' && (
             <>
               <button
@@ -273,7 +273,7 @@ export default function LayerStack() {
               Model not added: {dropError.value}
             </div>
           )}
-          {active && hasMaskTools(active) && (
+          {active && (
             <div class="stack-target" style={{ '--c': stackLayerColor(active) }}>
               Edit the mask of <b>{active.name}</b> with ◩
             </div>

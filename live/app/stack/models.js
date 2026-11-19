@@ -48,7 +48,8 @@ import { operatesAt } from '../timeline/layers.js';
  *   Optional `t` (timeline seconds) and `y` (world y): where on the timeline a unit comes from (clip
  *   playback; live input enters at the playhead, mid-view; models' outputs keep their input's). An operator processes only units inside its
  *   masks (or without a position) and passes the rest on as they are, as it does units its model
- *   does not take; consumers ignore units of a kind they do not take.
+ *   does not take; consumers ignore units of a kind they do not take. An audio-in layer sends
+ *   only while the input point is inside its masks; an audio output plays only units inside its.
  *
  * @typedef {object} Link  what reaches a consumer layer
  * @property {string|null} sourceId  the producer behind it
@@ -239,7 +240,10 @@ const stopTaps = effect(() => {
     if (taps.has(id)) continue;
     const t = { source, tap: null, destroyed: false };
     taps.set(id, t);
-    createTap(audioContext(), AUDIO_BLOCK, (data, start) => emit(id, { kind: 'audio', data, start, voice: `in:${id}`, ...inputPoint() })).then((tap) => {
+    createTap(audioContext(), AUDIO_BLOCK, (data, start) => {
+      const at = inputPoint();
+      if (operatesAt(id, at.t, at.y)) emit(id, { kind: 'audio', data, start, voice: `in:${id}`, ...at });
+    }).then((tap) => {
       if (t.destroyed) return tap.destroy();
       t.tap = tap;
       source.connect(tap.node);
@@ -360,8 +364,13 @@ function consumerOf(l, src, kind) {
   }
   if (l.type === 'audio-out') {
     if (kind !== 'audio') return { error: `latents reach it from ${src.name}: put a decoder in between` };
-    // Every voice is added into the mix at its own time.
-    return { handler: (msg) => (msg.kind === 'flush' ? mixers.get(l.id)?.flush() : msg.kind === 'audio' && mixers.get(l.id)?.push(msg.data, msg.start)) };
+    // Every voice is added into the mix at its own time; only blocks from inside its masks.
+    return {
+      handler: (msg) => {
+        if (msg.kind === 'flush') return mixers.get(l.id)?.flush();
+        if (msg.kind === 'audio' && (msg.t === undefined || operatesAt(l.id, msg.t, msg.y))) mixers.get(l.id)?.push(msg.data, msg.start);
+      },
+    };
   }
   if (l.type === 'latent') {
     // Pass-through: the latents reaching it go on to the layers in front, beside its own clips

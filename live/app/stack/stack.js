@@ -92,9 +92,6 @@ export function dispose() {
 export const stackLayerById = (id) => stack.value.find((l) => l.id === id);
 /** The active layer, falling back to the front layer. */
 export const activeLayer = () => stackLayerById(activeLayerId.value) ?? stack.value.at(-1) ?? null;
-/** Audio in/out layers ignore masks, so they get no mask tools. */
-export const hasMaskTools = (l) => l.type !== 'audio-in' && l.type !== 'audio-out';
-
 
 export function insertLayer(type, index = stack.value.length) {
   const n = stack.value.filter((l) => l.type === type).length;
