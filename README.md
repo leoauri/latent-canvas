@@ -124,7 +124,7 @@ connected, undo recent actions, switch between sessions or join one from a link.
   the screen names it, with Revert and Apply. It turns violet while an agent is still working on
   its preview, so nobody edits underneath it. One preview runs at a time; others asked for
   meanwhile queue up (`net/trials.js`), are listed in the frame, and start in turn.
-- **Presence** (`net/presence.js`): others' cursors (interpolated), playheads and selected clips
+- **Presence** (`net/presence.js`): others' cursors (interpolated) and selected clips
   show on the timeline in their colour, with their name. It's never stored. Toggle it in the Session
   window or with Alt+P. Other modules share more with `presence.publish(key, signal)`.
 - **History** (`net/history.js`): every change you make is an action in your local history. Undo

@@ -1,4 +1,4 @@
-// Others in the session on the timeline: their cursors (interpolated), playheads and selected clip,
+// Others in the session on the timeline: their cursors (interpolated) and selected clip,
 // each in the peer's colour. Positions travel in timeline coordinates (seconds, world y), so they
 // land in the right place whatever each viewer's zoom and scroll. Also publishes ours (net/presence.js).
 // Hidden while presence.show is off (Session window, or Alt+P).
@@ -7,7 +7,6 @@ import { computed } from '@preact/signals';
 import { persist } from '@live/runtime';
 import * as presence from '../../net/presence.js';
 import { view, timeToX, xToTime, worldToScreenY, screenToWorldY } from './view.js';
-import { cue, playing } from './Playhead.jsx';
 import { clips, selectedId, CLIP_HEIGHT } from './clips.js';
 
 const DELAY_MS = 100; // cursors are drawn this far behind the latest update, interpolating between updates
@@ -16,11 +15,9 @@ const KEEP = 12; // cursor samples kept per peer
 // ---- ours --------------------------------------------------------------------------------------
 
 const cursor = persist('presence.cursor', null); // { t, y } in timeline coordinates, or null
-// Playing: they started from `cue` at `at` (their clock); remote pages run it forward themselves.
-const playhead = computed(() => ({ playing: playing.value, cue: cue.value, at: Date.now() }));
 const selection = computed(() => selectedId.value ?? null);
 
-const unbind = [presence.publish('cursor', cursor), presence.publish('playhead', playhead), presence.publish('selection', selection)];
+const unbind = [presence.publish('cursor', cursor), presence.publish('selection', selection)];
 
 // ---- theirs: cursor samples for interpolation --------------------------------------------------
 
@@ -56,13 +53,6 @@ function cursorAt(id, now) {
   const from = Math.max(a.at, b.at - DELAY_MS);
   const k = Math.min(1, Math.max(0, (at - from) / (b.at - from)));
   return { t: a.t + (b.t - a.t) * k, y: a.y + (b.y - a.y) * k };
-}
-
-/** Peer `id`'s playhead time now (seconds): extrapolated from when they started, on our clock. */
-function playheadAt(id, ph) {
-  if (!ph || !Number.isFinite(ph.cue)) return null;
-  if (!ph.playing || !Number.isFinite(ph.at)) return ph.cue;
-  return ph.cue + Math.max(0, Date.now() - presence.toLocal(id, ph.at)) / 1000;
 }
 
 // ---- the layer ---------------------------------------------------------------------------------
@@ -101,7 +91,7 @@ export default function Presence() {
     };
   }, []);
 
-  // Cursors and running playheads move every frame: positioned directly, not re-rendered.
+  // Cursors move every frame: positioned directly, not re-rendered.
   useEffect(() => {
     let frame = requestAnimationFrame(function step() {
       const el = ref.current;
@@ -112,11 +102,6 @@ export default function Presence() {
         const c = cursorAt(node.dataset.cursor, now);
         node.style.display = c ? '' : 'none';
         if (c) node.style.transform = `translate(${timeToX(c.t, v)}px, ${worldToScreenY(c.y, v)}px)`;
-      }
-      for (const node of el.querySelectorAll('[data-playhead]')) {
-        const t = playheadAt(node.dataset.playhead, presence.others.peek()[node.dataset.playhead]?.state.playhead);
-        node.style.display = t == null ? 'none' : '';
-        if (t != null) node.style.transform = `translateX(${timeToX(t, v)}px)`;
       }
       frame = requestAnimationFrame(step);
     });
@@ -144,7 +129,6 @@ export default function Presence() {
                 }}
               />
             )}
-            <div data-playhead={id} class="presence-playhead" style={{ background: p.color, display: 'none' }} />
             <div data-cursor={id} class="presence-cursor" style={{ display: 'none' }}>
               <Arrow color={p.color} />
               <span class="presence-name" style={{ background: p.color }}>

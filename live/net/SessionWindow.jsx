@@ -74,7 +74,7 @@ function SessionBody() {
         <div class="net-label">
           Peers <span class={`net-dot net-${room.signalStatus.value}`} title={`signaling ${room.signalStatus.value}`} />
           <span class="net-fill" />
-          <label class="net-check" title="Others' cursors, playheads and selections on the timeline (Alt+P)">
+          <label class="net-check" title="Others' cursors and selections on the timeline (Alt+P)">
             <input type="checkbox" checked={presence.show.value} onChange={(e) => (presence.show.value = e.currentTarget.checked)} />
             Show cursors
           </label>

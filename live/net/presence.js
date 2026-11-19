@@ -1,5 +1,5 @@
-// Presence: ephemeral per-peer state (where someone's cursor is, their playhead, what they have
-// selected) sent over the room's mesh channel. Never stored, never in the document or history.
+// Presence: ephemeral per-peer state (where someone's cursor is, what they have selected) sent over
+// the room's mesh channel. Never stored, never in the document or history.
 //
 //   publish(key, signal)   share a local signal under a key (null = nothing to show); returns unbind
 //   others                 signal: { [peerId]: { name, color, client, state: { key: value }, at } }

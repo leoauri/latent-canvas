@@ -7,7 +7,7 @@
 //   blobs.js    content-addressed files with resumable p2p transfer
 //   prefetch.js fetches every file the open session references, as soon as it is referenced
 //   changes.js  published code changes: plan, try, apply, adapt
-//   presence.js ephemeral per-peer state (cursors, playheads, selection), never stored
+//   presence.js ephemeral per-peer state (cursors, selection), never stored
 export * as room from './room.js';
 export * as docs from './docs.js';
 export * as session from './session.js';
