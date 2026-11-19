@@ -1,4 +1,4 @@
-// Others in the session on the timeline: their cursors (interpolated) and selected clip,
+// Others in the session on the timeline: their cursors (interpolated) and selected clips,
 // each in the peer's colour. Positions travel in timeline coordinates (seconds, world y), so they
 // land in the right place whatever each viewer's zoom and scroll. Also publishes ours (net/presence.js).
 // Hidden while presence.show is off (Session window, or Alt+P).
@@ -7,7 +7,7 @@ import { computed } from '@preact/signals';
 import { persist } from '@live/runtime';
 import * as presence from '../../net/presence.js';
 import { view, timeToX, xToTime, worldToScreenY, screenToWorldY } from './view.js';
-import { clips, selectedId, CLIP_HEIGHT } from './clips.js';
+import { clips, selection as selectedIds, CLIP_HEIGHT } from './clips.js';
 
 const DELAY_MS = 100; // cursors are drawn this far behind the latest update, interpolating between updates
 const KEEP = 12; // cursor samples kept per peer
@@ -15,7 +15,7 @@ const KEEP = 12; // cursor samples kept per peer
 // ---- ours --------------------------------------------------------------------------------------
 
 const cursor = persist('presence.cursor', null); // { t, y } in timeline coordinates, or null
-const selection = computed(() => selectedId.value ?? null);
+const selection = computed(() => selectedIds.value);
 
 const unbind = [presence.publish('cursor', cursor), presence.publish('selection', selection)];
 
@@ -114,11 +114,14 @@ export default function Presence() {
   return (
     <div ref={ref} class="presence-layer">
       {peers.map(([id, p]) => {
-        const sel = byId.get(p.state.selection);
+        // A list of clip ids (a single id from peers running an older version).
+        const s = p.state.selection;
+        const sels = (Array.isArray(s) ? s : [s]).map((k) => byId.get(k)).filter(Boolean);
         return (
           <div key={id} class="presence-peer">
-            {sel && (
+            {sels.map((sel) => (
               <div
+                key={sel.id}
                 class="presence-selection"
                 style={{
                   borderColor: p.color,
@@ -128,7 +131,7 @@ export default function Presence() {
                   height: `${CLIP_HEIGHT + 6}px`,
                 }}
               />
-            )}
+            ))}
             <div data-cursor={id} class="presence-cursor" style={{ display: 'none' }}>
               <Arrow color={p.color} />
               <span class="presence-name" style={{ background: p.color }}>

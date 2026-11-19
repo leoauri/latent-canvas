@@ -1,11 +1,13 @@
 // Infinite blank canvas over time. Touchpad: two-finger scroll pans, pinch zooms both axes.
 // Mouse: wheel pans (shift for horizontal), ctrl+wheel zooms, middle-drag pans.
-// Drag clips to move them (shift: only horizontally or vertically), Delete removes the selection.
+// Click selects a clip (shift+click toggles it), Alt+drag on empty space lassos clips (Alt+Shift:
+// adds to the selection). Dragging a selected clip moves the whole selection, Alt+drag moves a copy
+// of it; with Shift either goes only horizontally or vertically. Cmd/Ctrl+D duplicates the selection right after itself, Delete removes it.
 // Presses on empty space bubble to the container (the playhead uses them); presses on clips don't.
 import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { view, panBy, zoomAt, worldToScreenY, xToTime, screenToWorldY } from './view.js';
-import { clips, selectedId, CLIP_HEIGHT, duration, updateClip, removeClip, bringToFront, addClip } from './clips.js';
+import { clips, selection, CLIP_HEIGHT, duration, removeClips, moveClips, duplicateClips, bringAllToFront, addClip } from './clips.js';
 import { isAssetDrag, assetOf, assetKind, clipFromAsset } from '../assetDrag.js';
 
 // Brief message over the timeline (the HUD has no error slot).
@@ -65,6 +67,28 @@ function bitmap(clip) {
 
 const isTyping = (el) => !!el?.closest?.('input, textarea, select, button, [contenteditable]');
 
+// Whether the polygon (screen points) contains point (x, y): even-odd ray casting.
+function inside(poly, x, y) {
+  let k = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) k = !k;
+  }
+  return k;
+}
+// Whether segments ab and cd cross.
+function crosses([ax, ay], [bx, by], [cx, cy], [dx, dy]) {
+  const o = (px, py, qx, qy, rx, ry) => Math.sign((qx - px) * (ry - py) - (qy - py) * (rx - px));
+  return o(ax, ay, bx, by, cx, cy) !== o(ax, ay, bx, by, dx, dy) && o(cx, cy, dx, dy, ax, ay) !== o(cx, cy, dx, dy, bx, by);
+}
+// A clip is lassoed when its centre line touches the closed lasso: an end inside, or crossing an edge.
+function lassoed(poly, x0, x1, y) {
+  if (poly.length < 3) return false;
+  if (inside(poly, x0, y) || inside(poly, x1, y)) return true;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) if (crosses([x0, y], [x1, y], poly[j], poly[i])) return true;
+  return false;
+}
+
 export default function TimelineCanvas() {
   const ref = useRef(null);
 
@@ -80,7 +104,7 @@ export default function TimelineCanvas() {
 
     function draw() {
       const v = view.value;
-      const sel = selectedId.value;
+      const sel = new Set(selection.value);
       const css = getComputedStyle(canvas);
       const color = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
       const bg = color('--bg', '#fff'), fg = color('--fg', '#111'), accent = color('--timeline-select', '#4c8dff');
@@ -102,15 +126,44 @@ export default function TimelineCanvas() {
 
       // Hover/selection outlines stay on top of all shading.
       for (const c of clips.value) {
-        if (c.id !== sel && c.id !== hoverId) continue;
+        const on = sel.has(c.id);
+        if (!on && c.id !== hoverId) continue;
         const x = (c.t - v.t0) * v.pps, y = worldToScreenY(c.y, v), cw = c.length * (v.pps / c.rate);
         const left = Math.max(x, -4), right = Math.min(x + Math.max(2, cw), w + 4);
-        ctx.globalAlpha = c.id === sel ? 1 : 0.6;
-        ctx.strokeStyle = c.id === sel ? accent : fg;
-        ctx.lineWidth = c.id === sel ? 2 : 1;
+        if (right < left) continue;
+        ctx.globalAlpha = on ? 1 : 0.6;
+        ctx.strokeStyle = on ? accent : fg;
+        ctx.lineWidth = on ? 2 : 1;
         ctx.strokeRect(left - 1, y - 1, right - left + 2, CLIP_HEIGHT + 2);
         ctx.globalAlpha = 1;
       }
+
+      // The lasso being drawn.
+      if (drag?.mode === 'lasso' && drag.poly.length > 1) {
+        ctx.beginPath();
+        drag.poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.closePath();
+        ctx.globalAlpha = 0.08;
+        ctx.fillStyle = accent;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = accent;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Selects the clips the lasso touches (in addition to those selected when it started).
+    function lassoSelect() {
+      const v = view.value, poly = drag.poly, ids = new Set(drag.base);
+      for (const c of clips.value) {
+        const x0 = (c.t - v.t0) * v.pps, x1 = x0 + Math.max(2, duration(c) * v.pps);
+        if (lassoed(poly, x0, x1, worldToScreenY(c.y, v) + CLIP_HEIGHT / 2)) ids.add(c.id);
+      }
+      const next = [...ids];
+      if (next.length !== selection.value.length || next.some((id, i) => id !== selection.value[i])) selection.value = next;
     }
 
     // Clips: only the visible sample range is drawn, nearest-neighbour when zoomed in so
@@ -161,6 +214,12 @@ export default function TimelineCanvas() {
 
     // ---- input
 
+    const origins = (ids) => {
+      const from = {};
+      for (const c of clips.value) if (ids.includes(c.id)) from[c.id] = { t: c.t, y: c.y };
+      return from;
+    };
+
     const onWheel = (e) => {
       e.preventDefault(); // also stops browser zoom and swipe-back navigation
       const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? h : 1;
@@ -193,14 +252,26 @@ export default function TimelineCanvas() {
       if (e.button !== 0) return;
       const c = hit(...local(e));
       if (!c) {
-        selectedId.value = null;
+        if (e.altKey) {
+          // Lasso: the playhead stays where it is. Alt+Shift adds to the selection.
+          e.stopPropagation();
+          suppressClick = true;
+          drag = { mode: 'lasso', poly: [local(e)], base: e.shiftKey ? selection.value : [] };
+          lassoSelect();
+          canvas.setPointerCapture(e.pointerId);
+        } else selection.value = [];
         return;
       }
       e.stopPropagation(); // a press on a clip must not move the playhead
       suppressClick = true;
-      selectedId.value = c.id;
-      bringToFront(c.id);
-      drag = { mode: 'clip', id: c.id, x: e.clientX, y: e.clientY, t: c.t, cy: c.y };
+      const sel = selection.value, was = sel.includes(c.id);
+      // Pressing an unselected clip selects just it (with Shift: adds it); pressing a selected one
+      // keeps the group. Shift+click (no drag) on a selected clip deselects it.
+      const ids = was ? [...sel.filter((id) => id !== c.id), c.id] : e.shiftKey && !e.altKey ? [...sel, c.id] : [c.id];
+      selection.value = ids;
+      // Alt: the copy is made once the pointer moves, so an Alt+click doesn't stack a hidden duplicate.
+      if (!e.altKey) bringAllToFront(ids);
+      drag = { mode: 'clip', from: origins(ids), copy: e.altKey, deselect: e.shiftKey && !e.altKey && was ? c.id : null, x: e.clientX, y: e.clientY };
       canvas.setPointerCapture(e.pointerId);
     };
     const onPointerMove = (e) => {
@@ -217,14 +288,35 @@ export default function TimelineCanvas() {
         drag.y = e.clientY;
         return;
       }
-      canvas.style.cursor = 'grabbing';
+      if (drag.mode === 'lasso') {
+        const p = local(e), last = drag.poly[drag.poly.length - 1];
+        if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 3) return;
+        drag.poly.push(p);
+        lassoSelect();
+        schedule();
+        return;
+      }
       let dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      // Shift constrains the move to the dominant axis.
+      if (drag.deselect) {
+        if (Math.hypot(dx, dy) < 3) return;
+        drag.deselect = null; // a drag after all
+      }
+      if (drag.copy) {
+        if (Math.hypot(dx, dy) < 3) return;
+        drag.copy = false;
+        drag.copied = true;
+        drag.from = origins(duplicateClips(Object.keys(drag.from), 0).map((d) => d.id)); // originals stay
+      }
+      canvas.style.cursor = drag.copied ? 'copy' : 'grabbing';
+      // Shift constrains the move (or Alt+Shift the copy) to the dominant axis.
       if (e.shiftKey) Math.abs(dx) >= Math.abs(dy) ? (dy = 0) : (dx = 0);
-      updateClip(drag.id, { t: drag.t + dx / view.value.pps, y: drag.cy + dy / view.value.ys });
+      moveClips(drag.from, dx / view.value.pps, dy / view.value.ys);
     };
-    const onPointerUp = () => {
+    const onPointerUp = (e) => {
+      const was = drag;
       drag = null;
+      if (was?.mode === 'lasso') schedule();
+      if (was?.deselect && e.type === 'pointerup') selection.value = selection.value.filter((id) => id !== was.deselect);
       canvas.style.cursor = hoverId ? 'grab' : '';
     };
     const onClick = (e) => {
@@ -232,9 +324,13 @@ export default function TimelineCanvas() {
       suppressClick = false;
     };
     const onKeyDown = (e) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId.value && !isTyping(e.target)) {
+      if (!selection.value.length || isTyping(e.target)) return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
-        removeClip(selectedId.value);
+        removeClips(selection.value);
+      } else if (e.code === 'KeyD' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault(); // not the browser's bookmark
+        duplicateClips(selection.value);
       }
     };
 
@@ -254,7 +350,7 @@ export default function TimelineCanvas() {
       const at = { t: xToTime(px, v), y: screenToWorldY(py, v) - CLIP_HEIGHT / 2 / v.ys };
       if (assetKind(a) !== 'clip') return showDropError(`“${a?.name ?? 'file'}” is not clip data: drop models on the layer stack`);
       clipFromAsset(a.hash).then(
-        (c) => (addClip({ ...c, ...at }), (selectedId.value = c.id)),
+        (c) => (addClip({ ...c, ...at }), (selection.value = [c.id])),
         (err) => showDropError(`Clip not added: ${err.message || err}`),
       );
     };
@@ -290,7 +386,7 @@ export default function TimelineCanvas() {
 
     // Redraw whenever the view, the clips or the selection change.
     const stopEffect = effect(() => {
-      view.value, clips.value, selectedId.value, stack.value, masks.value, masked.value, highlightedLayerId.value, activeLayerId.value;
+      view.value, clips.value, selection.value, stack.value, masks.value, masked.value, highlightedLayerId.value, activeLayerId.value;
       schedule();
     });
     // Theme changes (light/dark) change the CSS colours.

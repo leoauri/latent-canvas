@@ -1,5 +1,6 @@
 // Clips: sequences of latent vectors sampled over time, each at its own sample rate.
 import { persist } from '@live/runtime';
+import { computed } from '@preact/signals';
 import * as db from '../../lib/db.js';
 import { shared } from '../../net/shared.js';
 import * as blobs from '../../net/blobs.js';
@@ -20,7 +21,10 @@ export const CLIP_HEIGHT = 10; // px, independent of zoom
 
 /** @type {import('@preact/signals').Signal<Clip[]>} draw order = array order (last on top) */
 export const clips = persist('timeline.clips', []);
-export const selectedId = persist('timeline.selectedId', null);
+/** Ids of the selected clips (local to this page). The last one is the primary (HUD, peers' focus). */
+export const selection = persist('timeline.selection', []);
+export const selectedId = computed(() => selection.value[selection.value.length - 1] ?? null);
+export const isSelected = (id) => selection.value.includes(id);
 
 // Shared with the session (net/shared.js): a clip's metadata goes into the document, its vectors
 // into the blob store (net/blobs.js) as `dataHash`, fetched from peers when missing. A clip is local
@@ -78,7 +82,7 @@ const unbind = [
     },
   }),
   clips.subscribe((list) => list.forEach((c) => !c.recording && c.data && !hashes.value.has(c.data) && storeData(c).catch((e) => console.warn('clips: storing data failed', e)))),
-  db.sync(selectedId, 'timeline.selectedId'),
+  db.sync(selection, 'timeline.selection', { hydrate: (v) => (Array.isArray(v) ? v : []) }),
 ];
 export function dispose() {
   unbind.forEach((f) => f());
@@ -94,12 +98,45 @@ export function updateClip(id, patch) {
   clips.value = clips.value.map((c) => (c.id === id ? { ...c, ...patch } : c));
 }
 export function removeClip(id) {
-  clips.value = clips.value.filter((c) => c.id !== id);
-  if (selectedId.value === id) selectedId.value = null;
+  removeClips([id]);
+}
+export function removeClips(ids) {
+  const gone = new Set(ids);
+  clips.value = clips.value.filter((c) => !gone.has(c.id));
+  if (selection.value.some((id) => gone.has(id))) selection.value = selection.value.filter((id) => !gone.has(id));
+}
+/** Moves each clip in `from` ({ id: { t, y } }) by dt seconds and dy world y, in one change. */
+export function moveClips(from, dt, dy) {
+  clips.value = clips.value.map((c) => (from[c.id] ? { ...c, t: from[c.id].t + dt, y: from[c.id].y + dy } : c));
+}
+
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+
+/**
+ * Copies clips `ids` (not ones still recording), shifted by dt seconds (default: the selection's
+ * time span, so the copies follow right after), on top, and selects the copies. Copies share the
+ * originals' vectors (same blob). Returns the copies.
+ */
+export function duplicateClips(ids, dt) {
+  const want = new Set(ids);
+  const src = clips.value.filter((c) => want.has(c.id) && !c.recording);
+  if (!src.length) return [];
+  if (dt == null) dt = Math.max(...src.map((c) => c.t + duration(c))) - Math.min(...src.map((c) => c.t));
+  const copies = src.map((c) => ({ ...c, id: newId(), t: c.t + dt }));
+  clips.value = [...clips.value, ...copies];
+  selection.value = copies.map((c) => c.id);
+  return copies;
 }
 export function bringToFront(id) {
   const list = clips.value;
   const i = list.findIndex((c) => c.id === id);
   if (i === -1 || i === list.length - 1) return;
   clips.value = [...list.slice(0, i), ...list.slice(i + 1), list[i]];
+}
+/** Moves clips `ids` to the top of the draw order, keeping their order among themselves. */
+export function bringAllToFront(ids) {
+  const want = new Set(ids), list = clips.value;
+  const front = list.filter((c) => want.has(c.id));
+  if (front.every((c, i) => list[list.length - front.length + i] === c)) return;
+  clips.value = [...list.filter((c) => !want.has(c.id)), ...front];
 }
