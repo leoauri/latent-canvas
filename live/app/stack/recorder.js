@@ -1,6 +1,7 @@
 // Latent recording: an armed latent layer records, while the transport plays, the latent stream
 // reaching it (from the nearest producer behind it, app/stack/models.js) into new clips, one per
-// voice of the stream, each starting where its voice starts (at the playhead for a live input).
+// voice of the stream, each placed where its voice is on the timeline (for a live input: the
+// playhead, at the input dot).
 // Clips grow on the timeline while they record and are saved when the recording ends (stop,
 // disarm, or the source going away).
 import { effect } from '@preact/signals';
@@ -8,11 +9,12 @@ import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
 import { stack, stackLayerById } from './stack.js';
 import { subscribe, producerBehind, producedKind } from './models.js';
-import { playing, time } from '../timeline/Playhead.jsx';
+import { playing, time, holdInput, nudgeInput } from '../timeline/Playhead.jsx';
 import { clips, addClip, updateClip, removeClip, CLIP_HEIGHT, duration } from '../timeline/clips.js';
 import { masksOf } from '../timeline/layers.js';
 
 const UPDATE_EVERY = 4; // frames between redraws of a growing clip
+const LANE_GAP = 6; // px between stacked takes
 
 /**
  * @typedef {object} Take  one voice of the stream, recorded into one clip
@@ -42,26 +44,27 @@ export function latentSourceOf(l) {
 
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
-/** Where a new clip goes: the layer's first mask, else below the clips it would overlap. */
+/** Where a new clip goes when its stream has no position: the layer's first mask, else below the clips it would overlap. */
 function laneFor(l, t0) {
   const m = masksOf(l.id).find((r) => r.h < 1e6);
   if (m) return m.y + Math.max(0, (m.h - CLIP_HEIGHT) / 2);
   const overlapping = clips.value.filter((c) => c.t + duration(c) > t0);
-  return overlapping.length ? Math.max(...overlapping.map((c) => c.y)) + CLIP_HEIGHT + 6 : 0;
+  return overlapping.length ? Math.max(...overlapping.map((c) => c.y)) + CLIP_HEIGHT + LANE_GAP : 0;
 }
 
 function begin(l, sourceId) {
   const ctx = audioContext();
   const rec = { sourceId, startFrame: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), takes: new Map(), n: 0, missed: 0 };
-  rec.unsub = subscribe(sourceId, ({ kind, data: frame, missed, start, rate, dim, voice }) => {
+  rec.unsub = subscribe(sourceId, ({ kind, data: frame, missed, start, rate, dim, voice, t, y }) => {
     if (kind !== 'latent' || start < rec.startFrame) return; // a flush; or audio from before the recording started
     let take = rec.takes.get(voice);
     if (!take) {
       take = { clipId: newId(), n: 0, missed: 0, dim, buf: new Float32Array(dim * Math.ceil(rate * 30)) };
       addClip({
         id: take.clipId,
-        t: rec.t0 + (start - rec.startFrame) / ctx.sampleRate,
-        y: laneFor(stackLayerById(l.id) ?? l, rec.t0),
+        t: t ?? rec.t0 + (start - rec.startFrame) / ctx.sampleRate,
+        // The trace goes where the stream is: a unit's y is a clip's centre line.
+        y: y !== undefined ? y - CLIP_HEIGHT / 2 : laneFor(stackLayerById(l.id) ?? l, rec.t0),
         rate,
         dim,
         length: 0,
@@ -89,6 +92,7 @@ function end(id) {
   const rec = recordings.peek()[id];
   if (!rec) return;
   rec.unsub();
+  if ([...rec.takes.values()].some((take) => take.n)) tookClip = true;
   const next = { ...recordings.peek() };
   delete next[id];
   recordings.value = next;
@@ -114,7 +118,17 @@ const stopEffect = effect(() => {
   for (const [id, src] of want) if (!recordings.peek()[id]) begin(stackLayerById(id), src);
 });
 
+// While a recording runs, the live input's world position stays put (Playhead.jsx). When it ends
+// having made a clip, the input dot moves a lane down, so the next take goes below it.
+let tookClip = false;
+const stopHold = effect(() => {
+  const on = Object.keys(recordings.value).length > 0;
+  holdInput(on);
+  if (!on && tookClip) (tookClip = false), nudgeInput(CLIP_HEIGHT + LANE_GAP);
+});
+
 export function dispose() {
   stopEffect();
+  stopHold();
   // Recordings keep running across a module swap: their listeners live in models.js.
 }

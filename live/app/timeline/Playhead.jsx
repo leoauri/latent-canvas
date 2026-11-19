@@ -5,7 +5,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { batch } from '@preact/signals';
 import { persist } from '@live/runtime';
-import { view, timeToX, xToTime, placeTimeAt, screenToWorldY } from './view.js';
+import { view, timeToX, xToTime, placeTimeAt, screenToWorldY, worldToScreenY } from './view.js';
 import * as db from '../../lib/db.js';
 import { inputs, peaks, audioContext } from '../../lib/audio.js';
 import { stack } from '../stack/stack.js';
@@ -24,8 +24,26 @@ const unbindCue = db.sync(cue, 'playhead.cue', {
 
 const viewHeight = persist('playhead.viewHeight', 0); // px of the timeline the playhead spans
 
-/** Where live input enters the timeline: the playhead, mid-view (the input dot). */
-export const inputPoint = () => ({ t: time.peek(), y: screenToWorldY(viewHeight.peek() / 2, view.peek()) });
+// The input dot is pinned to the screen (a fraction of the view height, set by clicks), except
+// while held (a recording runs): then it keeps its world y.
+const inputScreenY = persist('playhead.inputScreenY', 0.5);
+const heldInputY = persist('playhead.heldInputY', null);
+const pinnedWorldY = (v = view.peek()) => screenToWorldY(inputScreenY.value * viewHeight.value, v);
+const inputWorldY = (v) => heldInputY.value ?? pinnedWorldY(v);
+/** Holds the input dot at its world position (on), or lets it return to its screen spot. */
+export function holdInput(on) {
+  if (on === (heldInputY.peek() !== null)) return;
+  heldInputY.value = on ? inputPoint().y : null;
+}
+
+/** Moves the input dot's screen spot down by `px` (kept inside the view). */
+export function nudgeInput(px) {
+  const h = viewHeight.peek();
+  if (h) inputScreenY.value = Math.min(1, Math.max(0, inputScreenY.peek() + px / h));
+}
+
+/** Where live input enters the timeline: the playhead, at the input dot. */
+export const inputPoint = () => ({ t: time.peek(), y: heldInputY.peek() ?? screenToWorldY(inputScreenY.peek() * viewHeight.peek(), view.peek()) });
 
 // One loop at a time, even while two versions of this module coexist during a swap.
 const owner = persist('playhead.loopOwner', null);
@@ -101,7 +119,7 @@ const DOT_MIN = 6; // px diameter at silence
 const DOT_MAX = 40; // px diameter at full scale
 
 /** The live input's level as a dot: its size follows the loudest input's peak, smoothed. */
-function InputDot({ ids }) {
+function InputDot({ ids, top }) {
   const ref = useRef(null);
   const idsRef = useRef(ids);
   idsRef.current = ids;
@@ -118,7 +136,7 @@ function InputDot({ ids }) {
     });
     return () => cancelAnimationFrame(frame);
   }, []);
-  return <div ref={ref} class="playhead-input" title="Incoming audio input" />;
+  return <div ref={ref} class="playhead-input" style={{ top: `${top}px` }} title="Incoming audio input" />;
 }
 
 export default function Playhead() {
@@ -126,7 +144,15 @@ export default function Playhead() {
 
   useEffect(() => {
     const host = ref.current.parentElement;
-    const seekTo = (e) => seek(xToTime(e.clientX - host.getBoundingClientRect().left));
+    const seekTo = (e) => {
+      const r = host.getBoundingClientRect();
+      const sy = Math.min(r.height, Math.max(0, e.clientY - r.top));
+      batch(() => {
+        seek(xToTime(e.clientX - r.left));
+        if (r.height) inputScreenY.value = sy / r.height;
+        if (heldInputY.peek() !== null) heldInputY.value = screenToWorldY(sy, view.peek());
+      });
+    };
     const onPointerDown = (e) => {
       if (e.button !== 0) return;
       seekTo(e);
@@ -167,13 +193,13 @@ export default function Playhead() {
   });
 
   const v = view.value;
-  // Live audio input has no place on the timeline yet: it enters at the playhead, mid-view.
+  // Live audio input enters the timeline at the playhead, at the input dot.
   const liveInputs = stack.value.filter((l) => l.type === 'audio-in' && inputs.value[l.id]?.status === 'open').map((l) => l.id);
   return (
     <div ref={ref} class="playhead-layer">
       {playing.value && <div class="playhead playhead-cue" style={{ transform: `translateX(${timeToX(cue.value, v)}px)` }} />}
       <div class="playhead" style={{ transform: `translateX(${timeToX(shown, v)}px)` }}>
-        {liveInputs.length > 0 && <InputDot ids={liveInputs} />}
+        {liveInputs.length > 0 && <InputDot ids={liveInputs} top={worldToScreenY(inputWorldY(v), v)} />}
       </div>
     </div>
   );
