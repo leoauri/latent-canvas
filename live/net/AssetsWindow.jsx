@@ -7,6 +7,7 @@ import { toggleWindow, findWindow } from '../ui/windows.js';
 import * as blobs from './blobs.js';
 import * as session from './session.js';
 import * as history from './history.js';
+import { repo } from './docs.js';
 import './net.css';
 
 const HASH_RE = /^sha256-[0-9a-f]{64}$/;
@@ -93,7 +94,44 @@ function useRefs() {
     }
     return { set: out, scanned };
   }, [h, list]);
-  return { used, recent };
+  const others = useOtherSessions();
+  return { used, recent, others };
+}
+
+// Other sessions' documents, loaded from local storage (not offered to peers: docs.js shares only
+// the open one). They can't change while closed, so one scan per opening of the window will do.
+function useOtherSessions() {
+  const list = session.sessions.value;
+  const cur = session.currentDoc.value;
+  const [res, setRes] = useState({ done: false, byHash: new Map(), unknown: [] });
+  const key = list.map((s) => `${s.doc}\u0000${s.name}`).join('\n') + '\n' + cur;
+  useEffect(() => {
+    let live = true;
+    setRes((r) => ({ ...r, done: false }));
+    (async () => {
+      const byHash = new Map();
+      const unknown = [];
+      for (const s of list) {
+        if (s.doc === cur) continue;
+        try {
+          const h = await repo.find(s.doc, { allowableStates: ['ready', 'unavailable'] });
+          if (!h.isReady()) {
+            unknown.push(s.name);
+            continue;
+          }
+          for (const hash of scanDoc(h.doc()).keys()) {
+            if (!byHash.has(hash)) byHash.set(hash, new Set());
+            byHash.get(hash).add(s.name);
+          }
+        } catch {
+          unknown.push(s.name);
+        }
+      }
+      if (live) setRes({ done: true, byHash, unknown });
+    })();
+    return () => (live = false);
+  }, [key]);
+  return res;
 }
 
 // ---- actions -----------------------------------------------------------------------------
@@ -116,7 +154,7 @@ async function download(hash) {
 function AssetsBody() {
   const idx = blobs.index.value;
   const tr = blobs.transfers.value;
-  const { used, recent } = useRefs();
+  const { used, recent, others } = useRefs();
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState('added');
   const [estimate, setEstimate] = useState(null);
@@ -147,7 +185,7 @@ function AssetsBody() {
 
   const total = Object.values(idx).reduce((s, e) => s + (e.complete ? e.size : Math.min(e.size, e.have * blobs.CHUNK_SIZE)), 0);
   const active = (t) => t && (t.state === 'fetching' || t.state === 'waiting');
-  const unused = Object.keys(idx).filter((h) => !used.has(h) && !recent.set.has(h) && !active(tr[h]));
+  const unused = others.done ? Object.keys(idx).filter((h) => !used.has(h) && !recent.set.has(h) && !others.byHash.has(h) && !active(tr[h])) : [];
 
   const run = async (label, fn) => {
     setBusy(label);
@@ -167,16 +205,22 @@ function AssetsBody() {
     const e = idx[hash];
     const label = e?.name ?? short(hash);
     const places = used.get(hash);
-    const warn = places
-      ? `\n\nThe open session uses it (${[...places].join(', ')}): it will have to be fetched again from a peer, or will be missing if nobody has it.`
-      : recent.set.has(hash)
-        ? '\n\nIt is used in recent history: undoing those actions would need it again.'
-        : '';
+    const elsewhere = others.byHash.get(hash);
+    const warn =
+      (places
+        ? `\n\nThe open session uses it (${[...places].join(', ')}): it will have to be fetched again from a peer, or will be missing if nobody has it.`
+        : recent.set.has(hash)
+          ? '\n\nIt is used in recent history: undoing those actions would need it again.'
+          : '') +
+      (elsewhere ? `\n\nAlso used by: ${[...elsewhere].join(', ')}. Opening ${elsewhere.size > 1 ? 'them' : 'it'} will need it fetched from a peer.` : '');
     if (confirm(`Remove “${label}” (${bytes(e?.size ?? tr[hash]?.total)}) from this browser?${warn}`)) run('Remove', () => blobs.remove(hash));
   };
   const removeUnused = () => {
     const size = unused.reduce((s, h) => s + (idx[h]?.size ?? 0), 0);
-    if (confirm(`Remove ${unused.length} file${unused.length > 1 ? 's' : ''} (${bytes(size)}) that the open session doesn't use, now or in its recent history?`))
+    const note = others.unknown.length
+      ? `\n\nNot stored in this browser, so not checked: ${others.unknown.join(', ')}.`
+      : '';
+    if (confirm(`Remove ${unused.length} file${unused.length > 1 ? 's' : ''} (${bytes(size)}) that no session in this browser uses (and not the open session's recent history)?${note}`))
       run('Remove unused', async () => {
         for (const h of unused) await blobs.remove(h);
       });
@@ -211,7 +255,12 @@ function AssetsBody() {
             <input type="file" multiple hidden onChange={(e) => (addFiles([...e.currentTarget.files]), (e.currentTarget.value = ''))} />
           </label>
           <span class="net-grow net-muted">or drop them here</span>
-          <button disabled={!unused.length || !!busy} onClick={removeUnused} title="Files the open session doesn't reference, now or in its recent history">
+          <button
+            class="net-remove-unused"
+            disabled={!unused.length || !!busy}
+            onClick={removeUnused}
+            title={others.done ? "Files no session in this browser references (nor the open session's recent history)" : 'Checking other sessions…'}
+          >
             Remove unused{unused.length ? ` (${unused.length})` : ''}
           </button>
         </div>
@@ -231,7 +280,7 @@ function AssetsBody() {
         {rows.length ? (
           <ul class="net-list net-assets-list">
             {rows.map(({ hash, e, t }) => (
-              <AssetRow key={hash} hash={hash} e={e} t={t} places={used.get(hash)} inHistory={recent.set.has(hash)} onRemove={() => remove(hash)} run={run} />
+              <AssetRow key={hash} hash={hash} e={e} t={t} places={used.get(hash)} inHistory={recent.set.has(hash)} sessions={others.byHash.get(hash)} onRemove={() => remove(hash)} run={run} />
             ))}
           </ul>
         ) : (
@@ -239,14 +288,14 @@ function AssetsBody() {
         )}
         <p class="net-hint">
           “Used” is what the open session's document references; “in history” is referenced only by the state before one of your last{' '}
-          {HISTORY_SCAN} actions (undo would need it).
+          {HISTORY_SCAN} actions (undo would need it). Session names mark files your other sessions use.
         </p>
       </section>
     </div>
   );
 }
 
-function AssetRow({ hash, e, t, places, inHistory, onRemove, run }) {
+function AssetRow({ hash, e, t, places, inHistory, sessions, onRemove, run }) {
   const complete = !!e?.complete;
   const transferring = t && (t.state === 'fetching' || t.state === 'waiting');
   const pct = t?.total ? Math.min(100, (100 * t.bytes) / t.total) : e ? (100 * e.have) / Math.max(1, e.chunks) : 0;
@@ -283,10 +332,11 @@ function AssetRow({ hash, e, t, places, inHistory, onRemove, run }) {
           {short(hash)}
         </span>
       </div>
-      {(places || inHistory) && (
+      {(places || inHistory || sessions) && (
         <div class="net-row net-tags">
           {places && [...places].map((p) => <span class="net-tag net-tag-used" key={p} title="Referenced by the open session">{p}</span>)}
           {!places && inHistory && <span class="net-tag" title="Referenced by the state before a recent action (undo)">used in recent history</span>}
+          {sessions && [...sessions].map((n) => <span class="net-tag net-tag-session" key={'s:' + n} title="Used by this other session">◇ {n}</span>)}
         </div>
       )}
       {t && t.state !== 'done' && (

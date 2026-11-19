@@ -57,6 +57,7 @@
 .net-tags { flex-wrap: wrap; gap: 4px; }
 .net-tag { display: inline-block; padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); font-size: 11px; line-height: 16px; white-space: nowrap; }
 .net-tag-used { color: var(--ok); border-color: var(--ok); }
+.net-tag-session { color: var(--text, inherit); }
 .net-check { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 12px; cursor: pointer; min-width: 0; }
 .net-label .net-check { color: var(--muted); font-size: 11px; }
 .window .net-check input { padding: 0; margin: 0; }
