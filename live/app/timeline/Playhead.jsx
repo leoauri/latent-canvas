@@ -126,6 +126,7 @@ const stopOnEngineOff = engineOn.subscribe((on) => on || !playing.peek() || stop
 
 export function dispose() {
   stopOnEngineOff();
+  saveFollow();
   unbindCue();
   cancelAnimationFrame(raf);
   raf = 0;
@@ -145,6 +146,10 @@ const swallowSpaceUp = (e) => {
   window.removeEventListener('keyup', swallowSpaceUp, true);
 };
 const FOLLOW_MARGIN = 24; // px: while playing, page the view when the playhead leaves it
+/** Whether the view pages to the playhead when playback leaves it. Per browser. */
+export const follow = persist('playhead.follow', () => localStorage.getItem('redaw.playhead.follow') !== 'false');
+const saveFollow = follow.subscribe((on) => localStorage.setItem('redaw.playhead.follow', String(on)));
+export const toggleFollow = () => (follow.value = !follow.peek());
 
 const DOT_MIN = 6; // px diameter at silence
 const DOT_MAX = 40; // px diameter at full scale
@@ -219,7 +224,7 @@ export default function Playhead() {
 
   // Follow playback.
   useEffect(() => {
-    if (!playing.value) return;
+    if (!playing.value || !follow.value) return;
     const width = ref.current.clientWidth;
     const x = timeToX(shown);
     if (x < 0 || x > width - FOLLOW_MARGIN) placeTimeAt(shown, FOLLOW_MARGIN);
