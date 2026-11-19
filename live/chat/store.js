@@ -31,6 +31,8 @@ export const chat = {
   /** Model override; empty means the configured default (OPENAI_MODEL). */
   model: persist('chat.model', () => load('redaw.chat.model', '')),
   apiKey: persist('chat.apiKey', () => load('redaw.apiKey', '')),
+  /** Endpoint override (OpenAI-compatible, up to the version path); empty means OPENAI_BASE_URL. */
+  baseURL: persist('chat.baseURL', () => load('redaw.baseURL', '')),
 };
 
 db.once('chats', async () => {

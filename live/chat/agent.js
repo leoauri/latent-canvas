@@ -18,7 +18,8 @@ class APIError extends Error {
 }
 
 function endpoint() {
-  if (env.proxy) {
+  const baseURL = chat.baseURL.value.replace(/\/+$/, '');
+  if (env.proxy && !baseURL) {
     // Dev server proxies /__llm and adds the key from .env; no key ever reaches the page.
     return { url: `${location.origin}/__llm/chat/completions`, headers: {} };
   }
@@ -26,7 +27,7 @@ function endpoint() {
   // a server that needs one answers 401, which is reported as an authentication failure.
   const apiKey = chat.apiKey.value;
   return {
-    url: `${env.baseURL}/chat/completions`,
+    url: `${baseURL || env.baseURL}/chat/completions`,
     headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
   };
 }

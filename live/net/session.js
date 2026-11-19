@@ -3,7 +3,7 @@
 // session's join link (link.js), so a reload reopens it and copying the URL invites someone.
 // Opening a join link (pasted, or arriving in the URL) adds that session and opens it.
 import { signal, computed } from '@preact/signals';
-import { persist, vfs } from '@live/runtime';
+import { persist, vfs, env } from '@live/runtime';
 import * as db from '../lib/db.js';
 import * as room from './room.js';
 import { repo, offered, offeredChanged } from './docs.js';
@@ -26,7 +26,7 @@ export const error = signal(null);
 export const version = signal(0);
 
 export const current = computed(() => sessions.value.find((s) => s.doc === currentDoc.value) ?? null);
-export const shareLink = computed(() => (current.value ? makeLink(current.value) : null));
+export const shareLink = computed(() => (current.value ? makeLink(current.value, env.publicURL || undefined) : null));
 
 const unbind = [db.sync(sessions, 'net.sessions'), db.sync(currentDoc, 'net.currentDoc')];
 let disposed = false;

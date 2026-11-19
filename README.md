@@ -10,7 +10,8 @@ npm run dev
 ```
 
 Without a key in `.env`, the page calls the endpoint directly with a key from the chat
-settings, stored in the browser (or none, for local servers like Ollama). That is also
+settings, stored in the browser (or none, for local servers like Ollama). The chat settings
+can also override the endpoint per browser, which bypasses the dev proxy. That is also
 how a static `npm run build` works.
 
 ## Commit messages
@@ -92,7 +93,8 @@ connected, undo recent actions, switch between sessions or join one from a link.
 - **Invite link**: `…/#doc=automerge:<id>&room=<secret>&signal=<ws(s) URL>`. The room secret is the
   only credential: whoever has the link can join and edit, so share it like a password. It never
   reaches an HTTP server (it's in the fragment). The link names its signaling server, so everyone
-  meets on the same one.
+  meets on the same one. It points at this page unless `REDAW_PUBLIC_URL` names another instance
+  (e.g. a public static build) for people to open it on.
 - **Transport** (`net/room.js`): a full WebRTC mesh (meant for up to ~20 trusted peers). The
   signaling server only relays connection setup between peers who know the room's topic (a hash of
   the secret), and that traffic is encrypted with a key derived from the secret. After that, data

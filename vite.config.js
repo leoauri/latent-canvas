@@ -15,6 +15,10 @@ export default defineConfig(({ mode }) => {
   // Default signaling server for new multiplayer rooms (ws:// or wss://). Unset: the dev server's own
   // relay at /__live/signal. Join links carry their server, so this only affects rooms you start.
   const signalURL = get('REDAW_SIGNAL_URL') || '';
+  // Where invite links point (e.g. https://lc.tmbe.me/). Unset: the page's own address. The fragment
+  // works on any redaw instance running compatible code, so a dev server can hand out links to a
+  // public build.
+  const publicURL = get('REDAW_PUBLIC_URL') || '';
 
   // anira (WASM threads, SharedArrayBuffer) needs a cross-origin-isolated page.
   const isolation = {
@@ -38,6 +42,7 @@ export default defineConfig(({ mode }) => {
       __REDAW_MODEL__: JSON.stringify(model),
       __REDAW_MAX_TOKENS__: JSON.stringify(maxTokens),
       __REDAW_SIGNAL_URL__: JSON.stringify(signalURL),
+      __REDAW_PUBLIC_URL__: JSON.stringify(publicURL),
     },
     server: {
       headers: isolation,

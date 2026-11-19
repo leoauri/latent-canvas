@@ -272,10 +272,18 @@ function HeaderRows({ win, s }) {
               save('redaw.chat.model', chat.model.value);
             }}
           />
-          {!env.proxy && (
+          <input
+            placeholder={`Endpoint (default ${env.proxy ? `${env.baseURL} via the dev proxy` : env.baseURL})`}
+            value={chat.baseURL.value}
+            onInput={(e) => {
+              chat.baseURL.value = e.currentTarget.value.trim();
+              save('redaw.baseURL', chat.baseURL.value);
+            }}
+          />
+          {(!env.proxy || chat.baseURL.value) && (
             <input
               type="password"
-              placeholder={`API key for ${env.baseURL} (stored in this browser)`}
+              placeholder={`API key for ${chat.baseURL.value || env.baseURL} (stored in this browser)`}
               value={chat.apiKey.value}
               onInput={(e) => {
                 chat.apiKey.value = e.currentTarget.value.trim();

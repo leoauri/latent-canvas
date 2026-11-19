@@ -23,6 +23,7 @@ const env = {
   model: typeof __REDAW_MODEL__ !== 'undefined' ? __REDAW_MODEL__ : 'gpt-5',
   maxTokens: typeof __REDAW_MAX_TOKENS__ !== 'undefined' ? __REDAW_MAX_TOKENS__ : 128000,
   signalURL: typeof __REDAW_SIGNAL_URL__ !== 'undefined' ? __REDAW_SIGNAL_URL__ : '',
+  publicURL: typeof __REDAW_PUBLIC_URL__ !== 'undefined' ? __REDAW_PUBLIC_URL__ : '',
   entry: ENTRY,
 };
 
