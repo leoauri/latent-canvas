@@ -31,6 +31,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+if sys.version_info < (3, 11):
+    sys.exit("commit-prompts: needs Python 3.11+, commit aborted. Skip with SKIP_PROMPT_HOOK=1.")
+
 HEADER = "Human prompts:"
 MAX_DIFF = 60_000
 MAX_REST = 30_000
@@ -52,8 +55,23 @@ def iso_ts(s):
 def transcript_dirs(root):
     """Claude Code sessions started in the repo root or any subdirectory of it."""
     mangled = re.sub(r"[^A-Za-z0-9]", "-", str(root))
-    base = Path.home() / ".claude" / "projects"
-    return [d for d in base.glob(mangled + "*") if d.name == mangled or d.name.startswith(mangled + "-")]
+    return [d for base in config_dirs() for d in (base / "projects").glob(mangled + "*")
+            if d.name == mangled or d.name.startswith(mangled + "-")]
+
+
+def config_dirs():
+    """~/.claude, alternate config dirs like ~/.claude-work, and $CLAUDE_CONFIG_DIR."""
+    home = Path.home()
+    dirs = [home / ".claude", *sorted(home.glob(".claude-*"))]
+    if env := os.environ.get("CLAUDE_CONFIG_DIR"):
+        dirs.append(Path(env).expanduser())
+    seen, out = set(), []
+    for d in dirs:
+        r = d.resolve()
+        if r not in seen and (d / "projects").is_dir():
+            seen.add(r)
+            out.append(d)
+    return out
 
 
 def prompt_text(content):

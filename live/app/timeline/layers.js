@@ -4,6 +4,7 @@
 // cutMaskArea; a layer's rectangles never overlap.
 import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
+import { shared } from '../../net/shared.js';
 
 export const MIN_LAYER_HEIGHT = 12; // on-screen px, at any zoom
 /** Extent standing in for infinity (JSON can't store Infinity): stripes span -BIG..BIG. */
@@ -35,7 +36,11 @@ export function closeMaskTools() {
   maskTools.value = null;
   maskTool.value = null;
 }
-const unbind = [db.sync(layers, 'timeline.layers'), db.sync(masked, 'timeline.masked')];
+// Shared with the session (net/shared.js); the kv records are only read once, to migrate.
+const unbind = [
+  shared('timeline.layers', layers, { kind: 'list', label: 'edit masks', seedFrom: () => db.get('kv', 'timeline.layers') }),
+  shared('timeline.masked', masked, { kind: 'map', label: 'toggle mask', seedFrom: () => db.get('kv', 'timeline.masked') }),
+];
 export function dispose() {
   unbind.forEach((f) => f());
 }

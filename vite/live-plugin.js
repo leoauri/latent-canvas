@@ -5,6 +5,8 @@
 //   DELETE /__live/files/<path>   -> { ok: true }
 //   POST   /__live/chat-log       body = { role, text } -> appended to .redaw/chat.jsonl (read by the commit hook)
 //   ws event "live:change"         { path, mtime, source | null }  (disk edits from your editor)
+//   ws     /__live/signal          WebRTC signaling relay for multiplayer rooms (vite/signal.js),
+//                                  also under `vite preview`
 //
 // In a production build the same file list is inlined via `virtual:live-bundle`, so the
 // page also works as a static site (edits then only persist to IndexedDB).
@@ -12,6 +14,7 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { attachSignaling } from './signal.js';
 
 const VIRTUAL_ID = 'virtual:live-bundle';
 const RESOLVED_ID = '\0' + VIRTUAL_ID;
@@ -91,8 +94,12 @@ export default function livePlugin({ dir = 'live' } = {}) {
       const files = isBuild ? await listFiles() : null;
       return `export default ${JSON.stringify(files)};`;
     },
+    configurePreviewServer(server) {
+      if (server.httpServer) attachSignaling(server.httpServer);
+    },
     configureServer(server) {
       enableCommitHooks(server.config.root);
+      if (server.httpServer) attachSignaling(server.httpServer); // null in middleware mode
       const sender = (res) => (code, body) => {
         res.statusCode = code;
         res.setHeader('content-type', 'application/json');

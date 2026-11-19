@@ -22,6 +22,7 @@ const env = {
   baseURL: typeof __REDAW_BASE_URL__ !== 'undefined' ? __REDAW_BASE_URL__ : 'https://api.openai.com/v1',
   model: typeof __REDAW_MODEL__ !== 'undefined' ? __REDAW_MODEL__ : 'gpt-5',
   maxTokens: typeof __REDAW_MAX_TOKENS__ !== 'undefined' ? __REDAW_MAX_TOKENS__ : 128000,
+  signalURL: typeof __REDAW_SIGNAL_URL__ !== 'undefined' ? __REDAW_SIGNAL_URL__ : '',
   entry: ENTRY,
 };
 
@@ -55,8 +56,10 @@ function Recovery({ title, detail }) {
     { style: 'font:14px/1.5 system-ui;padding:24px;max-width:900px;margin:auto;color:#222;background:#fff;min-height:100vh' },
     h('h2', { style: 'color:#b00020;margin-top:0' }, title),
     h('pre', { style: 'white-space:pre-wrap;background:#f6f6f6;padding:12px;border-radius:6px;max-height:50vh;overflow:auto' }, detail),
-    h('p', null, last ? `Last applied change: ${last.label} (${new Date(last.time).toLocaleTimeString()})` : 'No history to revert.'),
+    h('p', null, last ? `Last applied change: ${last.label} (${new Date(last.at).toLocaleTimeString()})` : 'No history to revert.'),
     last && btn('Revert last change', () => vfs.revert(1, { observeMs: 300 }).then(afterRecovery)),
+    // Shared session state this page wrote can break rendering (what peers write, render code must tolerate).
+    loader.get('net/history.js')?.undoLast && btn('Undo my last session action', () => (loader.get('net/history.js').undoLast(), start())),
     btn('Retry', () => start()),
     h('p', { style: 'color:#666' }, 'Shortcut anywhere: Ctrl+Alt+Z reverts the last applied change.'),
   );

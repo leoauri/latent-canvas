@@ -2,6 +2,7 @@
 // (app/stack/recorder.js) and an audio output layer's playback. Counters are not signals, so the panels re-render twice a second.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { stackLayerById, toggleArm, togglePassThrough } from './stack.js';
+import * as blobs from '../../net/blobs.js';
 import { runtimes, links, warnings, detachModel, mixerStats } from './models.js';
 
 function useTick(ms = 500) {
@@ -37,7 +38,7 @@ export function ModelPanel({ layer: l }) {
           Remove
         </button>
       </div>
-      {(!rt || rt.status === 'loading') && <p class="layer-panel-desc">Loading and warming up…</p>}
+      {(!rt || rt.status === 'loading') && <p class="layer-panel-desc">{rt?.detail ? fetchText(rt) : 'Loading and warming up…'}</p>}
       {rt?.status === 'error' && <p class="layer-panel-error">{rt.error}</p>}
       {model && (
         <>
@@ -96,4 +97,14 @@ export function AudioOutPanel({ layer: l }) {
       {st ? ` · output delay ${Math.round((1000 * st.delay) / 48000)} ms` : ''}
     </p>
   );
+}
+
+/** "fetching x from peers: 40% of 500 MB" while a model file downloads (net/blobs.js). */
+function fetchText(rt) {
+  const t = blobs.transfers.value[rt.hash];
+  if (!t || !t.total) return `${rt.detail}…`;
+  const mb = (n) => `${Math.round(n / 1e6)} MB`;
+  return t.state === 'waiting'
+    ? `${rt.detail}: waiting for a peer that has it (${mb(t.bytes)} of ${mb(t.total)})`
+    : `${rt.detail}: ${Math.floor((100 * t.bytes) / t.total)}% of ${mb(t.total)}`;
 }

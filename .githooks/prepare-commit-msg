@@ -2,9 +2,9 @@
 # Append the human prompts behind the staged changes to the commit message.
 # See scripts/commit_prompts.py. Aborts the commit if it can't run; skip with SKIP_PROMPT_HOOK=1.
 [ -n "$SKIP_PROMPT_HOOK" ] && exit 0
-if ! command -v uv >/dev/null 2>&1; then
-  echo "commit-prompts: uv not found on PATH, commit aborted. Install uv, or skip with SKIP_PROMPT_HOOK=1." >&2
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "commit-prompts: python3 not found on PATH, commit aborted. Install Python 3.11+, or skip with SKIP_PROMPT_HOOK=1." >&2
   exit 1
 fi
 root=$(git rev-parse --show-toplevel)
-exec uv run --quiet "$root/scripts/commit_prompts.py" prepare "$@"
+exec python3 "$root/scripts/commit_prompts.py" prepare "$@"

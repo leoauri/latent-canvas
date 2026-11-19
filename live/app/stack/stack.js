@@ -3,6 +3,7 @@
 import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
 import { clearMask } from '../timeline/layers.js';
+import { shared } from '../../net/shared.js';
 
 /**
  * @typedef {'audio-in' | 'latent' | 'operator' | 'audio-out'} StackLayerType
@@ -31,18 +32,34 @@ export const LAYER_TYPES = {
 
 export const typeColor = (type) => `oklch(0.68 0.14 ${LAYER_TYPES[type].hue})`;
 /** Per-layer colour: its type's hue, shifted so several layers of one type stay distinguishable. */
-export const stackLayerColor = (l) => `oklch(0.68 0.14 ${(l.hue ?? LAYER_TYPES[l.type].hue).toFixed(1)})`;
+// Shared fields can hold whatever a peer's code wrote: fall back rather than throw while rendering.
+export const stackLayerColor = (l) => {
+  const hue = Number.isFinite(l.hue) ? l.hue : (LAYER_TYPES[l.type]?.hue ?? 0);
+  return `oklch(0.68 0.14 ${hue.toFixed(1)})`;
+};
 const HUE_SHIFTS = [0, 35, -35, 70, -70];
 
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
 /** @type {import('@preact/signals').Signal<StackLayer[]>} back to front */
-export const stack = persist('stack.layers', () => [{ id: newId(), type: 'latent', name: 'Latent recording' }]);
+const initialStack = () => [{ id: newId(), type: 'latent', name: 'Latent recording' }];
+export const stack = persist('stack.layers', initialStack);
 /** The layer new masks are drawn onto. */
 export const activeLayerId = persist('stack.activeLayerId', null);
 /** Stack layer whose masks are highlighted on the canvas (hovering its card). */
 export const highlightedLayerId = persist('stack.highlighted', null);
-const unbind = [db.sync(stack, 'stack.layers'), db.sync(activeLayerId, 'stack.activeLayerId')];
+// The stack is shared with the session (net/shared.js); which device feeds an input, which chat
+// wrote a function and what's armed stay per machine. The active layer is local UI state.
+const unbind = [
+  shared('stack.layers', stack, {
+    kind: 'list',
+    label: 'edit stack',
+    local: ['inputDevice', 'funcChat', 'armed'],
+    seedFrom: () => db.get('kv', 'stack.layers'),
+    empty: initialStack,
+  }),
+  db.sync(activeLayerId, 'stack.activeLayerId'),
+];
 export function dispose() {
   unbind.forEach((f) => f());
 }

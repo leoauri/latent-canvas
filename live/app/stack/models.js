@@ -10,11 +10,13 @@
 // and an audio output layer, which plays the audio reaching it.
 //
 // A model is dropped on an operator layer as a folder (its anira config, model file and optional
-// meta): the files are stored in IndexedDB and recorded on the layer as `model`, and the model
-// runs on anira (lib/streamModel.js) for as long as the layer has it.
+// meta): the files go into the blob store (net/blobs.js) and are recorded on the layer as `model`
+// by content hash, so peers in the session fetch them from whoever has them; the model runs on
+// anira (lib/streamModel.js) for as long as the layer has it.
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
+import * as blobs from '../../net/blobs.js';
 import { audioContext, inputs } from '../../lib/audio.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
 import { createTap, createMixer } from '../../lib/audioBlocks.js';
@@ -25,12 +27,15 @@ import { operatesAt } from '../timeline/layers.js';
 /**
  * @typedef {object} ModelRef  stored on an operator layer as `model`
  * @property {string} name     the folder's (or config's) name
- * @property {string[]} files  file names, each a blob at fileKey(layerId, name)
+ * @property {string[]} files  file names
+ * @property {Record<string, string>} [hashes]  file name -> blob hash (net/blobs.js); refs from
+ *   before the blob store have none, their files are in IndexedDB at fileKey(layerId, name)
  * @property {number} added    ms timestamp
  *
  * @typedef {object} ModelRuntime
  * @property {'loading' | 'ready' | 'error'} status
  * @property {string} [error]
+ * @property {string} [detail]  while loading: e.g. fetching files from peers
  * @property {ModelRef} ref     the ref this runtime was built for
  * @property {object} [model]   lib/streamModel.js createStreamModel result
  *
@@ -141,16 +146,22 @@ export async function attachModel(layerId, files, name) {
   const { configName } = await describeModel(files); // refuse a drop without a config early
   const l = stackLayerById(layerId);
   if (!l || l.type !== 'operator') throw new Error('models go on operator layers');
-  for (const [n, f] of files) await db.put('blobs', fileKey(layerId, n), f);
+  const hashes = {};
+  for (const [n, f] of files) hashes[n] = await blobs.put(f, { name: n, type: f.type });
   const old = l.model;
-  updateStackLayer(layerId, { model: { name: name ?? configName.replace(/\.(anira|model)\.json$/i, ''), files: [...files.keys()], added: Date.now() } });
-  if (old) for (const n of old.files) if (!files.has(n)) db.del('blobs', fileKey(layerId, n));
+  updateStackLayer(layerId, { model: { name: name ?? configName.replace(/\.(anira|model)\.json$/i, ''), files: [...files.keys()], hashes, added: Date.now() } });
+  if (old) dropLegacyFiles(layerId, old);
+}
+
+/** Deletes a pre-blob-store ref's files. (Blobs stay: the asset browser cleans up unused ones.) */
+function dropLegacyFiles(layerId, ref) {
+  if (!ref.hashes) for (const n of ref.files) db.del('blobs', fileKey(layerId, n));
 }
 
 export function detachModel(layerId) {
   const l = stackLayerById(layerId);
   if (!l?.model) return;
-  for (const n of l.model.files) db.del('blobs', fileKey(layerId, n));
+  dropLegacyFiles(layerId, l.model);
   updateStackLayer(layerId, { model: undefined });
 }
 
@@ -168,7 +179,7 @@ function stopModel(id) {
   rt?.model?.destroy();
   setIn(runtimes, id, null);
   // The layer itself is gone: so are its model files.
-  if (rt && !stackLayerById(id)) for (const n of rt.ref.files) db.del('blobs', fileKey(id, n));
+  if (rt && !stackLayerById(id)) dropLegacyFiles(id, rt.ref);
 }
 
 async function startModel(l) {
@@ -178,9 +189,21 @@ async function startModel(l) {
   try {
     const files = new Map();
     for (const n of ref.files) {
-      const f = await db.get('blobs', fileKey(l.id, n));
+      const hash = ref.hashes?.[n];
+      let f = hash ? await blobs.get(hash) : await db.get('blobs', fileKey(l.id, n));
+      if (!f && hash) {
+        if (current()) setIn(runtimes, l.id, { status: 'loading', ref, detail: `fetching ${n} from peers`, hash });
+        f = await blobs.ensure(hash, { name: n });
+      }
       if (!f) throw new Error(`model file ${n} is missing from storage; drop the model again`);
       files.set(n, f);
+    }
+    // A ref from before the blob store: move its files there so peers can fetch them.
+    if (!ref.hashes && current()) {
+      const hashes = {};
+      for (const [n, f] of files) hashes[n] = await blobs.put(f, { name: n, type: f.type });
+      updateStackLayer(l.id, { model: { ...ref, hashes } });
+      ref.hashes = hashes; // same `added`: the runtime carries on
     }
     const model = await createStreamModel({ files, sampleRate: audioContext().sampleRate });
     if (!current()) return model.destroy();

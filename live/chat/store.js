@@ -1,10 +1,12 @@
-// Chat state, split into sessions (transcript + agent run state) and windows (views onto a session).
+// Chat state, split into sessions (transcript + agent run state) and windows (views onto a session,
+// kind 'chat' in the shared floating-window store, ../ui/windows.js).
 // Both come from persist(), so they survive reloads of any chat module — a running agent turn
 // (old module instance) and the re-rendered UI (new instance) share them. Closing a window never
 // touches its session. Transcripts live in IndexedDB (lib/db.js); UI prefs stay in localStorage.
-import { signal } from '@preact/signals';
-import { persist, chatLog } from '@live/runtime';
+import { signal, computed } from '@preact/signals';
+import { persist, chatLog, vfs } from '@live/runtime';
 import * as db from '../lib/db.js';
+import { windows as allWindows, firstRun, openWindow, updateWindow, findWindow, getWindow, showWindow, closeWindow } from '../ui/windows.js';
 
 const load = (key, fallback) => {
   try {
@@ -23,7 +25,7 @@ export const save = (key, value) => {
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
 export const chat = {
-  /** Saved conversations, newest first: { id, created, updated, changes: string[], preview }. */
+  /** Saved conversations, newest first: { id, scope, overlayId?, title?, created, updated, changes: string[], preview }. */
   index: persist('chat.index', []),
   effort: persist('chat.effort', () => load('redaw.chat.effort', 'default')),
   /** Model override; empty means the configured default (OPENAI_MODEL). */
@@ -37,13 +39,30 @@ db.once('chats', async () => {
 
 // ---- sessions ------------------------------------------------------------------------------
 
-/** id -> { id, scope, messages, draft, running, error, controller (signals), hydrated }. Not reactive itself. */
+/**
+ * id -> { id, scope, messages, draft, running, error, controller (signals), hydrated,
+ *         overlayId (explicit working overlay, or null = 'chat:<id>'), title, published (signal: vfs history ids already published) }.
+ * Not reactive itself.
+ */
 const sessions = persist('chat.sessions', () => new Map()).value;
 /** Bumped whenever a session is created, so derived views can react to new sessions. */
 const sessionsVersion = persist('chat.sessionsVersion', 0);
 const unsubs = [];
-const indexScope = (id) => chat.index.value.find((c) => c.id === id)?.scope ?? null;
-for (const s of sessions.values()) s.scope ??= signal(indexScope(s.id));
+const indexEntry = (id) => chat.index.value.find((c) => c.id === id);
+const indexScope = (id) => indexEntry(id)?.scope ?? null;
+for (const s of sessions.values()) adoptFields(s);
+
+// Sessions may predate these fields.
+function adoptFields(s) {
+  s.scope ??= signal(indexScope(s.id));
+  if (s.overlayId === undefined) s.overlayId = indexEntry(s.id)?.overlayId ?? null;
+  if (s.title === undefined) s.title = indexEntry(s.id)?.title ?? null;
+  s.published ??= signal([]);
+  return s;
+}
+
+/** The VFS overlay a session's edits go to: its explicit one, else 'chat:<session id>'. */
+export const overlayIdOf = (s) => s.overlayId || `chat:${s.id}`;
 
 function track(s) {
   let first = true;
@@ -72,12 +91,25 @@ if (!sessions.has(legacyId.value)) {
     scope: signal(indexScope(legacyId.value)),
     hydrated: true,
   };
+  adoptFields(s);
   sessions.set(s.id, s);
   track(s);
 }
 
-function createSession(id, hydrated, scope = null) {
-  const s = { id, scope: signal(scope), messages: signal([]), draft: signal(null), running: signal(false), error: signal(null), controller: signal(null), hydrated };
+function createSession(id, hydrated, scope = null, { overlayId = null, title = null } = {}) {
+  const s = {
+    id,
+    scope: signal(scope),
+    messages: signal([]),
+    draft: signal(null),
+    running: signal(false),
+    error: signal(null),
+    controller: signal(null),
+    hydrated,
+    overlayId,
+    title,
+    published: signal([]),
+  };
   sessions.set(id, s);
   track(s);
   // Deferred: getSession runs during render, which must not write signals other components read.
@@ -89,11 +121,15 @@ function createSession(id, hydrated, scope = null) {
 export function getSession(id) {
   let s = sessions.get(id);
   if (s) return s;
-  s = createSession(id, false, indexScope(id));
+  const e = indexEntry(id);
+  s = createSession(id, false, indexScope(id), { overlayId: e?.overlayId ?? null, title: e?.title ?? null });
   db.get('chats', id)
     .then((stored) => {
       if (stored && !s.messages.value.length) s.messages.value = stored.messages;
       if (stored?.scope) s.scope.value = stored.scope;
+      if (stored?.overlayId) s.overlayId = stored.overlayId;
+      if (stored?.title) s.title = stored.title;
+      if (Array.isArray(stored?.published)) s.published.value = stored.published;
     })
     .catch((e) => console.warn('chat: loading session failed', e))
     .finally(() => (s.hydrated = true));
@@ -114,9 +150,40 @@ export function scopeRunning(scope) {
   return [...sessions.values()].some((s) => s.scope.value === scope && s.running.value);
 }
 
-/** Creates an empty session, optionally tied to a scope (e.g. "layer:<id>"), and returns its id. */
-export function newSession(scope = null) {
-  return createSession(newId(), true, scope).id;
+/**
+ * Creates an empty session, optionally tied to a scope (e.g. "layer:<id>"), and returns its id.
+ * opts.overlayId: the VFS overlay its edits go to (default 'chat:<id>'); opts.title: a name for it.
+ */
+export function newSession(scope = null, opts = {}) {
+  return createSession(newId(), true, scope, opts).id;
+}
+
+/** A short name for a session: its title, else its first prompt. */
+export function sessionTitle(s) {
+  const first = s.messages.value.find((m) => m.role === 'user' && typeof m.content === 'string')?.content;
+  return s.title || (first ? first.replace(/\s+/g, ' ').slice(0, 60) : 'chat');
+}
+
+/** Saves a session's metadata (overlay, title, published entries) now. */
+export const saveSession = (s) => (s.messages.value.length ? persistSession(s) : Promise.resolve());
+
+/**
+ * Deletes a session: its transcript, its windows, and its own overlay ('chat:<id>') with any
+ * unapplied edits. An explicit overlay (e.g. a staged peer change) is left to its owner.
+ */
+export async function deleteSession(id) {
+  const s = sessions.get(id);
+  if (s?.running.value) s.controller.value?.abort();
+  for (const w of allWindows.value.filter((w) => w.kind === 'chat' && w.sessionId === id)) closeWindow(w.id);
+  sessions.delete(id);
+  sessionsVersion.value++;
+  chat.index.value = chat.index.value.filter((c) => c.id !== id);
+  const own = `chat:${id}`;
+  await Promise.all([
+    db.del('chats', id).catch(() => {}),
+    db.put('kv', 'chat.index', chat.index.value).catch(() => {}),
+    vfs.overlay(own) ? vfs.deleteOverlay(own) : null,
+  ]);
 }
 
 /** Labels of the change sets successfully applied in a transcript, in order. */
@@ -132,19 +199,22 @@ export function changesOf(messages) {
   return out;
 }
 
-function persistSession({ id, scope: { value: scope }, messages: { value: messages } }) {
+function persistSession(s) {
+  const { id, scope: { value: scope }, messages: { value: messages } } = s;
+  const extra = { ...(s.overlayId ? { overlayId: s.overlayId } : {}), ...(s.title ? { title: s.title } : {}) };
   const prev = chat.index.value.find((c) => c.id === id);
   const now = Date.now();
   const entry = {
     id,
     scope,
+    ...extra,
     created: prev?.created ?? now,
     updated: now,
     changes: changesOf(messages),
     preview: messages.find((m) => m.role === 'user' && typeof m.content === 'string')?.content.slice(0, 120) ?? '',
   };
   chat.index.value = [entry, ...chat.index.value.filter((c) => c.id !== id)];
-  return Promise.all([db.put('chats', id, { id, scope, messages }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
+  return Promise.all([db.put('chats', id, { id, scope, messages, ...extra, published: s.published?.value ?? [] }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
     console.warn('chat: saving failed', e),
   );
 }
@@ -164,50 +234,20 @@ function logTurn({ role, content }) {
 
 // ---- windows -------------------------------------------------------------------------------
 
-const DEFAULT_RECT = { x: null, y: null, w: 380, h: 560 };
+// Chat windows are floating windows of kind 'chat' with a sessionId (../ui/windows.js).
 
-/** Open windows: { id, sessionId, rect: { x, y, w, h }, collapsed, z }. */
-export const windows = persist('chat.windows', () => {
-  const saved = load('redaw.chat.windows', null);
-  if (saved) return saved;
-  const initial = [
-    { id: newId(), sessionId: legacyId.value, rect: load('redaw.chat.rect', DEFAULT_RECT), collapsed: load('redaw.chat.collapsed', false), z: 1 },
-  ];
-  save('redaw.chat.windows', initial);
-  return initial;
+/** Open chat windows (computed): { id, kind: 'chat', sessionId, rect, collapsed, z }. */
+export const windows = computed(() => allWindows.value.filter((w) => w.kind === 'chat'));
+
+/** Opens a chat window (on a new session by default) on top and returns its id. */
+export const openChatWindow = (sessionId = newSession()) => openWindow('chat', { sessionId });
+
+// The very first visit opens one window on the legacy session, where the single-window chat kept its rect.
+persist('chat.seeded', () => {
+  if (firstRun && !findWindow('chat'))
+    openWindow('chat', { sessionId: legacyId.value }, { rect: load('redaw.chat.rect', { x: null, y: null, w: 380, h: 560 }), collapsed: load('redaw.chat.collapsed', false) });
+  return true;
 });
-
-function setWindows(list, persistNow = true) {
-  windows.value = list;
-  if (persistNow) save('redaw.chat.windows', list);
-}
-
-export function updateWindow(id, patch, persistNow = true) {
-  setWindows(windows.value.map((w) => (w.id === id ? { ...w, ...patch } : w)), persistNow);
-}
-
-export const topWindow = () => windows.value.reduce((a, w) => (!a || w.z > a.z ? w : a), null);
-
-/** Opens a window (on a new session by default) on top and returns its id. */
-export function openWindow(sessionId = newSession()) {
-  const n = windows.value.length;
-  const rect = { ...DEFAULT_RECT, x: window.innerWidth - DEFAULT_RECT.w - 16 - 24 * n, y: 16 + 24 * n };
-  const w = { id: newId(), sessionId, rect, collapsed: false, z: (topWindow()?.z ?? 0) + 1 };
-  setWindows([...windows.value, w]);
-  return w.id;
-}
-
-export function closeWindow(id) {
-  setWindows(windows.value.filter((w) => w.id !== id));
-}
-
-/** Raises a window; z stays 1..n so it can't climb past the FAB. */
-export function focusWindow(id) {
-  if (topWindow()?.id === id) return;
-  const order = [...windows.value].sort((a, b) => a.z - b.z).filter((w) => w.id !== id);
-  const rank = new Map(order.map((w, i) => [w.id, i + 1]));
-  setWindows(windows.value.map((w) => ({ ...w, z: w.id === id ? order.length + 1 : rank.get(w.id) })));
-}
 
 export function showSession(windowId, sessionId) {
   getSession(sessionId);
@@ -216,16 +256,15 @@ export function showSession(windowId, sessionId) {
 
 /** A new conversation in the window, in the same scope as the one it showed. */
 export function newChatIn(windowId) {
-  const w = windows.value.find((x) => x.id === windowId);
+  const w = getWindow(windowId);
   showSession(windowId, newSession(w && findSession(w.sessionId)?.scope.value));
 }
 
 /** Brings up the window showing a session (expanded, on top), opening one if none does. */
 export function openSession(sessionId) {
   getSession(sessionId);
-  const w = windows.value.find((x) => x.sessionId === sessionId);
-  if (!w) return openWindow(sessionId);
-  if (w.collapsed) updateWindow(w.id, { collapsed: false });
-  focusWindow(w.id);
+  const w = findWindow('chat', (x) => x.sessionId === sessionId);
+  if (!w) return openChatWindow(sessionId);
+  showWindow(w.id);
   return w.id;
 }

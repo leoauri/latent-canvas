@@ -1,6 +1,7 @@
 import TimelineCanvas from './TimelineCanvas.jsx';
 import Layers from './Layers.jsx';
 import Playhead from './Playhead.jsx';
+import Presence from './Presence.jsx';
 import LayerStack from '../stack/LayerStack.jsx';
 import { clips, selectedId, duration } from './clips.js';
 import './timeline.css';
@@ -12,6 +13,7 @@ export default function Timeline() {
       <TimelineCanvas />
       <Layers />
       <Playhead />
+      <Presence />
       <LayerStack />
       <div class="timeline-hud">
         {sel

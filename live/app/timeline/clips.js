@@ -1,6 +1,8 @@
 // Clips: sequences of latent vectors sampled over time, each at its own sample rate.
 import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
+import { shared } from '../../net/shared.js';
+import * as blobs from '../../net/blobs.js';
 
 export const CLIP_HEIGHT = 10; // px, independent of zoom
 
@@ -20,37 +22,56 @@ export const CLIP_HEIGHT = 10; // px, independent of zoom
 export const clips = persist('timeline.clips', []);
 export const selectedId = persist('timeline.selectedId', null);
 
-// Metadata goes to kv as one record; each clip's vectors are a separate blob, written once.
-const savedBlobs = persist('timeline.savedBlobs', () => new Map()); // clip id -> data saved
+// Shared with the session (net/shared.js): a clip's metadata goes into the document, its vectors
+// into the blob store (net/blobs.js) as `dataHash`, fetched from peers when missing. A clip is local
+// until its vectors are stored (while recording, and briefly after).
+const hashes = persist('timeline.clipHashes', () => new WeakMap()); // Float32Array -> blob hash
+const decoded = persist('timeline.clipData', () => new Map()); // blob hash -> Float32Array
+const bytesOf = (f) => new Uint8Array(f.buffer, f.byteOffset, f.byteLength);
+
+const storing = new WeakSet();
+async function storeData(c) {
+  if (hashes.value.has(c.data) || storing.has(c.data)) return;
+  storing.add(c.data);
+  const hash = await blobs.put(bytesOf(c.data), { name: `clip ${c.id}.f32`, type: 'application/x-redaw-latents' });
+  hashes.value.set(c.data, hash);
+  decoded.value.set(hash, c.data);
+  clips.value = [...clips.value]; // now shareable: let the binding write it
+}
+
+async function loadData(hash, name) {
+  if (decoded.value.has(hash)) return decoded.value.get(hash);
+  const blob = (await blobs.get(hash)) ?? (await blobs.ensure(hash, { name }));
+  const data = new Float32Array(await blob.arrayBuffer());
+  hashes.value.set(data, hash);
+  decoded.value.set(hash, data);
+  return data;
+}
+
 const unbind = [
-  db.sync(clips, 'timeline.clips', {
-    hydrate: async (meta) => {
+  shared('timeline.clips', clips, {
+    kind: 'list',
+    label: 'edit clips',
+    keepLocal: (c) => c.recording || !hashes.value.has(c.data),
+    encode: ({ data, recording, ...m }) => ({ ...m, dataHash: hashes.value.get(data) }),
+    decode: ({ dataHash, ...m }, prev) => {
+      if (!dataHash) return null;
+      if (prev && hashes.value.get(prev.data) === dataHash) return { ...m, data: prev.data };
+      if (decoded.value.has(dataHash)) return { ...m, data: decoded.value.get(dataHash) };
+      return loadData(dataHash, `clip ${m.id}.f32`).then((data) => ({ ...m, data }));
+    },
+    // The first session adopts the clips stored before sessions existed (kv + IndexedDB blobs).
+    seedFrom: async () => {
+      const meta = (await db.get('kv', 'timeline.clips')) ?? [];
       const out = [];
       for (const m of meta) {
         const data = await db.get('blobs', m.id);
-        if (!data) continue;
-        savedBlobs.value.set(m.id, data);
-        out.push({ ...m, data });
+        if (data) out.push({ ...m, data });
       }
       return out;
     },
-    write: async (all) => {
-      const list = all.filter((c) => !c.recording);
-      const saved = savedBlobs.value;
-      const ids = new Set(list.map((c) => c.id));
-      for (const c of list)
-        if (saved.get(c.id) !== c.data) {
-          await db.put('blobs', c.id, c.data);
-          saved.set(c.id, c.data);
-        }
-      await db.put('kv', 'timeline.clips', list.map(({ data, ...m }) => m));
-      for (const id of [...saved.keys()])
-        if (!ids.has(id)) {
-          saved.delete(id);
-          await db.del('blobs', id);
-        }
-    },
   }),
+  clips.subscribe((list) => list.forEach((c) => !c.recording && c.data && !hashes.value.has(c.data) && storeData(c).catch((e) => console.warn('clips: storing data failed', e)))),
   db.sync(selectedId, 'timeline.selectedId'),
 ];
 export function dispose() {

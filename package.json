@@ -11,15 +11,20 @@
   },
   "dependencies": {
     "@anira-project/anira": "^3.0.0-alpha.3",
+    "@automerge/automerge-repo": "2.5.6",
+    "@automerge/automerge-repo-storage-indexeddb": "2.5.6",
     "@preact/signals": "^2.11.4",
     "es-module-lexer": "^3.0.5",
     "idb-keyval": "^6.3.0",
     "markdown-it": "^15.0.3",
+    "node-diff3": "4.0.0",
     "onnxruntime-web": "^1.24.2",
     "preact": "^11.2.0",
     "sucrase": "^3.35.1"
   },
   "devDependencies": {
-    "vite": "^8.3.8"
+    "playwright": "1.65.1",
+    "vite": "^8.3.8",
+    "ws": "^8.23.0"
   }
 }
