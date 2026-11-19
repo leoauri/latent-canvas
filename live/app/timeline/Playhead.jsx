@@ -131,7 +131,19 @@ export function dispose() {
   raf = 0;
 }
 
-const isTyping = (el) => !!el?.closest?.('input, textarea, select, [contenteditable]');
+// Space starts playback unless the user is typing text. Checkboxes, buttons, sliders etc. don't count:
+// clicking one leaves it focused, and space must still reach playback.
+const NOT_TEXT = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'color', 'file', 'image']);
+const isTyping = (el) => {
+  if (el?.closest?.('textarea, [contenteditable]:not([contenteditable="false"])')) return true;
+  return el?.tagName === 'INPUT' && !NOT_TEXT.has(el.type);
+};
+// A focused button/checkbox activates on space's keyup; swallow that once we've used the space.
+const swallowSpaceUp = (e) => {
+  if (e.code !== 'Space') return;
+  e.preventDefault();
+  window.removeEventListener('keyup', swallowSpaceUp, true);
+};
 const FOLLOW_MARGIN = 24; // px: while playing, page the view when the playhead leaves it
 
 const DOT_MIN = 6; // px diameter at silence
@@ -185,8 +197,10 @@ export default function Playhead() {
       window.addEventListener('pointercancel', up);
     };
     const onKey = (e) => {
-      if (e.code !== 'Space' || e.repeat || isTyping(e.target)) return;
-      e.preventDefault();
+      if (e.code !== 'Space' || isTyping(e.target)) return;
+      e.preventDefault(); // also for repeats, so a held space doesn't scroll or activate controls
+      if (e.repeat) return;
+      window.addEventListener('keyup', swallowSpaceUp, true);
       toggle();
     };
     const resize = new ResizeObserver(() => (viewHeight.value = host.clientHeight));
