@@ -22,7 +22,7 @@ import { engineOn } from '../../lib/engine.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
 import { createTap, createMixer } from '../../lib/audioBlocks.js';
 import { stack, updateStackLayer, stackLayerById, LAYER_TYPES } from './stack.js';
-import { playing, inputPoint, setOutputDelay } from '../timeline/Playhead.jsx';
+import { playing, inputPointAt, setOutputDelay } from '../timeline/Playhead.jsx';
 import { operatesAt } from '../timeline/layers.js';
 
 /**
@@ -246,7 +246,7 @@ const stopTaps = effect(() => {
     const t = { source, tap: null, destroyed: false };
     taps.set(id, t);
     createTap(audioContext(), AUDIO_BLOCK, (data, start) => {
-      const at = inputPoint();
+      const at = inputPointAt(start, inputs.peek()[id]?.latency);
       if (operatesAt(id, at.t, at.y)) emit(id, { kind: 'audio', data, start, voice: `in:${id}`, ...at });
     }).then((tap) => {
       if (t.destroyed) return tap.destroy();

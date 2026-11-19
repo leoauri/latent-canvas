@@ -82,6 +82,19 @@ function heardTime(t) {
   return Math.max(a.t0, a.t0 + out - a.at - clock.delay());
 }
 
+/**
+ * Where live input captured at context frame `frame` enters the timeline: the playhead time that
+ * was being heard when its sound reached the input (`latency` seconds before the frame), so a
+ * take played along to what is heard lines up with it.
+ */
+export function inputPointAt(frame, latency = 0) {
+  const p = inputPoint();
+  const a = clock.anchor;
+  if (!playing.peek() || !a || a.ctx.state !== 'running') return p;
+  const heard = frame / a.ctx.sampleRate - latency - (a.ctx.outputLatency || 0) - a.at - clock.delay();
+  return { ...p, t: Math.max(a.t0, a.t0 + heard) };
+}
+
 export function play() {
   if (!engineOn.peek()) return;
   anchorAt(cue.value);

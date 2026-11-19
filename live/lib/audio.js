@@ -11,6 +11,7 @@ import { engineOn } from './engine.js';
  * @property {string} [label]
  * @property {number} [channels]
  * @property {number} [sampleRate]
+ * @property {number} [latency]  seconds from the device to the graph, as the browser reports it
  * @property {string} [error]
  * @property {MediaStream} [stream]
  * @property {MediaStreamAudioSourceNode} [source]
@@ -88,7 +89,7 @@ export async function openInput(layerId, deviceId) {
       const cur = inputs.value[layerId];
       if (cur?.stream === stream) setInput(layerId, { ...cur, status: 'ended' });
     });
-    setInput(layerId, { status: 'open', deviceId: settings.deviceId ?? deviceId, label: track.label, channels, sampleRate: ctx.sampleRate, stream, source, analysers });
+    setInput(layerId, { status: 'open', deviceId: settings.deviceId ?? deviceId, label: track.label, channels, sampleRate: ctx.sampleRate, latency: settings.latency || 0, stream, source, analysers });
     refreshDevices(); // labels become available after permission
   } catch (e) {
     setInput(layerId, { status: 'error', deviceId, error: e?.name === 'NotAllowedError' ? 'Microphone permission denied' : String(e?.message || e) });

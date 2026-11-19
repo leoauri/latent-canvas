@@ -1,6 +1,6 @@
 // Infinite blank canvas over time. Touchpad: two-finger scroll pans, pinch zooms both axes.
 // Mouse: wheel pans (shift for horizontal), ctrl+wheel zooms, middle-drag pans.
-// Drag clips to move them, Delete removes the selection.
+// Drag clips to move them (shift: only horizontally or vertically), Delete removes the selection.
 // Presses on empty space bubble to the container (the playhead uses them); presses on clips don't.
 import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
@@ -218,7 +218,10 @@ export default function TimelineCanvas() {
         return;
       }
       canvas.style.cursor = 'grabbing';
-      updateClip(drag.id, { t: drag.t + (e.clientX - drag.x) / view.value.pps, y: drag.cy + (e.clientY - drag.y) / view.value.ys });
+      let dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      // Shift constrains the move to the dominant axis.
+      if (e.shiftKey) Math.abs(dx) >= Math.abs(dy) ? (dy = 0) : (dx = 0);
+      updateClip(drag.id, { t: drag.t + dx / view.value.pps, y: drag.cy + dy / view.value.ys });
     };
     const onPointerUp = () => {
       drag = null;
