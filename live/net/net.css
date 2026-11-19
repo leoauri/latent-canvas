@@ -71,6 +71,7 @@
 .net-assets-list li.net-asset-draggable { cursor: grab; }
 .net-assets-list li.net-asset { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; }
 .net-asset-name { font-weight: 600; }
+.net-asset-model { display: block; font-weight: 400; font-size: 11px; color: var(--muted); }
 .net-asset-meta { gap: 8px; flex-wrap: wrap; font-size: 11px; }
 .net-asset-meta span { font-size: 11px; }
 .net-transfer { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }

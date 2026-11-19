@@ -1,7 +1,7 @@
 // Detail panels: an operator layer's model (app/stack/models.js), a latent layer's recording
 // (app/stack/recorder.js) and an audio output layer's playback. Counters are not signals, so the panels re-render twice a second.
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { stackLayerById, toggleArm, togglePassThrough } from './stack.js';
+import { stackLayerById, toggleArm, togglePassThrough, modelName } from './stack.js';
 import * as blobs from '../../net/blobs.js';
 import { runtimes, links, warnings, detachModel, mixerStats } from './models.js';
 
@@ -32,7 +32,7 @@ export function ModelPanel({ layer: l }) {
       <div class="layer-param">
         <span class="layer-param-name">Model</span>
         <span class="model-name" title={l.model.files.join(', ')}>
-          {l.model.name}
+          {modelName(l, model)}
         </span>
         <button title="Remove the model from this layer" onClick={() => detachModel(l.id)}>
           Remove

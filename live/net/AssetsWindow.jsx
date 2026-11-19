@@ -59,6 +59,46 @@ function scanDoc(doc, out = new Map()) {
   return out;
 }
 
+/** The file-hash lists of the models on a document's stack layers. */
+const modelGroups = (doc) =>
+  Object.values(doc?.state?.['stack.layers']?.items ?? {})
+    .map((l) => Object.values(l?.model?.hashes ?? {}).filter((h) => typeof h === 'string'))
+    .filter((g) => g.length);
+
+// A *.meta.json's `model` (its content never changes under its hash).
+const metaNames = new Map();
+async function metaNameOf(hash) {
+  if (!metaNames.has(hash))
+    metaNames.set(
+      hash,
+      blobs.get(hash).then(async (f) => {
+        const m = f && JSON.parse(await f.text())?.model;
+        return typeof m === 'string' && m.trim() ? m.trim() : null;
+      }).catch(() => null),
+    );
+  return metaNames.get(hash);
+}
+
+/** hash -> model name, for meta files and every file sharing a stack layer's model with one. */
+function useModelNames(idx, groups) {
+  const metas = Object.entries(idx).filter(([, e]) => e.complete && /\.meta\.json$/i.test(e.name ?? '')).map(([h]) => h);
+  const [names, setNames] = useState(new Map());
+  const key = metas.join(',');
+  useEffect(() => {
+    let live = true;
+    Promise.all(metas.map(async (h) => [h, await metaNameOf(h)])).then((r) => live && setNames(new Map(r.filter(([, n]) => n))));
+    return () => (live = false);
+  }, [key]);
+  return useMemo(() => {
+    const out = new Map(names);
+    for (const g of groups) {
+      const n = g.map((h) => names.get(h)).find(Boolean);
+      if (n) for (const h of g) out.has(h) || out.set(h, n);
+    }
+    return out;
+  }, [names, groups]);
+}
+
 // Heads never change what they point at, so a scan at some heads is cached for good (a few).
 const headScans = new Map();
 function scanAt(h, heads) {
@@ -75,11 +115,11 @@ function scanAt(h, heads) {
 function useRefs() {
   const h = session.handle.value;
   const v = session.version.value;
-  const used = useMemo(() => {
+  const [used, groups] = useMemo(() => {
     try {
-      return h ? scanDoc(h.doc()) : new Map();
+      return h ? [scanDoc(h.doc()), modelGroups(h.doc())] : [new Map(), []];
     } catch {
-      return new Map();
+      return [new Map(), []];
     }
   }, [h, v]);
   const list = history.entries.value;
@@ -96,7 +136,8 @@ function useRefs() {
     return { set: out, scanned };
   }, [h, list]);
   const others = useOtherSessions();
-  return { used, recent, others };
+  const allGroups = useMemo(() => [...groups, ...others.groups], [groups, others.groups]);
+  return { used, recent, others, allGroups };
 }
 
 // Other sessions' documents, loaded from local storage (not offered to peers: docs.js shares only
@@ -104,7 +145,7 @@ function useRefs() {
 function useOtherSessions() {
   const list = session.sessions.value;
   const cur = session.currentDoc.value;
-  const [res, setRes] = useState({ done: false, byHash: new Map(), unknown: [] });
+  const [res, setRes] = useState({ done: false, byHash: new Map(), unknown: [], groups: [] });
   const key = list.map((s) => `${s.doc}\u0000${s.name}`).join('\n') + '\n' + cur;
   useEffect(() => {
     let live = true;
@@ -112,6 +153,7 @@ function useOtherSessions() {
     (async () => {
       const byHash = new Map();
       const unknown = [];
+      const groups = [];
       for (const s of list) {
         if (s.doc === cur) continue;
         try {
@@ -124,11 +166,12 @@ function useOtherSessions() {
             if (!byHash.has(hash)) byHash.set(hash, new Set());
             byHash.get(hash).add(s.name);
           }
+          groups.push(...modelGroups(h.doc()));
         } catch {
           unknown.push(s.name);
         }
       }
-      if (live) setRes({ done: true, byHash, unknown });
+      if (live) setRes({ done: true, byHash, unknown, groups });
     })();
     return () => (live = false);
   }, [key]);
@@ -155,7 +198,8 @@ async function download(hash) {
 function AssetsBody() {
   const idx = blobs.index.value;
   const tr = blobs.transfers.value;
-  const { used, recent, others } = useRefs();
+  const { used, recent, others, allGroups } = useRefs();
+  const models = useModelNames(idx, allGroups);
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState('added');
   const [estimate, setEstimate] = useState(null);
@@ -174,7 +218,7 @@ function AssetsBody() {
     const f = filter.trim().toLowerCase();
     const list = [...ids]
       .map((hash) => ({ hash, e: idx[hash] ?? null, t: tr[hash] ?? null }))
-      .filter(({ hash, e, t }) => !f || (e?.name ?? t?.name ?? '').toLowerCase().includes(f) || hash.includes(f));
+      .filter(({ hash, e, t }) => !f || (e?.name ?? t?.name ?? '').toLowerCase().includes(f) || (models.get(hash) ?? '').toLowerCase().includes(f) || hash.includes(f));
     const name = (r) => (r.e?.name ?? r.t?.name ?? r.hash).toLowerCase();
     const cmp = {
       added: (a, b) => (b.e?.added ?? Infinity) - (a.e?.added ?? Infinity),
@@ -182,7 +226,7 @@ function AssetsBody() {
       size: (a, b) => (b.e?.size ?? b.t?.total ?? 0) - (a.e?.size ?? a.t?.total ?? 0),
     }[sort];
     return list.sort(cmp);
-  }, [idx, tr, filter, sort]);
+  }, [idx, tr, filter, sort, models]);
 
   const total = Object.values(idx).reduce((s, e) => s + (e.complete ? e.size : Math.min(e.size, e.have * blobs.CHUNK_SIZE)), 0);
   const active = (t) => t && (t.state === 'fetching' || t.state === 'waiting');
@@ -281,7 +325,7 @@ function AssetsBody() {
         {rows.length ? (
           <ul class="net-list net-assets-list">
             {rows.map(({ hash, e, t }) => (
-              <AssetRow key={hash} hash={hash} e={e} t={t} places={used.get(hash)} inHistory={recent.set.has(hash)} sessions={others.byHash.get(hash)} onRemove={() => remove(hash)} run={run} />
+              <AssetRow key={hash} hash={hash} e={e} t={t} places={used.get(hash)} inHistory={recent.set.has(hash)} sessions={others.byHash.get(hash)} model={models.get(hash)} onRemove={() => remove(hash)} run={run} />
             ))}
           </ul>
         ) : (
@@ -296,7 +340,7 @@ function AssetsBody() {
   );
 }
 
-function AssetRow({ hash, e, t, places, inHistory, sessions, onRemove, run }) {
+function AssetRow({ hash, e, t, places, inHistory, sessions, model, onRemove, run }) {
   const complete = !!e?.complete;
   const transferring = t && (t.state === 'fetching' || t.state === 'waiting');
   const pct = t?.total ? Math.min(100, (100 * t.bytes) / t.total) : e ? (100 * e.have) / Math.max(1, e.chunks) : 0;
@@ -312,6 +356,7 @@ function AssetRow({ hash, e, t, places, inHistory, sessions, onRemove, run }) {
       <div class="net-row">
         <span class="net-grow net-asset-name" title={hash}>
           {e?.name ?? t?.name ?? <span class="net-mono">{short(hash)}</span>}
+          {model && <span class="net-asset-model" title="Model (from its .meta.json)">◆ {model}</span>}
         </span>
         {complete && (
           <button class="net-small" onClick={() => run('Download', () => download(hash))}>

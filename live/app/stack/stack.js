@@ -108,8 +108,11 @@ export function layerIo(l, model) {
   if (l.type === 'latent') return '';
   if (l.type !== 'operator' || !l.model) return LAYER_TYPES[l.type].io;
   const kinds = model ? `${model.input.kind} → ${model.output.kind}` : 'loading';
-  return `${kinds} · ${l.model.name}`;
+  return `${kinds} · ${modelName(l, model)}`;
 }
+
+/** The model's name from its *.meta.json (`model`), else the name stored when it was dropped. */
+export const modelName = (l, model) => (typeof model?.meta?.model === 'string' && model.meta.model.trim()) || l.model?.name || '';
 
 /** Latent layers let the latents reaching them through (to the layers in front) unless this is off. */
 export function togglePassThrough(id) {

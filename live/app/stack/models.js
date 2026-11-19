@@ -21,7 +21,7 @@ import { audioContext, inputs } from '../../lib/audio.js';
 import { engineOn } from '../../lib/engine.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
 import { createTap, createMixer } from '../../lib/audioBlocks.js';
-import { stack, updateStackLayer, stackLayerById } from './stack.js';
+import { stack, updateStackLayer, stackLayerById, LAYER_TYPES } from './stack.js';
 import { playing, inputPoint, setOutputDelay } from '../timeline/Playhead.jsx';
 import { operatesAt } from '../timeline/layers.js';
 
@@ -145,13 +145,16 @@ export async function readDrop(dataTransfer) {
 
 /** Stores dropped model files on an operator layer (replacing its model) and starts it. */
 export async function attachModel(layerId, files, name) {
-  const { configName } = await describeModel(files); // refuse a drop without a config early
+  const { configName, meta } = await describeModel(files); // refuse a drop without a config early
   const l = stackLayerById(layerId);
   if (!l || l.type !== 'operator') throw new Error('models go on operator layers');
   const hashes = {};
   for (const [n, f] of files) hashes[n] = await blobs.put(f, { name: n, type: f.type });
   const old = l.model;
-  updateStackLayer(layerId, { model: { name: name ?? configName.replace(/\.(anira|model)\.json$/i, ''), files: [...files.keys()], hashes, added: Date.now() } });
+  const modelName = (typeof meta.model === 'string' && meta.model.trim()) || name || configName.replace(/\.(anira|model)\.json$/i, '');
+  // Not named by the user: the type's default label, blank, or the name the previous model gave it.
+  const unnamed = [LAYER_TYPES.operator.label, '', l.model?.name].includes(l.name.trim());
+  updateStackLayer(layerId, { ...(unnamed && { name: modelName }), model: { name: modelName, files: [...files.keys()], hashes, added: Date.now() } });
   if (old) dropLegacyFiles(layerId, old);
 }
 
