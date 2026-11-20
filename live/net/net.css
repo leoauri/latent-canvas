@@ -92,6 +92,7 @@
 .net-state-stale { color: var(--error); border-color: var(--error); }
 .net-actions { flex-wrap: wrap; }
 .net-trial { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--ok); }
+.net-conflicts { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--error); }
 .net-publish textarea { resize: vertical; min-height: 48px; }
 .net-entries { max-height: 180px; overflow-y: auto; }
 .net-entries li { gap: 8px; }

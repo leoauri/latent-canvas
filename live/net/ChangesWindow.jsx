@@ -5,6 +5,9 @@
 // (merge conflicts), tried live (which shows their guide in place), applied, handed to an agent to
 // adapt, or dismissed. Nothing runs without a click. Bundles are only published by approving what a
 // chat's agent proposed (propose_bundle); there is no manual publishing here.
+// Above all that: files where the base (live/ on disk) changed under this session's own version
+// and the two conflict (vfs layers), to resolve by taking the base, keeping the session's version,
+// or having an agent merge them.
 import { useState, useEffect } from 'preact/hooks';
 import { signal, computed } from '@preact/signals';
 import { vfs, vfsVersion, loader, persist } from '@live/runtime';
@@ -78,6 +81,7 @@ function ChangesBody() {
   return (
     <div class="net-body net-changes">
 
+      <BaseConflicts />
       <ReadySection />
       <BundlesSection />
 
@@ -378,6 +382,81 @@ function ReadyItem({ s, store, tools }) {
   );
 }
 
+const MERGE_OVERLAY = 'base-merge';
+
+const mergeBrief = (files) =>
+  [
+    `The base code (the live/ folder on disk, shared by all sessions) changed under this session's own version of ${files.join(', ')}, and the changes overlap. Merge them so the file does what the session's version did and also has what the base change brings.`,
+    `They are staged in your overlay with conflict markers: <<<<<<< session (this session's version) / ||||||| base (what both started from) / ======= / >>>>>>> new base. Some files may have no markers when one side deleted the file: decide from the intent.`,
+    `Edit the markers out, then apply_changes. Applying this overlay marks the conflicts resolved. session_code shows how this session's files differ from the base.`,
+  ].join('\n');
+
+/** Files where the base changed under this session's own version and they conflict. */
+function BaseConflicts() {
+  vfsVersion.value;
+  const list = vfs.layerConflicts();
+  const [msg, setMsg] = useState(null);
+  if (!list.length) return null;
+  const act = async (fn) => {
+    setMsg(null);
+    try {
+      const r = await fn();
+      if (r && r.ok === false) setMsg({ error: describe(r) });
+    } catch (e) {
+      setMsg({ error: String(e.message || e) });
+    }
+  };
+  const merge = () =>
+    act(async () => {
+      const start = await findStartAgentTask();
+      if (!start) throw new Error('the chat has no startAgentTask()');
+      const { overlayId, conflicts } = vfs.stageLayerMerge(MERGE_OVERLAY);
+      await start({ title: 'Merge the base into this session', overlayId, prompt: mergeBrief(conflicts) });
+      setMsg({ text: 'Handed to an agent in the chat.' });
+    });
+  return (
+    <section class="net-conflicts">
+      <label class="net-label">Out of sync with the base</label>
+      <p class="net-hint">
+        The base (live/ on disk) changed under this session's own version of {list.length === 1 ? 'this file' : 'these files'}, and the changes overlap. This
+        session's version keeps running until you choose.
+      </p>
+      <ul class="net-list net-change-list">
+        {list.map((c) => (
+          <li key={c.path} class="net-change">
+            <div class="net-row">
+              <span class="net-mono net-grow">{c.path}</span>
+            </div>
+            <details class="net-codefold">
+              <summary>What changed in the base</summary>
+              <pre class="net-code">{c.baseNow == null ? '(deleted)' : vfs.lineDiff(c.base ?? '', c.baseNow) || '(no difference)'}</pre>
+            </details>
+            <details class="net-codefold">
+              <summary>This session's version</summary>
+              <pre class="net-code">{c.session == null ? '(deleted)' : vfs.lineDiff(c.base ?? '', c.session) || '(no difference)'}</pre>
+            </details>
+            <div class="net-row net-actions">
+              <button class="net-small" onClick={() => act(() => vfs.layerUseBase(c.path))} title="Drop this session's version and run the base's">
+                Use base
+              </button>
+              <button class="net-small" onClick={() => act(() => vfs.layerKeep(c.path))} title="Keep this session's version as it is, without the base change">
+                Keep this session's
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div class="net-row net-actions">
+        <button class="net-small net-approve" disabled={!!vfs.trial} onClick={merge} title="An agent merges the base change into this session's version">
+          Merge with an agent
+        </button>
+      </div>
+      {msg?.error && <p class="net-error">{msg.error}</p>}
+      {msg?.text && <p class="net-ok">{msg.text}</p>}
+    </section>
+  );
+}
+
 /** Your approved bundles, published or not. */
 function BundlesSection() {
   const list = bundles.bundles.value;
@@ -486,8 +565,10 @@ function Bubble({ onOpen }) {
 
 /** Pill button that opens the changes window; the badge counts incoming changes. */
 export function ChangesPill() {
+  vfsVersion.value;
   const open = !!findWindow('changes');
-  const n = unseen.value.length;
+  const conflicts = vfs.layerConflicts().length;
+  const n = unseen.value.length + conflicts;
   const openWin = () => {
     bubble.value = [];
     if (!findWindow('changes')) toggleWindow('changes', {}, { rect: { w: 420, h: 620 } });
@@ -498,7 +579,11 @@ export function ChangesPill() {
     <button
       class={`net-pill${open ? ' net-pill-on' : ''}`}
       onClick={() => toggleWindow('changes', {}, { rect: { w: 420, h: 620 } })}
-      title={n ? `Changes: ${n} incoming from peers` : 'Changes: publish and receive code changes'}
+      title={
+        n
+          ? `Changes: ${[unseen.value.length && `${unseen.value.length} incoming from peers`, conflicts && `${conflicts} file(s) out of sync with the base`].filter(Boolean).join(', ')}`
+          : 'Changes: publish and receive code changes'
+      }
     >
       Changes
       {n > 0 && <span class="net-badge">{n}</span>}

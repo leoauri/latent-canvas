@@ -87,7 +87,9 @@ scripts/e2e.mjs end-to-end rig: dev server + headless tabs with separate profile
 5. `live/` on disk is the **base**, the code every session starts from. Edits there (your editor, an
    agent outside the browser, git) are pushed to the page by the watcher and applied without
    rollback. If the open session has its own version of the file, the edit is three-way merged
-   under it; on conflict the session's version keeps running and a warning is logged.
+   under it. On conflict the session's version keeps running, and the Changes window (badge on its
+   pill) lists the file with both diffs: use the base's version, keep the session's, or have an
+   agent merge them (it gets the file with conflict markers in an overlay; applying it resolves them).
 6. Opening another session swaps its layer in; a new or joined session starts from the base. To
    move a feature from a session into the base, have an agent read the layer
    (`curl -sH 'x-redaw: 1' localhost:5173/__live/db/redaw-layers/layers/<doc url>`) and write it to

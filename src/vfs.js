@@ -122,6 +122,7 @@ export class VFS {
     this.version = 0;
     this.hash = hashSource;
     this.merge3 = merge3;
+    this.lineDiff = lineDiff;
   }
 
   subscribe(fn) {
@@ -232,6 +233,62 @@ export class VFS {
     }));
   }
 
+  /**
+   * Files where the base changed under the session's own version and the two conflict (the
+   * session's version runs): [{ path, base (what the session's version was made from), baseNow, session }].
+   */
+  layerConflicts() {
+    return [...this.layer]
+      .filter(([path, e]) => e.base !== this.readBase(path))
+      .map(([path, e]) => ({ path, base: e.base, baseNow: this.readBase(path), session: e.source }));
+  }
+
+  /** Resolve a conflict by taking the base's version (the session's own version of the file is dropped). */
+  layerUseBase(path) {
+    path = normalizePath(path);
+    return this._serial(async () => {
+      if (this.trialState) return this._busy();
+      if (!this.layer.has(path)) return { ok: true, changed: [] };
+      this.layer.delete(path);
+      return this._transact(new Map([[path, this.readBase(path)]]), { origin: 'base-merge', label: `use the base's ${path}`, observeMs: 300 });
+    });
+  }
+
+  /** Resolve a conflict by keeping the session's version as it is (it now counts as made from the current base). */
+  layerKeep(path) {
+    path = normalizePath(path);
+    return this._serial(async () => {
+      const e = this.layer.get(path);
+      if (!e) return { ok: true };
+      this.layer.set(path, { source: e.source, base: this.readBase(path) });
+      if (e.source === this.readBase(path)) this.layer.delete(path);
+      await this._saveLayer();
+      this._changed();
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Stage the conflicting files in overlay `id` for an agent to merge: each holds the merge of the
+   * new base into the session's version, with conflict markers (<<<<<<< session / ||||||| base /
+   * ======= / >>>>>>> new base). Applying that overlay resolves the conflicts. -> { overlayId, conflicts }
+   */
+  stageLayerMerge(id = 'base-merge') {
+    if (this.overlayMap.has(id)) this.overlayMap.delete(id);
+    const conflicts = this.layerConflicts();
+    // The new base, made from the base the session's version started from, merged onto what runs (the session's version).
+    this.createOverlay({ id, label: 'merge the base into this session', origin: 'base-merge', files: conflicts.map((c) => ({ path: c.path, source: c.baseNow, base: c.base })) });
+    const ov = this._ov(id);
+    for (const c of conflicts) {
+      const r = this._mergeFile(c.path, ov.files.get(c.path), 'new base', c.session, 'session');
+      if (r.conflict) ov.files.set(c.path, { source: r.conflict.merged, base: c.session, conflicted: hasConflictMarkers(r.conflict.merged) || undefined });
+      else ov.files.set(c.path, { source: r.same ? c.session : r.change, base: c.session });
+    }
+    for (const f of ov.files.values()) if (f.conflicted === undefined) delete f.conflicted;
+    this._touch(ov);
+    return { overlayId: id, conflicts: conflicts.map((c) => c.path) };
+  }
+
   /** How the open session's version of a file differs from the base: a line diff (base -> session), '' if it doesn't. */
   layerDiff(path) {
     path = normalizePath(path);
@@ -275,14 +332,9 @@ export class VFS {
     const e = this.layer.get(path);
     if (!e) return { source: baseSrc };
     if (e.base === baseSrc) return { source: e.source };
-    let merged;
-    if (e.source === e.base) merged = baseSrc;
-    else if (e.source === baseSrc) merged = baseSrc;
-    else if (e.source != null && e.base != null && baseSrc != null) {
-      const m = merge3(e.base, baseSrc, e.source, { ours: 'base', theirs: 'session' });
-      if (m.clean) merged = m.result;
-    }
-    if (merged === undefined) return { source: e.source, conflict: true };
+    const r = this._mergeFile(path, e, 'session', baseSrc, 'base');
+    if (r.conflict) return { source: e.source, conflict: true };
+    const merged = r.same ? baseSrc : r.change;
     if (merged === baseSrc) this.layer.delete(path);
     else this.layer.set(path, { source: merged, base: baseSrc });
     return { source: merged };
@@ -298,7 +350,7 @@ export class VFS {
       if (r.source != null) out.set(path, { source: r.source });
     }
     if (conflicts.length)
-      record('warn', [`live: the base changed under this session's own version of ${conflicts.join(', ')} and they conflict; the session's version runs. Ask an agent to merge them.`], 'vfs');
+      record('warn', [`live: the base changed under this session's own version of ${conflicts.join(', ')} and they conflict; the session's version runs. Resolve it in the Changes window.`], 'vfs');
     return out;
   }
 
@@ -605,20 +657,22 @@ export class VFS {
 
   // ---- merging -------------------------------------------------------------------------
 
-  /** Three-way merge of one overlay file onto the committed one. -> { change } | { conflict } */
-  _mergeFile(path, f, label) {
-    const ours = this._committedOrNull(path);
+  /**
+   * Three-way merge of one file version f ({ source, base }) onto `ours` (default: the committed
+   * file; the session layer merges onto the base with it). -> { same } | { change } | { conflict }
+   */
+  _mergeFile(path, f, label, ours = this._committedOrNull(path), oursLabel = 'committed') {
     const theirs = f.source;
     let base = f.base;
     if (base === undefined && f.baseHash !== undefined && f.baseHash === hashSource(ours)) base = ours;
     if (theirs === ours) return { same: true };
     if (base === ours) return { change: theirs };
     const conflict = (kind, merged) => ({ conflict: { path, kind, base: base ?? null, ours, theirs, merged } });
-    if (base === undefined) return conflict('unknown-base', merge3('', ours ?? '', theirs ?? '', { theirs: label }).result);
+    if (base === undefined) return conflict('unknown-base', merge3('', ours ?? '', theirs ?? '', { ours: oursLabel, theirs: label }).result);
     if (theirs === base) return { same: true }; // the overlay did not change it; committed did
     if (theirs == null) return conflict('modify/delete', ours); // committed changed it, overlay deletes it
     if (ours == null) return conflict('delete/modify', theirs); // committed deleted it, overlay changed it
-    const m = merge3(base ?? '', ours, theirs, { theirs: label });
+    const m = merge3(base ?? '', ours, theirs, { ours: oursLabel, theirs: label });
     if (m.clean) return { change: m.result, merged: true };
     return conflict(base == null ? 'add/add' : 'content', m.result);
   }
@@ -798,6 +852,7 @@ export class VFS {
     return { ...opts, origin: opts.origin ?? ov.origin ?? 'agent', overlayId: ov.id, intent: opts.intent ?? ov.intent };
   }
 
+
   /**
    * Run an overlay's merged sources live without committing them. Fails (and swaps back) on
    * errors like a transaction. opts: observeMs, check, includeConsole.
@@ -955,7 +1010,7 @@ export class VFS {
       const r = this._composeFile(path);
       await this._saveLayer();
       if (r.conflict)
-        record('warn', [`live: ${path} changed on disk, conflicting with this session's own version, which keeps running. Ask an agent to merge them.`], 'vfs');
+        record('warn', [`live: ${path} changed on disk, conflicting with this session's own version, which keeps running. Resolve it in the Changes window.`], 'vfs');
       if ((this.committed.get(path)?.source ?? null) === (r.source ?? null)) return this._changed();
       if (this.trialState) await this._discardTrial();
       const result = await this._transact(new Map([[path, r.source ?? null]]), {
@@ -1029,7 +1084,8 @@ export class VFS {
       if (this.layerId) {
         // The open session's own code: kept in its layer, never written to the base or disk.
         const baseSrc = this.base.get(path)?.source ?? null;
-        const fileBase = this.layer.get(path)?.base ?? baseSrc;
+        // A merge of the base into the session (origin 'base-merge') resolves its conflict: it is made from the current base.
+        const fileBase = origin === 'base-merge' ? baseSrc : this.layer.get(path)?.base ?? baseSrc;
         if ((source ?? null) === baseSrc && fileBase === baseSrc) this.layer.delete(path);
         else this.layer.set(path, { source: source ?? null, base: fileBase });
       } else if (source == null) {
