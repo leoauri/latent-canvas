@@ -9,6 +9,7 @@ import { Loader } from './loader.js';
 import { VFS, formatErrors } from './vfs.js';
 import { createRuntime } from './runtime.js';
 import { vendor } from './vendor.js';
+import { attachDbBridge } from './db-bridge.js';
 
 installErrorCapture();
 
@@ -110,6 +111,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 if (import.meta.hot && useDisk) import.meta.hot.on('live:change', (data) => vfs.external(data));
+if (import.meta.hot) attachDbBridge(import.meta.hot);
 
 await vfs.init();
 if (!useDisk) vfs.disk = false;

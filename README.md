@@ -14,6 +14,22 @@ settings, stored in the browser (or none, for local servers like Ollama). The ch
 can also override the endpoint per browser, which bypasses the dev proxy. That is also
 how a static `npm run build` works.
 
+## Inspecting the page's IndexedDB
+
+The dev server relays read-only queries to an open tab (`src/db-bridge.js`), so agents and
+scripts outside the browser can debug page state, e.g. page-chat transcripts with their tool calls:
+
+```sh
+H='x-redaw: 1'; DB=http://localhost:5173/__live/db
+curl -sH "$H" $DB                                  # databases, stores, counts
+curl -sH "$H" $DB/redaw/kv/chat.index              # chat sessions, newest first
+curl -sH "$H" $DB/redaw/chats/<id>                 # one transcript (messages incl. tool_use/tool_result)
+curl -sH "$H" "$DB/redaw/kv?values"                # every key and value in a store
+```
+
+Typed arrays come back as `{ $type, length, head }` unless you add `?full`. Use `?jkey=<json>` for
+keys that are not strings. With several tabs open, the first one to answer wins.
+
 ## Commit messages
 
 Hooks append the human prompts behind each commit to its message, verbatim. Sonnet picks the

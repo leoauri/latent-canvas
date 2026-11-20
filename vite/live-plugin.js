@@ -4,7 +4,11 @@
 //   PUT    /__live/files/<path>   body = file text  -> { mtime }
 //   DELETE /__live/files/<path>   -> { ok: true }
 //   POST   /__live/chat-log       body = { role, text } -> appended to .redaw/chat.jsonl (read by the commit hook)
-//   ws event "live:change"         { path, mtime, source | null }  (disk edits from your editor)
+//   GET    /__live/db             -> the open page's IndexedDB databases and stores (read-only,
+//          /__live/db/<db>/<store>[?values]   keys, or all { key, value }   relayed to the page,
+//          /__live/db/<db>/<store>/<key>      one value (?jkey=<json> for    src/db-bridge.js;
+//                                             non-string keys; ?full: binary data in full)
+//   ws event "live:change"        { path, mtime, source | null }  (disk edits from your editor)
 //   ws     /__live/signal          WebRTC signaling relay for multiplayer rooms (vite/signal.js),
 //                                  also under `vite preview`
 //
@@ -124,6 +128,44 @@ export default function livePlugin({ dir = 'live' } = {}) {
           await fs.mkdir(path.dirname(chatLogPath), { recursive: true });
           await fs.appendFile(chatLogPath, JSON.stringify({ ts: new Date().toISOString(), role, text }) + '\n', 'utf8');
           send(200, { ok: true });
+        } catch (err) {
+          send(400, { error: String(err.message || err) });
+        }
+      });
+
+      // Read-only view of the open page's IndexedDB, relayed over the HMR socket (src/db-bridge.js).
+      const pending = new Map(); // id -> resolve
+      let nextId = 0;
+      server.ws.on('live:db-reply', (data) => {
+        pending.get(data?.id)?.(data);
+        pending.delete(data?.id);
+      });
+      const askPage = (q, ms = 5000) =>
+        new Promise((resolve) => {
+          const id = ++nextId;
+          const timer = setTimeout(() => (pending.delete(id), resolve({ ok: false, status: 504, error: 'no page answered (is a tab open on the dev server?)' })), ms);
+          pending.set(id, (r) => (clearTimeout(timer), resolve(r)));
+          server.ws.send({ type: 'custom', event: 'live:db', data: { id, ...q } });
+        });
+
+      server.middlewares.use('/__live/db', async (req, res) => {
+        const send = sender(res);
+        try {
+          if (!guard(req, send)) return;
+          if (req.method !== 'GET') return send(405, { error: 'method not allowed' });
+          const url = new URL(req.url || '/', 'http://x');
+          const [db, store, ...rest] = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+          const full = url.searchParams.has('full');
+          let q;
+          if (!db) q = { op: 'dbs' };
+          else if (!store) return send(400, { error: 'expected /__live/db/<db>/<store>[/<key>]' });
+          else if (rest.length || url.searchParams.has('jkey')) {
+            const key = url.searchParams.has('jkey') ? JSON.parse(url.searchParams.get('jkey')) : rest.join('/');
+            q = { op: 'get', db, store, key, full };
+          } else q = { op: url.searchParams.has('values') ? 'all' : 'keys', db, store, full };
+          const r = await askPage(q);
+          if (!r.ok) return send(r.status || 400, { error: r.error });
+          send(200, r.result);
         } catch (err) {
           send(400, { error: String(err.message || err) });
         }
