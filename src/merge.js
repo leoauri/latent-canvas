@@ -1,5 +1,5 @@
 // Line-based three-way merge (node-diff3) for promoting VFS overlays onto the committed files.
-import { diff3Merge } from 'node-diff3';
+import { diff3Merge, diffPatch } from 'node-diff3';
 
 const lines = (s) => (s === '' ? [] : s.split('\n'));
 
@@ -46,4 +46,17 @@ export function hashSource(s) {
     return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
   };
   return run(0) + run(0x9e3779b9);
+}
+
+/** A line diff of a -> b as hunks: "@@ -line +line" then "-" and "+" lines. '' when equal. */
+export function lineDiff(a, b) {
+  if (a === b) return '';
+  const out = [];
+  const hunks = diffPatch(lines(a ?? ''), lines(b ?? '')).sort((x, y) => x.buffer1.offset - y.buffer1.offset);
+  for (const { buffer1: x, buffer2: y } of hunks) {
+    out.push(`@@ -${x.offset + 1} +${y.offset + 1}`);
+    for (const l of x.chunk) out.push(`-${l}`);
+    for (const l of y.chunk) out.push(`+${l}`);
+  }
+  return out.join('\n');
 }

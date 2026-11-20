@@ -4,6 +4,7 @@
 import { vfs, loader, logs, runScript } from '@live/runtime';
 import { extensionTool, extensionToolDefs } from './extensions.js';
 import { overlayIdOf, sessionTitle, saveSession, pushMessage } from './store.js';
+import { whereNow } from './whereabouts.js';
 import { requestTrial } from '../net/trials.js';
 import { checkGuide, showGuide, dismissGuide, validateGuide, activeGuide } from '../ui/guide/guide.js';
 import * as history from '../net/history.js';
@@ -143,6 +144,11 @@ export const tools = [
     },
     ['steps'],
   ),
+  custom(
+    'session_code',
+    'What the open session\'s own code is: each session runs the base (the live/ folder) plus what was committed while it was open (its layer), so code differs between sessions. Without path: the session and its own files, each added/modified/deleted relative to the base (stale: made from an older base). With path: a line diff of that file, base -> this session.',
+    { path: { type: 'string', description: 'A file to diff against the base, e.g. "app/stack/bakeRender.js".' } },
+  ),
   custom('list_published', 'Code changes published in the session (by anyone), with whether each applies cleanly here.', {}),
   custom(
     'eval_js',
@@ -204,6 +210,7 @@ const SPECS = {
   propose_bundle: { name: 'string', intent: 'string', patch: 'array', follows: 'string?' },
   onboarding_guide: { title: 'string?', steps: 'array' },
   list_published: {},
+  session_code: { path: 'string?' },
   eval_js: { description: 'string', code: 'string', timeout_ms: 'integer?' },
   read_console: { since_id: 'integer?', limit: 'integer?', errors_only: 'boolean?' },
 };
@@ -265,6 +272,8 @@ export async function runTool(block, ctx = {}) {
         return proposeBundle(id, input, ctx.session);
       case 'list_published':
         return ok(id, listPublished());
+      case 'session_code':
+        return ok(id, sessionCode(input.path && livePath(input.path)));
       case 'onboarding_guide':
         return onboardingGuide(id, input, ctx.session);
       case 'revert_applied': {
@@ -386,6 +395,8 @@ function moduleMap(fs) {
   }
   lines.push('', `# Entry: ${loader.entry}`, `# Packages: ${Object.keys(loader.vendor).sort().join(', ')}`);
   lines.push(`# Your overlay: ${fs.id} (${pending.size} unapplied)`);
+  const own = vfs.layerStatus().length;
+  lines.push(`# Session: "${whereNow().name}", ${own ? `${own} file(s) of its own over the base (session_code)` : 'runs the base'}`);
   const t = vfs.trial;
   if (t) lines.push(`# On trial: overlay ${t.overlayId}${t.overlayId === fs.id ? ' (yours)' : ''}`);
   const hist = vfs.history.slice(-8).reverse();
@@ -472,6 +483,18 @@ async function endTrial(id, input, fs, session) {
   if (!keep) return r.ok ? ok(id, 'Trial discarded: the committed code runs again. Your edits stay in the overlay.') : fail(id, r.message || 'discard failed');
   // changes.endTrial already marked a peer change incorporated.
   return t.overlayId.startsWith('peer:') ? applyResult(id, r) : afterCommit(id, r, input, fs);
+}
+
+function sessionCode(path) {
+  const where = whereNow();
+  if (path) {
+    const d = vfs.layerDiff(path);
+    return d ? clip(`${path}, base -> session "${where.name}":\n${d}`) : `${path}: this session runs the base version.`;
+  }
+  const files = vfs.layerStatus();
+  const head = `Session "${where.name}"${where.doc ? '' : ' (none open: commits go to the base)'}.`;
+  if (!files.length) return `${head} No code of its own: it runs the base.`;
+  return [`${head} Its own files (relative to the base):`, ...files.map((f) => `- ${f.path}: ${f.kind}${f.stale ? ' (stale: made from an older base)' : ''}`)].join('\n');
 }
 
 function historyList(limit) {

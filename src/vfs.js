@@ -32,7 +32,7 @@
 import { createStore, get, set, del, entries, clear } from 'idb-keyval';
 import { collectErrors, record, reportError } from './errors.js';
 import { normalizePath } from './loader.js';
-import { merge3, hashSource, hasConflictMarkers } from './merge.js';
+import { merge3, hashSource, hasConflictMarkers, lineDiff } from './merge.js';
 
 const fileStore = createStore('redaw-files', 'files');
 const metaStore = createStore('redaw-meta', 'meta');
@@ -230,6 +230,24 @@ export class VFS {
       kind: e.source == null ? 'deleted' : e.base == null ? 'added' : 'modified',
       stale: e.base !== this.readBase(path),
     }));
+  }
+
+  /** How the open session's version of a file differs from the base: a line diff (base -> session), '' if it doesn't. */
+  layerDiff(path) {
+    path = normalizePath(path);
+    if (!this.layer.has(path)) return '';
+    return lineDiff(this.readBase(path) ?? '', this.readCommitted(path) ?? '');
+  }
+
+  /** Another session's layer as stored (the open one as it is now): { files: [{ path, kind }], history } or null. */
+  async readLayer(id) {
+    if (!id) return null;
+    const rec = id === this.layerId ? { files: this.layer, history: this.history } : await get(id, layerStore).catch(() => null);
+    if (!rec) return null;
+    return {
+      files: [...(rec.files ?? new Map())].map(([path, e]) => ({ path, kind: e.source == null ? 'deleted' : e.base == null ? 'added' : 'modified' })),
+      history: (rec.history ?? []).map(historyEntry),
+    };
   }
 
   /** Load a layer record (files + history) without swapping modules. */

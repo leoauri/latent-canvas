@@ -15,8 +15,15 @@ which prompts still belong to uncommitted or not yet started work (carried to th
 commit, together with the agent replies that proposed that work), and, only if needed,
 agent decisions that explain a change.
 
+Page-chat turns made while a session was open (their log line names the session) worked on that
+session's own code, which never reaches the working tree by itself. They are not candidates for
+ordinary commits: they wait in a per-session pool until a commit promotes that session's code to
+the base, which it says with a trailer `Promotes-session: <session doc url>` (one per session).
+Then the session's pooled turns become candidates too; a quoted prompt leaves the pool, the rest
+stays for later promotions.
+
 State lives in .git/commit-prompts/: pending.json is the carried-over set (prompts and agent
-replies) plus the scan cursor; prepare writes next.json, and post-commit promotes it, so an aborted commit
+replies), the session pools, plus the scan cursor; prepare writes next.json, and post-commit promotes it, so an aborted commit
 changes nothing.
 
 prepare aborts the commit on any error (missing `claude`, a failed Sonnet call, …), so a
@@ -37,6 +44,8 @@ if sys.version_info < (3, 11):
     sys.exit("commit-prompts: needs Python 3.11+, commit aborted. Skip with SKIP_PROMPT_HOOK=1.")
 
 HEADER = "Human prompts:"
+PROMOTES = re.compile(r"^Promotes-session:[ \t]*(\S+)[ \t]*$", re.M)
+POOL_MAX = 300  # per session and kind: older pooled turns are dropped
 MAX_DIFF = 60_000
 MAX_REST = 30_000
 MAX_AGENT_TEXT = 1_500
@@ -138,17 +147,32 @@ def from_page_chat(root, since):
         except (json.JSONDecodeError, KeyError, ValueError):
             continue
         if ts > since and e.get("text", "").strip():
-            yield ("human" if e.get("role") == "human" else "agent"), ts, "page-chat", e["text"]
+            yield ("human" if e.get("role") == "human" else "agent"), ts, "page-chat", e["text"], e.get("session")
 
 
 def collect(root, since):
-    prompts, agent = [], []
-    for kind, ts, src, text in [*from_transcripts(root, since), *from_page_chat(root, since)]:
+    """-> (prompts, agent, pooled): pooled maps a session doc to {"prompts", "agent"} of its page-chat turns."""
+    prompts, agent, pooled = [], [], {}
+    for kind, ts, src, text, *session in [*from_transcripts(root, since), *from_page_chat(root, since)]:
+        session = session[0] if session else None
         if kind == "human":
-            prompts.append({"ts": ts, "source": src, "text": text})
+            item, target = {"ts": ts, "source": src, "text": text}, prompts
         else:
-            agent.append({"ts": ts, "source": src, "text": text[:MAX_AGENT_TEXT]})
-    return prompts, agent
+            item, target = {"ts": ts, "source": src, "text": text[:MAX_AGENT_TEXT]}, agent
+        if session:
+            pool = pooled.setdefault(session, {"prompts": [], "agent": []})
+            target = pool["prompts" if kind == "human" else "agent"]
+        target.append(item)
+    return prompts, agent, pooled
+
+
+def merge_pools(old, fresh):
+    out = {doc: {k: list(v.get(k, [])) for k in ("prompts", "agent")} for doc, v in (old or {}).items()}
+    for doc, v in fresh.items():
+        pool = out.setdefault(doc, {"prompts": [], "agent": []})
+        for k in ("prompts", "agent"):
+            pool[k] = sorted(pool[k] + v[k], key=lambda x: x["ts"])[-POOL_MAX:]
+    return out
 
 
 # ---- ledger
@@ -229,7 +253,10 @@ def ask_sonnet(diff, rest, message, prompts, agent):
 Below are the staged diff (what this commit contains), the changes that stay uncommitted,
 the draft commit message, and a timeline of human prompts and agent replies from coding
 sessions. Some entries may be older than the rest; they were carried over from earlier
-commits because their work was not committed, or not started, yet. Each human prompt is split
+commits because their work was not committed, or not started, yet. Entries "via page-chat in
+session …" were made in the app for one session's own code, and this commit promotes that code
+into the repository, so the staged diff may implement them in a different form; select their
+sentences only where the staged diff carries what they asked for. Each human prompt is split
 into numbered sentences: [3.2] is sentence 2 of prompt 3.
 
 1. sentence_ids: ids (like "3.2") of every human prompt sentence that contributed to the
@@ -333,6 +360,7 @@ def prepare(msg_file, source):
     root = Path(git("rev-parse", "--show-toplevel").strip())
     now = time.time()
     pending = load_pending()
+    pools = (pending or {}).get("sessions", {})
     if pending is not None:
         since, carried, carried_agent = pending["cursor"], pending["prompts"], pending.get("agent", [])
     else:
@@ -341,9 +369,15 @@ def prepare(msg_file, source):
         except subprocess.CalledProcessError:
             since = 0  # first commit
         carried, carried_agent = [], []
-    fresh, fresh_agent = collect(root, since)
-    prompts = [{**p, "id": i + 1} for i, p in enumerate(sorted(carried + fresh, key=lambda p: p["ts"]))]
-    agent = [{**a, "id": i + 1} for i, a in enumerate(sorted(carried_agent + fresh_agent, key=lambda a: a["ts"]))]
+    fresh, fresh_agent, fresh_pooled = collect(root, since)
+    pools = merge_pools(pools, fresh_pooled)
+    # A commit promoting a session's code: that session's page-chat turns are candidates too.
+    promoted = [doc for doc in dict.fromkeys(PROMOTES.findall(message)) if doc in pools]
+    from_pool = lambda doc, items: [{**x, "pool": doc, "source": f"page-chat in session {doc}"} for x in items]
+    pooled = [x for doc in promoted for x in from_pool(doc, pools[doc]["prompts"])]
+    pooled_agent = [x for doc in promoted for x in from_pool(doc, pools[doc]["agent"])]
+    prompts = [{**p, "id": i + 1} for i, p in enumerate(sorted(carried + fresh + pooled, key=lambda p: p["ts"]))]
+    agent = [{**a, "id": i + 1} for i, a in enumerate(sorted(carried_agent + fresh_agent + pooled_agent, key=lambda a: a["ts"]))]
 
     data = {"sentence_ids": [], "keep_ids": [], "keep_agent_ids": [], "decisions": []}
     if prompts:
@@ -354,9 +388,10 @@ def prepare(msg_file, source):
         data = ask_sonnet(diff, uncommitted_changes(), draft, prompts, agent)
 
     by_id = {p["id"]: p for p in prompts}
-    kept = [by_id[i] for i in sorted(set(data.get("keep_ids", []))) if i in by_id]
+    # Pooled turns stay in their pool anyway, so they are never carried as well.
+    kept = [by_id[i] for i in sorted(set(data.get("keep_ids", []))) if i in by_id and "pool" not in by_id[i]]
     agent_by_id = {a["id"]: a for a in agent}
-    kept_agent = [agent_by_id[i] for i in sorted(set(data.get("keep_agent_ids", []))) if i in agent_by_id]
+    kept_agent = [agent_by_id[i] for i in sorted(set(data.get("keep_agent_ids", []))) if i in agent_by_id and "pool" not in agent_by_id[i]]
     sel = {}  # prompt id -> 0-based sentence indices; a bare "3" means the whole prompt
     for sid in data.get("sentence_ids", []):
         m = re.fullmatch(r"\s*(\d+)(?:\.(\d+))?\s*", str(sid))
@@ -365,12 +400,17 @@ def prepare(msg_file, source):
             sel.setdefault(p, set()).update(
                 [int(m[2]) - 1] if m[2] else range(len(split_sentences(by_id[p]["text"]))))
     chosen = [q for q in (excerpt(by_id[p]["text"], sel[p]) for p in sorted(sel)) if q.strip()]
+    # A pooled prompt quoted here has landed in the base: it leaves its session's pool.
+    quoted = {(by_id[p]["ts"], by_id[p]["text"]) for p in sel if "pool" in by_id[p]}
+    for doc in promoted:
+        pools[doc]["prompts"] = [x for x in pools[doc]["prompts"] if (x["ts"], x["text"]) not in quoted]
     decisions = [d.strip() for d in data.get("decisions", []) if d.strip()]
 
     sd.mkdir(parents=True, exist_ok=True)
     strip = lambda p: {k: p[k] for k in ("ts", "source", "text")}
     (sd / "next.json").write_text(json.dumps(
-        {"cursor": now, "prompts": [strip(p) for p in kept], "agent": [strip(a) for a in kept_agent]}, indent=1))
+        {"cursor": now, "prompts": [strip(p) for p in kept], "agent": [strip(a) for a in kept_agent],
+         "sessions": {doc: v for doc, v in pools.items() if v["prompts"] or v["agent"]}}, indent=1))
     if kept or kept_agent:
         print(f"commit-prompts: carrying {len(kept)} prompt(s) and {len(kept_agent)} agent reply(ies) to a later commit",
               file=sys.stderr)

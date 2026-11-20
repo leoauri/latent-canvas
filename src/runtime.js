@@ -18,14 +18,16 @@ export function persist(key, initial) {
 /**
  * Append a chat turn to .redaw/chat.jsonl via the dev server, where the commit hook finds
  * the human prompts behind each commit. role 'human' for typed prompts, 'agent' for replies.
+ * `session`: the session whose code the turn worked on (the runtime's chatLog adds the open one),
+ * so the hook can find the prompts when that session's code is promoted to the base.
  * A no-op in a static build.
  */
-export function chatLog(role, text) {
+export function chatLog(role, text, { session } = {}) {
   if (!import.meta.env.DEV || !text?.trim()) return;
   fetch('/__live/chat-log', {
     method: 'POST',
     headers: { 'x-redaw': '1', 'content-type': 'application/json' },
-    body: JSON.stringify({ role, text }),
+    body: JSON.stringify({ role, text, ...(session && { session }) }),
   }).catch(() => {});
 }
 
@@ -53,7 +55,7 @@ export function createRuntime({ vfs, loader, env }) {
     loader,
     env,
     persist,
-    chatLog,
+    chatLog: (role, text) => chatLog(role, text, { session: vfs.layerId }),
     vfsVersion, // read .value inside a component to re-render on VFS changes
     runScript,
     logs: { read: readLog, on: onLog, record, reportError, format: formatValue },

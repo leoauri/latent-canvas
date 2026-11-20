@@ -575,7 +575,17 @@ function Composer({ s }) {
 
 function Message({ message, results, streaming }) {
   const { role, content } = message;
-  if (typeof content === 'string') return <div class={`msg msg-${role}`}>{content}</div>;
+  if (typeof content === 'string')
+    return message.sessionNote ? (
+      <>
+        <div class="msg msg-note" title={message.sessionNote}>
+          Now in session “{message.session?.name}”: the agent was told its code differs from where it last worked.
+        </div>
+        <div class={`msg msg-${role}`}>{content}</div>
+      </>
+    ) : (
+      <div class={`msg msg-${role}`}>{content}</div>
+    );
   const blocks = content.filter((b) => b.type !== 'tool_result');
   if (!blocks.length) return null;
   const note = blocks.every((b) => b.note);

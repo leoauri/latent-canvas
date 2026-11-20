@@ -91,7 +91,9 @@ scripts/e2e.mjs end-to-end rig: dev server + headless tabs with separate profile
 6. Opening another session swaps its layer in; a new or joined session starts from the base. To
    move a feature from a session into the base, have an agent read the layer
    (`curl -sH 'x-redaw: 1' localhost:5173/__live/db/redaw-layers/layers/<doc url>`) and write it to
-   `live/`. Peers get a session's code only as published changes.
+   `live/`, then commit with a trailer `Promotes-session: <doc url>` so the commit hook quotes the
+   in-app prompts behind it (page-chat turns are logged with their session and wait until then).
+   Peers get a session's code only as published changes.
 7. At boot, IndexedDB and disk are reconciled per file for the base: the newer mtime wins, and deletions are tracked as tombstones.
 
 ## Conventions for live modules

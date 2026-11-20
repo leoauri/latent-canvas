@@ -6,6 +6,7 @@ import { toolDefs, runTool, showApprovalGuide, pendingBundle, moduleMapOf } from
 import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
+import { whereNow, lastWhere, sessionChangeNote } from './whereabouts.js';
 
 const MAX_STEPS = 60;
 export const EFFORTS = ['default', 'low', 'medium', 'high'];
@@ -38,7 +39,10 @@ export async function sendMessage(s, text) {
   dismissGuide(`chat:${s.id}`); // iterating on it: the agent attaches a fresh one
   // Stored with the message so the wire transcript stays byte-stable for prompt caching.
   const first = !s.messages.value.some((m) => m.role === 'user' && typeof m.content === 'string');
-  pushMessage(s, { role: 'user', content: text, ...(first && { context: moduleMapOf(s) }) });
+  // Which session's code this turn runs on, and a note if that changed since the chat's last turn.
+  const where = whereNow();
+  const sessionNote = await sessionChangeNote(s, lastWhere(s), where).catch(() => null);
+  pushMessage(s, { role: 'user', content: text, session: where, ...(sessionNote && { sessionNote }), ...(first && { context: moduleMapOf(s) }) });
   const controller = new AbortController();
   s.controller.value = controller;
   s.running.value = true;
@@ -132,8 +136,13 @@ async function loop(s, target, signal) {
         results.push(await runTool(use, { session: s }));
       }
     }
+    // The user may have switched sessions while the tools ran: say so before the next step.
+    const where = whereNow();
+    const prev = lastWhere(s);
+    const note = prev && prev.doc !== where.doc ? await sessionChangeNote(s, prev, where).catch(() => null) : null;
+    if (note) results.push({ type: 'text', note: true, text: `<session_change>\n${note}\n</session_change>` });
     // Every tool_use gets its result, even when stopping.
-    pushMessage(s, { role: 'user', content: results });
+    pushMessage(s, { role: 'user', content: results, ...(note && { session: where }) });
     if (signal.aborted) throw new DOMException('aborted', 'AbortError');
     drainQueue(s);
   }
@@ -245,9 +254,11 @@ function describeUsage(usage) {
 
 function toWire(messages) {
   const out = [];
-  for (const { role, content, context } of messages) {
+  for (const { role, content, context, sessionNote } of messages) {
     if (typeof content === 'string') {
-      out.push({ role, content: context ? `${content}\n\n<module_map note="output of list_modules when this message was sent">\n${context}\n</module_map>` : content });
+      let text = sessionNote ? `<session_change>\n${sessionNote}\n</session_change>\n\n${content}` : content;
+      if (context) text += `\n\n<module_map note="output of list_modules when this message was sent">\n${context}\n</module_map>`;
+      out.push({ role, content: text });
       continue;
     }
     if (role === 'assistant') {
