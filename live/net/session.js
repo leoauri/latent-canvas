@@ -1,6 +1,8 @@
 // Sessions: each is one Automerge document (docs.js) with its own room. This page keeps a local
 // list of the sessions it knows, has one open, and owns the URL fragment: it shows the open
 // session's join link (link.js), so a reload reopens it and copying the URL invites someone.
+// Each session also has its own code on this page (vfs layers): code committed while it is open
+// stays with it, and a new or joined session starts from the base (live/ on disk).
 // Opening a join link (pasted, or arriving in the URL) adds that session and opens it.
 import { signal, computed } from '@preact/signals';
 import { persist, vfs, env } from '@live/runtime';
@@ -77,6 +79,10 @@ export async function open(docUrl) {
   offered.add(docUrl.replace(/^automerge:/, ''));
   offeredChanged();
   room.join({ room: s.room, signal: s.signal });
+  // This session's own code (vfs layers): what was committed while it was open, over the base.
+  // Swapping it in can reload this module; the old instance then stops here.
+  await vfs.useLayer(docUrl);
+  if (n !== opening || disposed) return;
   try {
     let h = await repo.find(docUrl, { allowableStates: ['ready', 'unavailable'] });
     if (n !== opening || disposed) return;

@@ -57,7 +57,7 @@ one commit. Rebases, cherry-picks and reverts keep their messages untouched.
 src/            bootstrap — the only code the agent cannot edit
   boot.js       starts everything; root error boundary + recovery panel (Ctrl+Alt+Z reverts)
   loader.js     in-page ES module loader: sucrase (JSX/TS) → blob URLs, staged swaps, module graph
-  vfs.js        virtual file system: committed (IndexedDB ↔ disk) + pending buffer + history
+  vfs.js        virtual file system: base (IndexedDB ↔ disk) + per-session layers + overlays + history
   errors.js     error bus: console, window errors, rejections, render errors
   runtime.js    what modules get from '@live/runtime' (persist, vfs, loader, logs, runScript)
   vendor.js     bundled packages that live modules may import by name
@@ -80,12 +80,19 @@ scripts/e2e.mjs end-to-end rig: dev server + headless tabs with separate profile
    - optionally run a check script;
    - watch the whole page for errors for `observe_ms`.
 3. Any error, from any module, rolls back to the old instances. The buffer is kept, and the errors go back to the agent.
-4. On success the change is committed:
-   - saved to IndexedDB;
-   - written to `live/` when the dev server is running;
-   - recorded in the history, so `revert_applied` can undo it.
-5. Edits you make in your editor are pushed to the page by the watcher and applied without rollback. They also land in the history.
-6. At boot, IndexedDB and disk are reconciled per file: the newer mtime wins, and deletions are tracked as tombstones.
+4. On success the change is committed to the open session's own code (its **layer**):
+   - saved to IndexedDB, with the session (store `redaw-layers`, one record per session);
+   - not written to `live/`: code adapted to one session doesn't leak into others;
+   - recorded in the session's history, so `revert_applied` can undo it.
+5. `live/` on disk is the **base**, the code every session starts from. Edits there (your editor, an
+   agent outside the browser, git) are pushed to the page by the watcher and applied without
+   rollback. If the open session has its own version of the file, the edit is three-way merged
+   under it; on conflict the session's version keeps running and a warning is logged.
+6. Opening another session swaps its layer in; a new or joined session starts from the base. To
+   move a feature from a session into the base, have an agent read the layer
+   (`curl -sH 'x-redaw: 1' localhost:5173/__live/db/redaw-layers/layers/<doc url>`) and write it to
+   `live/`. Peers get a session's code only as published changes.
+7. At boot, IndexedDB and disk are reconciled per file for the base: the newer mtime wins, and deletions are tracked as tombstones.
 
 ## Conventions for live modules
 

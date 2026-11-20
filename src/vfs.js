@@ -1,7 +1,16 @@
 // Virtual file system over the live modules.
 //
-//   committed   the running, persisted state. Stored in IndexedDB; mirrored to live/ on disk
-//               when served by the Vite dev server ("most recent mtime wins" on boot).
+//   base        the instrument's code, the same in every session. Stored in IndexedDB; mirrored
+//               to live/ on disk when served by the Vite dev server ("most recent mtime wins" on
+//               boot). Changed by disk edits (your editor, an agent outside the browser, git).
+//   layer       the open session's own code: every file committed while that session is open, as
+//               { source, base } over the base (redaw-layers store, one record per session, with
+//               its history). Opening another session swaps its layer in; a new or joined session
+//               starts with an empty one. Layers never reach disk; peers get them only as
+//               published changes. With no session open (useLayer(null)) commits go to the base.
+//   committed   what runs: the base with the open session's layer on top. A disk edit to a file
+//               the layer changed is three-way merged under it; on conflict the session's version
+//               keeps running (and is reported).
 //   overlays    named edit buffers over the committed base, one level deep (no nesting). Each
 //               file in an overlay remembers the committed source it was edited from (`base`).
 //               Reads through an overlay see its edits; nothing runs until it is applied
@@ -27,6 +36,7 @@ import { merge3, hashSource, hasConflictMarkers } from './merge.js';
 
 const fileStore = createStore('redaw-files', 'files');
 const metaStore = createStore('redaw-meta', 'meta');
+const layerStore = createStore('redaw-layers', 'layers');
 const HISTORY_LIMIT = 50;
 const DEFAULT = 'default';
 const AsyncFunction = (async () => {}).constructor;
@@ -93,7 +103,10 @@ export class VFS {
     this.disk = disk; // true when the Vite dev server is there to persist to
     this.bundle = bundle; // files inlined at build time (or null in dev)
     this.runCheck = runCheck; // (code) => Promise, evaluates a check script in page context
-    this.committed = new Map(); // path -> { source, mtime, diskMtime }
+    this.base = new Map(); // path -> { source, mtime, diskMtime }
+    this.layerId = null; // the open session's layer (null: commits go to the base)
+    this.layer = new Map(); // path -> { source: string|null, base: string|null } (base: the base source it was made from)
+    this.committed = new Map(); // path -> { source }: the base with the layer on top
     // id -> { id, label, origin, peer?, intent?, createdAt, updatedAt,
     //         files: Map path -> { source: string|null, base: string|null|undefined, baseHash?, conflicted? } }
     // base null = the file did not exist; undefined = unknown (a foreign change whose base hash
@@ -146,7 +159,7 @@ export class VFS {
     for (const path of new Set([...remoteMap.keys(), ...local.keys()])) {
       const r = remoteMap.get(path);
       const l = local.get(path);
-      const take = (src, mtime, diskMtime) => this.committed.set(path, { source: src, mtime, diskMtime });
+      const take = (src, mtime, diskMtime) => this.base.set(path, { source: src, mtime, diskMtime });
       if (r && !l) take(r.source, r.mtime, r.mtime);
       else if (r && l) {
         if (l.deleted) {
@@ -168,13 +181,15 @@ export class VFS {
     }
 
     // Rewrite IndexedDB to match, then push local-newer state to disk.
-    for (const path of local.keys()) if (!this.committed.has(path)) await del(path, fileStore).catch(() => {});
-    for (const [path, f] of this.committed) await set(path, f, fileStore).catch(() => {});
+    for (const path of local.keys()) if (!this.base.has(path)) await del(path, fileStore).catch(() => {});
+    for (const [path, f] of this.base) await set(path, f, fileStore).catch(() => {});
     if (this.disk) {
       for (const path of pushes) await this._persistDisk(path).catch((e) => record('warn', [e.message], 'vfs'));
       for (const path of deletes) await diskApi.remove(path).catch((e) => record('warn', [e.message], 'vfs'));
     }
-    this.history = ((await get('history', metaStore).catch(() => null)) || []).map(historyEntry);
+    await this._loadLayer((await get('layer', metaStore).catch(() => null)) ?? null);
+    this.committed = this._compose();
+    await this._saveLayer();
     for (const o of (await get('overlays', metaStore).catch(() => null)) || []) {
       if (!o?.id || !(o.files instanceof Map)) continue;
       this.overlayMap.set(o.id, { ...o, files: o.files });
@@ -199,6 +214,111 @@ export class VFS {
 
   disk_list() {
     return diskApi.list();
+  }
+
+  // ---- session layers ----------------------------------------------------------------
+
+  /** The base's source of a file (null: absent). */
+  readBase(path) {
+    return this.base.get(normalizePath(path))?.source ?? null;
+  }
+
+  /** The open layer's files: [{ path, kind: 'added'|'modified'|'deleted', stale }] (stale: made from an older base). */
+  layerStatus() {
+    return [...this.layer].map(([path, e]) => ({
+      path,
+      kind: e.source == null ? 'deleted' : e.base == null ? 'added' : 'modified',
+      stale: e.base !== this.readBase(path),
+    }));
+  }
+
+  /** Load a layer record (files + history) without swapping modules. */
+  async _loadLayer(id) {
+    this.layerId = id;
+    const rec = id ? await get(id, layerStore).catch(() => null) : null;
+    this.layer = rec?.files instanceof Map ? rec.files : new Map();
+    const hist = id ? rec?.history : await get('history', metaStore).catch(() => null);
+    this.history = (hist || []).map(historyEntry);
+  }
+
+  _saveLayer() {
+    if (!this.layerId) return Promise.resolve();
+    const rec = { files: new Map(this.layer), history: this.history.map((e) => ({ ...e })), at: Date.now() };
+    return set(this.layerId, rec, layerStore).catch((e) => record('warn', [`live: saving the session layer failed: ${e.message}`], 'vfs'));
+  }
+
+  /**
+   * What runs for one path: the base, or the layer's version of it. A layer file made from an
+   * older base is three-way merged onto the current one (and the layer updated); on conflict the
+   * layer's version stays as is. -> { source, conflict? }
+   */
+  _composeFile(path) {
+    const baseSrc = this.base.get(path)?.source ?? null;
+    const e = this.layer.get(path);
+    if (!e) return { source: baseSrc };
+    if (e.base === baseSrc) return { source: e.source };
+    let merged;
+    if (e.source === e.base) merged = baseSrc;
+    else if (e.source === baseSrc) merged = baseSrc;
+    else if (e.source != null && e.base != null && baseSrc != null) {
+      const m = merge3(e.base, baseSrc, e.source, { ours: 'base', theirs: 'session' });
+      if (m.clean) merged = m.result;
+    }
+    if (merged === undefined) return { source: e.source, conflict: true };
+    if (merged === baseSrc) this.layer.delete(path);
+    else this.layer.set(path, { source: merged, base: baseSrc });
+    return { source: merged };
+  }
+
+  /** The base with the layer on top (merging stale layer files; conflicts are reported). */
+  _compose() {
+    const out = new Map();
+    const conflicts = [];
+    for (const path of new Set([...this.base.keys(), ...this.layer.keys()])) {
+      const r = this._composeFile(path);
+      if (r.conflict) conflicts.push(path);
+      if (r.source != null) out.set(path, { source: r.source });
+    }
+    if (conflicts.length)
+      record('warn', [`live: the base changed under this session's own version of ${conflicts.join(', ')} and they conflict; the session's version runs. Ask an agent to merge them.`], 'vfs');
+    return out;
+  }
+
+  /**
+   * Open a session's layer (null: none, commits go to the base): swap the running modules to the
+   * base with that layer on top. Ends a running trial. Overlays stay (they merge onto the new code).
+   */
+  useLayer(id = null) {
+    return this._serial(async () => {
+      id = id || null;
+      if (id === this.layerId) return { ok: true, changed: [] };
+      if (this.trialState) await this._discardTrial();
+      await this._saveLayer();
+      await this._loadLayer(id);
+      await set('layer', id, metaStore).catch(() => {});
+      const next = this._compose();
+      await this._saveLayer();
+      const changes = new Map();
+      for (const path of new Set([...this.committed.keys(), ...next.keys()])) {
+        const a = this.committed.get(path)?.source ?? null;
+        const b = next.get(path)?.source ?? null;
+        if (a !== b) changes.set(path, b);
+      }
+      let result = { ok: true, changed: [] };
+      if (changes.size) {
+        const s = await this._swapIn(changes, { observeMs: 0, rollbackOnError: false });
+        if (s.ok) {
+          this.loader.finalize(s.stage);
+          result = { ok: true, changed: s.changed, rebuilt: s.stage.rebuilt };
+        } else {
+          record('error', [`live: the code of this session failed to load:\n${formatErrors(s.errors)}`], 'vfs');
+          result = s;
+        }
+      }
+      this.committed = next;
+      this._changed();
+      return result;
+    });
   }
 
   /** Load every module reachable from the entry. Returns the stage result. */
@@ -788,22 +908,39 @@ export class VFS {
     });
   }
 
-  /** A change that arrived on disk (your editor). Applied without rollback; ends a running trial. */
+  /**
+   * A change that arrived on disk (your editor, or an agent outside the browser): it changes the
+   * base. If the open session's layer has its own version of the file, the change is merged under
+   * it. Applied without rollback; ends a running trial.
+   */
   external({ path, source, mtime }) {
     return this._serial(async () => {
-      const c = this.committed.get(path);
-      if (source == null && !c) return;
-      if (c && c.source === source) {
-        c.diskMtime = mtime;
-        c.mtime = Math.max(c.mtime, mtime);
-        await set(path, c, fileStore).catch(() => {});
+      const b = this.base.get(path);
+      if (source == null && !b) return;
+      if (b && b.source === source) {
+        b.diskMtime = mtime;
+        b.mtime = Math.max(b.mtime, mtime);
+        await set(path, b, fileStore).catch(() => {});
         return;
       }
       // The watcher reads a file ~120 ms after a write, so the echo of one of our own earlier
       // writes can arrive after a newer commit of the same file: same source and mtime -> ignore.
       if (this._ownWrites.get(path)?.some((w) => w.source === source && w.mtime === mtime)) return;
+      if (source == null) {
+        this.base.delete(path);
+        await set(path, { deleted: true, mtime, source: '' }, fileStore).catch(() => {});
+      } else {
+        const f = { source, mtime, diskMtime: mtime };
+        this.base.set(path, f);
+        await set(path, f, fileStore).catch(() => {});
+      }
+      const r = this._composeFile(path);
+      await this._saveLayer();
+      if (r.conflict)
+        record('warn', [`live: ${path} changed on disk, conflicting with this session's own version, which keeps running. Ask an agent to merge them.`], 'vfs');
+      if ((this.committed.get(path)?.source ?? null) === (r.source ?? null)) return this._changed();
       if (this.trialState) await this._discardTrial();
-      const result = await this._transact(new Map([[path, source]]), {
+      const result = await this._transact(new Map([[path, r.source ?? null]]), {
         origin: 'editor',
         fromDisk: true,
         rollbackOnError: false,
@@ -868,15 +1005,24 @@ export class VFS {
     for (const [path, source] of changes) {
       const before = this.committed.get(path)?.source ?? null;
       files.push({ path, before, after: source ?? null });
-      if (source == null) {
-        this.committed.delete(path);
+      if (source == null) this.committed.delete(path);
+      else this.committed.set(path, { source });
+      if (fromDisk) continue; // external() already updated the base (and the layer)
+      if (this.layerId) {
+        // The open session's own code: kept in its layer, never written to the base or disk.
+        const baseSrc = this.base.get(path)?.source ?? null;
+        const fileBase = this.layer.get(path)?.base ?? baseSrc;
+        if ((source ?? null) === baseSrc && fileBase === baseSrc) this.layer.delete(path);
+        else this.layer.set(path, { source: source ?? null, base: fileBase });
+      } else if (source == null) {
+        this.base.delete(path);
         await set(path, { deleted: true, mtime: now, source: '' }, fileStore).catch(() => {});
-        if (this.disk && !fromDisk) await diskApi.remove(path).catch((e) => warnings.push(e.message));
+        if (this.disk) await diskApi.remove(path).catch((e) => warnings.push(e.message));
       } else {
-        const f = { source, mtime: now, diskMtime: fromDisk ? now : this.committed.get(path)?.diskMtime ?? null };
-        this.committed.set(path, f);
+        const f = { source, mtime: now, diskMtime: this.base.get(path)?.diskMtime ?? null };
+        this.base.set(path, f);
         await set(path, f, fileStore).catch(() => {});
-        if (this.disk && !fromDisk) await this._persistDisk(path).catch((e) => warnings.push(e.message));
+        if (this.disk) await this._persistDisk(path).catch((e) => warnings.push(e.message));
       }
     }
     let entry = null;
@@ -884,18 +1030,20 @@ export class VFS {
       entry = historyEntry({ id: newId(), label, intent, origin, overlayId, revertOf, files, at: Date.now() });
       this.history.push(entry);
       if (this.history.length > HISTORY_LIMIT) this.history.splice(0, this.history.length - HISTORY_LIMIT);
-      await this._saveHistory();
     }
+    if (addHistory || this.layerId) await this._saveHistory();
     this._changed();
     return { warnings, entry };
   }
 
+  /** Saves the history (with the open layer, which holds its own). */
   _saveHistory() {
+    if (this.layerId) return this._saveLayer();
     return set('history', this.history.map((e) => ({ ...e })), metaStore).catch(() => {});
   }
 
   async _persistDisk(path) {
-    const f = this.committed.get(path);
+    const f = this.base.get(path);
     const mtime = await diskApi.write(path, f.source);
     f.mtime = f.diskMtime = mtime;
     const own = this._ownWrites.get(path) || [];
