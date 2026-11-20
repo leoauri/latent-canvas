@@ -5,6 +5,7 @@ import Presence from './Presence.jsx';
 import Minimap from './Minimap.jsx';
 import LayerStack from '../stack/LayerStack.jsx';
 import { clips, selection, selectedId, duration } from './clips.js';
+import { BakeMarks } from '../PrebakePill.jsx';
 import './timeline.css';
 
 export default function Timeline() {
@@ -14,6 +15,7 @@ export default function Timeline() {
     <div class="timeline">
       <TimelineCanvas />
       <Layers />
+      <BakeMarks />
       <Playhead />
       <Presence />
       <Minimap />

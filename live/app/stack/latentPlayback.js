@@ -16,6 +16,7 @@ import { emit } from './models.js';
 import { playing, time, cue } from '../timeline/Playhead.jsx';
 import { clips, CLIP_HEIGHT, duration, sampleAt } from '../timeline/clips.js';
 import { operatesAt } from '../timeline/layers.js';
+import { isBaked } from './prebake.js';
 
 const TICK_MS = 5;
 const MAX_LAG = 0.5; // seconds behind after a stall: skip ahead instead of catching up
@@ -34,7 +35,7 @@ function begin(id) {
     if (now - run.at > MAX_LAG) (run.at = now), run.last.clear();
     const from = run.at;
     for (const c of clips.value) {
-      if (c.recording || c.t + duration(c) <= from || c.t > now) continue;
+      if (c.recording || c.t + duration(c) <= from || c.t > now || isBaked(c.id)) continue;
       const y = c.y + CLIP_HEIGHT / 2;
       // From the sample under `from` (or the next after the last one sent), up to `now`.
       let i = Math.max(Math.floor((from - c.t) * c.rate), (run.last.get(c.id) ?? -1) + 1, 0);

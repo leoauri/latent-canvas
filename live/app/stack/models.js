@@ -432,6 +432,8 @@ const stopMixers = effect(() => {
 
 /** An audio output layer's mixer: { late, early, blocks, sounding }, or null. */
 export const mixerStats = (id) => mixers.get(id)?.stats() ?? null;
+/** An audio output layer's mixer ({ push(data, start), flush() }), or null. */
+export const mixerOf = (id) => mixers.get(id) ?? null;
 
 setOutputDelay(() => {
   let d = 0;
