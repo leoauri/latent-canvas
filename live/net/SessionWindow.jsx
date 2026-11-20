@@ -1,7 +1,7 @@
 // The session window: which session is open, its share link, who's connected, other sessions,
 // and this page's recent actions (undo). Opened from the session pill (bottom right).
 import { useState } from 'preact/hooks';
-import { vfs } from '@live/runtime';
+import { vfs, env } from '@live/runtime';
 import { registerWindowKind, FloatingWindow } from '../ui/FloatingWindow.jsx';
 import { toggleWindow, findWindow } from '../ui/windows.js';
 import * as room from './room.js';
@@ -10,8 +10,27 @@ import * as history from './history.js';
 import * as presence from './presence.js';
 import { myName, forgetApplied } from './changes.js';
 import * as bundles from './bundles.js';
-import { isLoopback, validSignalURL } from './link.js';
+import { isLoopback, validSignalURL, makeLink } from './link.js';
+import { chat } from '../chat/store.js';
 import './net.css';
+
+/**
+ * The LLM credentials this page uses, to put in an invite link: the chat settings' key and endpoint,
+ * or, behind the dev proxy, the .env key the dev server hands to pages on this machine.
+ */
+async function localCredentials() {
+  const model = chat.model.peek() || env.model;
+  const baseURL = chat.baseURL.peek().replace(/\/+$/, '');
+  if (baseURL || !env.proxy) {
+    const apiKey = chat.apiKey.peek();
+    if (!apiKey) throw new Error('No API key is set in the chat settings.');
+    return { apiKey, baseURL: baseURL || env.baseURL, model };
+  }
+  const res = await fetch('/__redaw/llm-key', { headers: { 'x-redaw': '1' } }).catch(() => null);
+  const body = res?.ok && (await res.json().catch(() => null));
+  if (!body?.apiKey) throw new Error('The dev server did not hand out its .env key. Restart it if its config just changed.');
+  return { apiKey: body.apiKey, baseURL: body.baseURL, model };
+}
 
 const short = (id) => String(id).slice(0, 6);
 const ago = (t) => {
@@ -21,7 +40,9 @@ const ago = (t) => {
 
 function SessionBody() {
   const cur = session.current.value;
-  const link = session.shareLink.value;
+  const [creds, setCreds] = useState(null); // credentials to include in the link, or null
+  const [credsError, setCredsError] = useState(null);
+  const link = creds && cur ? makeLink(cur, env.publicURL || undefined, creds) : session.shareLink.value;
   const peers = Object.entries(room.peers.value);
   const [copied, setCopied] = useState(false);
   const [joinText, setJoinText] = useState('');
@@ -33,6 +54,15 @@ function SessionBody() {
     await navigator.clipboard?.writeText(link).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
+  };
+  const toggleCreds = async (on) => {
+    setCredsError(null);
+    if (!on) return setCreds(null);
+    try {
+      setCreds(await localCredentials());
+    } catch (e) {
+      setCredsError(e.message);
+    }
   };
   const join = async () => {
     setJoinError(null);
@@ -70,6 +100,17 @@ function SessionBody() {
           Anyone with this link joins the session and can edit it.
           {cur && isLoopback(cur.signal) ? ' Its signaling server is on this machine, so only tabs here can join; see README › Multiplayer to use a public one.' : ''}
         </p>
+        <label class="net-check" title="Friends who open the link use your key for the agent until they set their own">
+          <input type="checkbox" checked={!!creds} onChange={(e) => toggleCreds(e.currentTarget.checked)} />
+          Include my LLM API key
+        </label>
+        {creds && (
+          <p class="net-hint">
+            The link now carries your key for {creds.baseURL}. Everyone it reaches can spend on it, including anyone they forward it to. Rotate
+            the key with your provider to cut them off.
+          </p>
+        )}
+        {credsError && <p class="net-error">{credsError}</p>}
       </section>
 
       <section>

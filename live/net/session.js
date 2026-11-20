@@ -9,7 +9,8 @@ import { persist, vfs, env } from '@live/runtime';
 import * as db from '../lib/db.js';
 import * as room from './room.js';
 import { repo, offered, offeredChanged } from './docs.js';
-import { parseLink, fragment, makeLink, newRoomSecret } from './link.js';
+import { parseLink, parseCredentials, fragment, makeLink, newRoomSecret } from './link.js';
+import { chat, save } from '../chat/store.js';
 
 /**
  * @typedef {{ doc: string, room: string, signal: string, name: string, created: number, lastOpened: number }} Session
@@ -61,6 +62,7 @@ export async function create({ name = 'Untitled session', signal: signalURL = ro
 export async function join(text) {
   const link = parseLink(text);
   if (!link) return false;
+  useLinkCredentials(text);
   const known = sessions.value.find((s) => s.doc === link.doc);
   // Rejoining a session forgotten with its code kept: that code comes back (vfs layer).
   const kept = !known && (await vfs.readLayer(link.doc).catch(() => null));
@@ -186,6 +188,35 @@ const offTrial = vfs.onTrial(async ({ phase, overlayId }) => {
   t.fork.delete?.();
 });
 
+/**
+ * Takes the LLM credentials a join link carries (link.js) into the chat settings, unless this page
+ * has an endpoint or key of its own (set by hand, or the dev proxy's). Credentials from an earlier
+ * link are replaced. Returns whether it took them.
+ */
+function useLinkCredentials(text) {
+  const creds = parseCredentials(text);
+  if (!creds) return false;
+  const fromLink = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('redaw.llmFromLink')) === true;
+    } catch {
+      return false;
+    }
+  })();
+  const ownKey = !fromLink && (chat.apiKey.peek() || chat.baseURL.peek() || env.proxy);
+  if (ownKey) return false;
+  chat.apiKey.value = creds.apiKey;
+  chat.baseURL.value = creds.baseURL;
+  save('redaw.apiKey', creds.apiKey);
+  save('redaw.baseURL', creds.baseURL);
+  if (creds.model) {
+    chat.model.value = creds.model;
+    save('redaw.chat.model', creds.model);
+  }
+  save('redaw.llmFromLink', true);
+  return true;
+}
+
 function writeHash(s) {
   const frag = '#' + fragment(s);
   if (location.hash !== frag) history.replaceState(history.state, '', frag);
@@ -193,7 +224,11 @@ function writeHash(s) {
 
 function onHashChange() {
   const link = parseLink(location.hash);
-  if (link && link.doc !== currentDoc.value) join(location.hash);
+  if (link && link.doc !== currentDoc.value) return join(location.hash);
+  // Same session, but the link may carry credentials: take them, and drop them from the URL either way.
+  if (!link) return;
+  useLinkCredentials(location.hash);
+  if (current.value) writeHash(current.value);
 }
 window.addEventListener('hashchange', onHashChange);
 

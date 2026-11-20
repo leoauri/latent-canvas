@@ -278,6 +278,7 @@ function HeaderRows({ win, s }) {
             onInput={(e) => {
               chat.baseURL.value = e.currentTarget.value.trim();
               save('redaw.baseURL', chat.baseURL.value);
+              save('redaw.llmFromLink', false); // your own now: a later invite link won't replace it
             }}
           />
           {(!env.proxy || chat.baseURL.value) && (
@@ -288,6 +289,7 @@ function HeaderRows({ win, s }) {
               onInput={(e) => {
                 chat.apiKey.value = e.currentTarget.value.trim();
                 save('redaw.apiKey', chat.apiKey.value);
+                save('redaw.llmFromLink', false);
               }}
             />
           )}

@@ -34,8 +34,37 @@ export function fragment({ doc, room, signal }) {
   return `doc=${doc}&room=${room}&signal=${encodeURIComponent(signal)}`;
 }
 
-export function makeLink(link, base = location.origin + location.pathname) {
-  return `${base}#${fragment(link)}`;
+/** creds: optional LLM credentials ({ apiKey, baseURL, model }) to hand to whoever opens the link. */
+export function makeLink(link, base = location.origin + location.pathname, creds = null) {
+  return `${base}#${fragment(link)}${creds ? credsFragment(creds) : ''}`;
+}
+
+// LLM credentials can ride along in a link (llmkey, llmurl, llmmodel), so friends can try the
+// agent on the inviter's key. Like the rest of the fragment they never reach an HTTP server, but
+// anyone the link reaches can use the key. The page drops them from its URL once read.
+
+function credsFragment({ apiKey, baseURL, model }) {
+  const p = new URLSearchParams({ llmkey: apiKey, llmurl: baseURL });
+  if (model) p.set('llmmodel', model);
+  return '&' + p;
+}
+
+/** The LLM credentials in a link or fragment: { apiKey, baseURL, model }, or null. */
+export function parseCredentials(text) {
+  if (!text) return null;
+  let s = String(text).trim();
+  const hash = s.indexOf('#');
+  if (hash >= 0) s = s.slice(hash + 1);
+  const p = new URLSearchParams(s);
+  const apiKey = p.get('llmkey');
+  const baseURL = p.get('llmurl');
+  if (!apiKey || !baseURL) return null;
+  try {
+    if (!['https:', 'http:'].includes(new URL(baseURL).protocol)) return null;
+  } catch {
+    return null;
+  }
+  return { apiKey, baseURL: baseURL.replace(/\/+$/, ''), model: p.get('llmmodel') || '' };
 }
 
 export function validSignalURL(s) {
