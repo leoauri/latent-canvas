@@ -82,7 +82,8 @@ what runs = base             live/ on disk (git): the instrument, the same for e
           [+ an overlay]     only while it runs on trial: a chat's buffer or a peer's change
 ```
 
-- **Base**: changed by your editor, an agent outside the browser, or git. Every session gets it;
+- **Base**: changed by your editor, an agent outside the browser, or git, never by the page
+  (with no session open, nothing can be committed). Every session gets it;
   where a session has its own version of a file, the base change is merged under it, and the
   Changes window asks you to resolve overlaps.
 - **Session layer**: per session, on this machine only. Opening another session swaps it; a new

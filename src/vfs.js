@@ -7,7 +7,8 @@
 //               { source, base } over the base (redaw-layers store, one record per session, with
 //               its history). Opening another session swaps its layer in; a new or joined session
 //               starts with an empty one. Layers never reach disk; peers get them only as
-//               published changes. With no session open (useLayer(null)) commits go to the base.
+//               published changes. Without a layer (useLayer(null), or a first boot before the
+//               first session opens) nothing can be committed: the page never writes the base.
 //   committed   what runs: the base with the open session's layer on top. A disk edit to a file
 //               the layer changed is three-way merged under it; on conflict the session's version
 //               keeps running (and is reported).
@@ -104,7 +105,7 @@ export class VFS {
     this.bundle = bundle; // files inlined at build time (or null in dev)
     this.runCheck = runCheck; // (code) => Promise, evaluates a check script in page context
     this.base = new Map(); // path -> { source, mtime, diskMtime }
-    this.layerId = null; // the open session's layer (null: commits go to the base)
+    this.layerId = null; // the open session's layer (null: none yet, nothing can be committed)
     this.layer = new Map(); // path -> { source: string|null, base: string|null } (base: the base source it was made from)
     this.committed = new Map(); // path -> { source }: the base with the layer on top
     // id -> { id, label, origin, peer?, intent?, createdAt, updatedAt,
@@ -368,7 +369,7 @@ export class VFS {
   }
 
   /**
-   * Open a session's layer (null: none, commits go to the base): swap the running modules to the
+   * Open a session's layer (null: none, nothing can be committed): swap the running modules to the
    * base with that layer on top. Ends a running trial. Overlays stay (they merge onto the new code).
    */
   useLayer(id = null) {
@@ -873,6 +874,7 @@ export class VFS {
   startTrial(id = DEFAULT, opts = {}) {
     return this._serial(async () => {
       const ov = this._ov(id);
+      if (!this.layerId) return this._noSession();
       if (this.trialState)
         return this.trialState.overlayId === id ? { ok: false, phase: 'trial', message: `overlay "${id}" is already on trial` } : this._busy();
       const plan = this._plan(ov);
@@ -909,6 +911,7 @@ export class VFS {
   }
 
   async _keep(opts) {
+    if (!this.layerId) return this._noSession();
     const t = this.trialState;
     const ov = this.overlayMap.get(t.overlayId);
     const plan = ov && this._plan(ov);
@@ -1076,7 +1079,14 @@ export class VFS {
     return { ok: true, stage, errors, changed };
   }
 
+  /** Commits go to the open session's layer; without one there is nowhere to put them. */
+  _noSession() {
+    const message = 'no session is open yet, so there is nowhere to commit code (the page never writes the base, live/ on disk)';
+    return { ok: false, phase: 'no-session', message, errors: [{ path: '(session)', message }] };
+  }
+
   async _transact(changes, opts) {
+    if (!this.layerId && !opts.fromDisk) return this._noSession();
     const s = await this._swapIn(changes, opts);
     if (!s.ok) return s;
     this.loader.finalize(s.stage);
@@ -1086,7 +1096,6 @@ export class VFS {
 
   async _commit(changes, { origin, label, intent, overlayId, revertOf, mtime, fromDisk, record: addHistory = true }) {
     const warnings = [];
-    const now = mtime ?? Date.now();
     const files = [];
     for (const [path, source] of changes) {
       const before = this.committed.get(path)?.source ?? null;
@@ -1094,23 +1103,13 @@ export class VFS {
       if (source == null) this.committed.delete(path);
       else this.committed.set(path, { source });
       if (fromDisk) continue; // external() already updated the base (and the layer)
-      if (this.layerId) {
-        // The open session's own code: kept in its layer, never written to the base or disk.
-        const baseSrc = this.base.get(path)?.source ?? null;
-        // A merge of the base into the session (origin 'base-merge') resolves its conflict: it is made from the current base.
-        const fileBase = origin === 'base-merge' ? baseSrc : this.layer.get(path)?.base ?? baseSrc;
-        if ((source ?? null) === baseSrc && fileBase === baseSrc) this.layer.delete(path);
-        else this.layer.set(path, { source: source ?? null, base: fileBase });
-      } else if (source == null) {
-        this.base.delete(path);
-        await set(path, { deleted: true, mtime: now, source: '' }, fileStore).catch(() => {});
-        if (this.disk) await diskApi.remove(path).catch((e) => warnings.push(e.message));
-      } else {
-        const f = { source, mtime: now, diskMtime: this.base.get(path)?.diskMtime ?? null };
-        this.base.set(path, f);
-        await set(path, f, fileStore).catch(() => {});
-        if (this.disk) await this._persistDisk(path).catch((e) => warnings.push(e.message));
-      }
+      // The open session's own code: kept in its layer, never written to the base or disk
+      // (_transact and _keep refuse to commit without a layer).
+      const baseSrc = this.base.get(path)?.source ?? null;
+      // A merge of the base into the session (origin 'base-merge') resolves its conflict: it is made from the current base.
+      const fileBase = origin === 'base-merge' ? baseSrc : this.layer.get(path)?.base ?? baseSrc;
+      if ((source ?? null) === baseSrc && fileBase === baseSrc) this.layer.delete(path);
+      else this.layer.set(path, { source: source ?? null, base: fileBase });
     }
     let entry = null;
     if (addHistory) {
@@ -1118,7 +1117,7 @@ export class VFS {
       this.history.push(entry);
       if (this.history.length > HISTORY_LIMIT) this.history.splice(0, this.history.length - HISTORY_LIMIT);
     }
-    if (addHistory || this.layerId) await this._saveHistory();
+    await this._saveLayer();
     this._changed();
     return { warnings, entry };
   }

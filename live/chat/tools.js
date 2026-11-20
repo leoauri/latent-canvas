@@ -492,7 +492,7 @@ function sessionCode(path) {
     return d ? clip(`${path}, base -> session "${where.name}":\n${d}`) : `${path}: this session runs the base version.`;
   }
   const files = vfs.layerStatus();
-  const head = `Session "${where.name}"${where.doc ? '' : ' (none open: commits go to the base)'}.`;
+  const head = where.doc ? `Session "${where.name}".` : 'No session is open yet: nothing can be committed until one is.';
   if (!files.length) return `${head} No code of its own: it runs the base.`;
   return [`${head} Its own files (relative to the base):`, ...files.map((f) => `- ${f.path}: ${f.kind}${f.stale ? ' (stale: made from an older base)' : ''}`)].join('\n');
 }
