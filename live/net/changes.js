@@ -28,7 +28,7 @@
 import { signal, computed } from '@preact/signals';
 import { Automerge } from '@automerge/automerge-repo';
 import { vfs, persist } from '@live/runtime';
-import { handle } from './session.js';
+import { handle, currentDoc } from './session.js';
 import * as db from '../lib/db.js';
 import { requestTrial } from './trials.js';
 import { validateGuide, parseGuide } from '../ui/guide/guide.js';
@@ -39,14 +39,27 @@ const offName = myName.subscribe((n) => localStorage.setItem('redaw.net.name', n
 
 /** Published changes of the open session, newest first. */
 export const published = signal([]);
-/** Ids of changes this page has applied (or published itself). */
+/**
+ * Ids of the open session's changes in its code here (applied or published from it). Kept per
+ * session, like the code itself (vfs layers): kv 'net.changes.applied:<doc>'. The older page-wide
+ * list ('net.changes.applied') still counts for every session (change ids are unique).
+ */
 export const applied = persist('net.changes.applied', () => new Set());
-let appliedLoaded = false;
-db.get('kv', 'net.changes.applied').then((ids) => {
-  if (Array.isArray(ids)) applied.value = new Set([...applied.value, ...ids]);
-  appliedLoaded = true;
-}, () => (appliedLoaded = true));
-const saveApplied = () => appliedLoaded && db.put('kv', 'net.changes.applied', [...applied.value]).catch(() => {});
+const appliedKey = (doc) => `net.changes.applied:${doc}`;
+let appliedFor = null; // the doc `applied` holds, once loaded
+let appliedLoad = 0;
+async function loadApplied(doc) {
+  const n = ++appliedLoad;
+  appliedFor = null;
+  const [legacy, own] = await Promise.all([db.get('kv', 'net.changes.applied'), doc ? db.get('kv', appliedKey(doc)) : null]).catch(() => []);
+  if (n !== appliedLoad) return;
+  applied.value = new Set([...(Array.isArray(legacy) ? legacy : []), ...(Array.isArray(own) ? own : [])]);
+  appliedFor = doc;
+}
+const offDoc = currentDoc.subscribe((doc) => loadApplied(doc));
+const saveApplied = () => appliedFor && db.put('kv', appliedKey(appliedFor), [...applied.value]).catch(() => {});
+/** Forget which changes a session had applied (when its code is deleted). */
+export const forgetApplied = (doc) => db.del('kv', appliedKey(doc)).catch(() => {});
 
 const hash = (s) => vfs.hash(s ?? null);
 const overlayId = (id) => `peer:${id}`;
@@ -476,7 +489,63 @@ export const guideOf = (id) => parseGuide(byId(id)?.guide);
 export async function endTrial(keep) {
   const t = vfs.trial;
   const r = await vfs.endTrial(keep ? 'keep' : 'discard', keep && t ? { label: labelFor(t.overlayId), origin: 'peer' } : {});
-  if (keep && r.ok && t?.overlayId.startsWith('peer:')) markApplied(t.overlayId.slice(5));
+  if (keep && r.ok && t?.overlayId === CATCH_UP) catchUpIds.forEach(markApplied);
+  else if (keep && r.ok && t?.overlayId.startsWith('peer:')) markApplied(t.overlayId.slice(5));
+  return r;
+}
+
+// ---- catching up -------------------------------------------------------------------------------
+// Rejoining a session (or coming back to it) can leave several peers' changes to take in. Catching
+// up stages them all, oldest first in causal order with what each needs, in one overlay, to try
+// or apply at once. Still nothing runs without a click: it's their code.
+
+const CATCH_UP = 'peer:catch-up';
+let catchUpIds = []; // what the staged catch-up overlay holds
+
+/** Peers' changes not in our code and not dismissed, oldest first in causal order. */
+export const catchUpList = computed(() => {
+  applied.value; // re-run when applied changes (isApplied also reads the code)
+  return causalOrder(incoming.value.filter((c) => !isApplied(c)));
+});
+
+/** What catching up involves: { ids (in order, incl. what they need), changes, failures (edits needing an agent), missing }. */
+export function catchUpPlan() {
+  const list = catchUpList.value;
+  const ids = [];
+  const missing = [];
+  for (const c of list) {
+    const p = plan(c.id);
+    missing.push(...p.missing);
+    for (const id of p.order) if (!ids.includes(id)) ids.push(id);
+  }
+  const { failures } = walk(ids);
+  return { ids, changes: list, failures, missing: [...new Set(missing)] };
+}
+
+async function stageCatchUp() {
+  const p = catchUpPlan();
+  if (p.missing.length) throw new Error(`needs unpublished changes: ${p.missing.join(', ')}`);
+  if (p.failures.length) throw new Error(`${[...new Set(p.failures.map((f) => byId(f.change)?.name ?? f.change))].map((n) => `“${n}”`).join(', ')} need adapting to your code first (one by one, with an agent)`);
+  if (vfs.overlay(CATCH_UP)) await vfs.deleteOverlay(CATCH_UP);
+  const { texts, bases } = walk(p.ids);
+  const files = {};
+  for (const [path, source] of texts) files[path] = { source, ...bases.get(path) };
+  vfs.createOverlay({ id: CATCH_UP, label: `catch up: ${p.ids.length} changes`, origin: 'peer', files });
+  catchUpIds = p.ids;
+  return p;
+}
+
+/** Runs every change to catch up on live, without committing (keep or discard the trial as usual). */
+export async function tryCatchUp(opts) {
+  const p = await stageCatchUp();
+  return requestTrial(CATCH_UP, () => vfs.startTrial(CATCH_UP, opts), { label: `catching up on ${p.ids.length} changes`, kind: 'peer' });
+}
+
+/** Applies every change to catch up on, as one transaction. */
+export async function applyCatchUp(opts = {}) {
+  const p = await stageCatchUp();
+  const r = await vfs.promote(CATCH_UP, { label: `catch up: ${p.changes.map((c) => c.name).join(', ')}`, origin: 'peer', ...opts });
+  if (r.ok) p.ids.forEach(markApplied);
   return r;
 }
 
@@ -517,7 +586,7 @@ export function basesOf(c) {
 
 /** Is the change in our code, as recorded (applied, published, or the same files)? */
 export const incorporatedBy = (c) => Object.keys(c.incorporatedBy ?? {});
-const labelFor = (ovId) => (ovId.startsWith('peer:') ? byId(ovId.slice(5))?.name : undefined);
+const labelFor = (ovId) => (ovId === CATCH_UP ? `catch up: ${catchUpIds.map((id) => byId(id)?.name ?? id).join(', ')}` : ovId.startsWith('peer:') ? byId(ovId.slice(5))?.name : undefined);
 
 export function dismiss(id) {
   dismissed.value = new Set([...dismissed.value, id]);
@@ -553,6 +622,7 @@ export function adaptationBrief(id, conflicts = []) {
 }
 
 export function dispose() {
+  offDoc();
   offHandle();
   offChange?.();
   offName();

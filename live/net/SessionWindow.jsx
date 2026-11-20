@@ -8,7 +8,8 @@ import * as room from './room.js';
 import * as session from './session.js';
 import * as history from './history.js';
 import * as presence from './presence.js';
-import { myName } from './changes.js';
+import { myName, forgetApplied } from './changes.js';
+import * as bundles from './bundles.js';
 import { isLoopback, validSignalURL } from './link.js';
 import './net.css';
 
@@ -134,18 +135,7 @@ function SessionBody() {
         <label class="net-label">Sessions</label>
         <ul class="net-list">
           {session.sessions.value.map((s) => (
-            <li key={s.doc} class={s.doc === session.currentDoc.value ? 'net-current' : ''}>
-              <span class="net-grow">{s.name}</span>
-              <span class="net-muted">{ago(s.lastOpened)}</span>
-              {s.doc !== session.currentDoc.value && (
-                <>
-                  <button class="net-small" onClick={() => session.open(s.doc)}>Open</button>
-                  <button class="net-small" title="Forget locally" onClick={() => confirm(`Forget “${s.name}” on this machine?`) && session.forget(s.doc)}>
-                    ✕
-                  </button>
-                </>
-              )}
-            </li>
+            <SessionRow key={s.doc} s={s} />
           ))}
         </ul>
         <div class="net-row">
@@ -218,4 +208,58 @@ export function SessionPill() {
 
 export function dispose() {
   unregister();
+}
+
+/** Forgets a session; keepCode: false also deletes its own code, its record of applied changes and your bundles from it. */
+async function forgetSession(doc, { keepCode }) {
+  if (!keepCode) {
+    await vfs.deleteLayer(doc);
+    await forgetApplied(doc);
+    bundles.forgetRoom(doc);
+  }
+  session.forget(doc);
+}
+
+/** A known session: open it, or forget it (asking about its own code when it has any). */
+function SessionRow({ s }) {
+  const [asking, setAsking] = useState(null); // { files, bundles } while asking what to forget
+  const current = s.doc === session.currentDoc.value;
+  const forget = async () => {
+    const layer = await vfs.readLayer(s.doc).catch(() => null);
+    const files = layer?.files.length ?? 0;
+    const own = bundles.bundles.peek().filter((b) => b.room === s.doc).length;
+    if (!files && !own) return confirm(`Forget “${s.name}” on this machine?`) && forgetSession(s.doc, { keepCode: false });
+    setAsking({ files, bundles: own });
+  };
+  return (
+    <li class={`net-session${current ? ' net-current' : ''}`}>
+      <div class="net-row">
+        <span class="net-grow">{s.name}</span>
+        <span class="net-muted">{ago(s.lastOpened)}</span>
+        {!current && !asking && (
+          <>
+            <button class="net-small" onClick={() => session.open(s.doc)}>Open</button>
+            <button class="net-small" title="Forget locally" onClick={forget}>
+              ✕
+            </button>
+          </>
+        )}
+      </div>
+      {asking && (
+        <div class="net-forget">
+          <p class="net-hint">
+            Forget “{s.name}” on this machine. It has code of its own here
+            {asking.files ? ` (${asking.files} file${asking.files === 1 ? '' : 's'})` : ''}
+            {asking.bundles ? `${asking.files ? ' and ' : ' ('}${asking.bundles} bundle${asking.bundles === 1 ? '' : 's'} you published${asking.files ? '' : ')'}` : ''}. Keep it, and
+            rejoining from a link brings it back; delete it, and rejoining starts from the base.
+          </p>
+          <div class="net-row net-actions">
+            <button class="net-small" onClick={() => forgetSession(s.doc, { keepCode: true })}>Keep its code</button>
+            <button class="net-small" onClick={() => forgetSession(s.doc, { keepCode: false })}>Delete its code</button>
+            <button class="net-small" onClick={() => setAsking(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
 }

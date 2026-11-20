@@ -307,11 +307,24 @@ export class VFS {
     };
   }
 
+  /** When a stored session layer was last saved (ms), or null. */
+  async layerSavedAtOf(id) {
+    if (id === this.layerId) return this.layerSavedAt ?? null;
+    return (await get(id, layerStore).catch(() => null))?.at ?? null;
+  }
+
+  /** Delete a stored session layer (not the open one): its code and history are gone. */
+  async deleteLayer(id) {
+    if (!id || id === this.layerId) throw new Error('deleteLayer: not for the open session');
+    await del(id, layerStore);
+  }
+
   /** Load a layer record (files + history) without swapping modules. */
   async _loadLayer(id) {
     this.layerId = id;
     const rec = id ? await get(id, layerStore).catch(() => null) : null;
     this.layer = rec?.files instanceof Map ? rec.files : new Map();
+    this.layerSavedAt = rec?.at ?? null; // when this layer was last saved (null: new)
     const hist = id ? rec?.history : await get('history', metaStore).catch(() => null);
     this.history = (hist || []).map(historyEntry);
   }

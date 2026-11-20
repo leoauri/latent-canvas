@@ -12,6 +12,8 @@
 .net-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .net-list li { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; }
 .net-list li.net-current { background: var(--user-bg); }
+.net-list li.net-session { display: block; }
+.net-forget { margin-top: 4px; }
 .net-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .net-small { padding: 1px 6px; font-size: 11px; }
 .net-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }

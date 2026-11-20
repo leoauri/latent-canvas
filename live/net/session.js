@@ -26,6 +26,11 @@ export const status = signal('idle');
 export const error = signal(null);
 /** Bumped on every change of the open document. */
 export const version = signal(0);
+/** { at, files } when opening a session brought back its own code from an earlier visit (cleared on the next open). */
+export const restored = persist('net.restored', null);
+// { doc, at } between joining a forgotten session whose code was kept and opening it. Both survive
+// this module reloading, which opening a session can cause (its code may differ).
+const pendingRestore = persist('net.pendingRestore', null);
 
 export const current = computed(() => sessions.value.find((s) => s.doc === currentDoc.value) ?? null);
 export const shareLink = computed(() => (current.value ? makeLink(current.value, env.publicURL || undefined) : null));
@@ -57,6 +62,9 @@ export async function join(text) {
   const link = parseLink(text);
   if (!link) return false;
   const known = sessions.value.find((s) => s.doc === link.doc);
+  // Rejoining a session forgotten with its code kept: that code comes back (vfs layer).
+  const kept = !known && (await vfs.readLayer(link.doc).catch(() => null));
+  if (kept && kept.files.length) pendingRestore.value = { doc: link.doc, at: (await vfs.layerSavedAtOf(link.doc)) ?? Date.now() };
   upsert({ name: 'Joined session', created: Date.now(), ...known, ...link, lastOpened: Date.now() });
   await open(link.doc);
   return true;
@@ -81,7 +89,13 @@ export async function open(docUrl) {
   room.join({ room: s.room, signal: s.signal });
   // This session's own code (vfs layers): what was committed while it was open, over the base.
   // Swapping it in can reload this module; the old instance then stops here.
+  const wasOpen = vfs.layerId === docUrl;
   await vfs.useLayer(docUrl);
+  const pr = pendingRestore.peek();
+  if (pr?.doc === docUrl) {
+    restored.value = { at: pr.at, files: vfs.layerStatus().length };
+    pendingRestore.value = null;
+  } else if (!wasOpen) restored.value = null;
   if (n !== opening || disposed) return;
   try {
     let h = await repo.find(docUrl, { allowableStates: ['ready', 'unavailable'] });
@@ -126,7 +140,11 @@ export function rename(name) {
   });
 }
 
-/** Forgets a session locally (the document stays in storage; peers keep theirs). */
+/**
+ * Forgets a session locally (the document stays in storage; peers keep theirs). Its own code (vfs
+ * layer) stays, so rejoining brings it back, unless the caller deletes it (SessionWindow's
+ * forgetSession does, with what belongs to it).
+ */
 export function forget(docUrl) {
   sessions.value = sessions.value.filter((s) => s.doc !== docUrl);
   if (currentDoc.value === docUrl) {

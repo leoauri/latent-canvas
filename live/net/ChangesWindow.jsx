@@ -98,6 +98,8 @@ function ChangesBody() {
         </section>
       )}
 
+      {ready && <CatchUp trial={trial} />}
+
       <section>
         <label class="net-label">
           <span class="net-grow">{showAll ? 'From peers' : 'New from peers'}</span>
@@ -395,6 +397,76 @@ function ReadyItem({ s, store, tools }) {
   );
 }
 
+/** Several peers' changes to take in: try or apply them all at once, oldest first. */
+function CatchUp({ trial }) {
+  const list = changes.catchUpList.value;
+  const restored = session.restored.value;
+  const [busy, setBusy] = useState(null);
+  const [msg, setMsg] = useState(null);
+  if (list.length < 2 && !restored) return null;
+  let p = null;
+  try {
+    if (list.length >= 2) p = changes.catchUpPlan();
+  } catch (e) {
+    p = { error: String(e.message || e) };
+  }
+  const blocked = p && (p.error || p.failures?.length || p.missing?.length);
+  const run = async (label, fn) => {
+    setBusy(label);
+    setMsg(null);
+    try {
+      const r = await fn();
+      if (r && !r.ok) setMsg({ error: `${label}: ${describe(r)}` });
+      else if (r?.queued) setMsg({ text: `Queued (#${r.position}): it starts when the current preview ends.` });
+    } catch (e) {
+      setMsg({ error: `${label}: ${e.message || e}` });
+    } finally {
+      setBusy(null);
+    }
+  };
+  const apply = () =>
+    confirm(`Apply ${list.length} changes by ${[...new Set(list.map((c) => c.author))].join(', ')}?\n\nIt runs their code in this page with full access. Only apply what you have reviewed.`) &&
+    run('Apply all', () => changes.applyCatchUp());
+  return (
+    <section>
+      <label class="net-label">Catch up</label>
+      {restored && (
+        <p class="net-hint">
+          This session's own code from your last visit ({new Date(restored.at).toLocaleString()}, {restored.files} file{restored.files === 1 ? '' : 's'}) is
+          back.{list.length ? ' Peers changed it since:' : ''}
+        </p>
+      )}
+      {p && (
+        <>
+          <p class="net-muted">
+            {list.length} changes from peers, oldest first: {list.map((c) => `“${c.name}”`).join(', ')}.
+          </p>
+          {blocked ? (
+            <p class="net-error">
+              {p.error ||
+                (p.missing.length
+                  ? `They need changes that aren't published: ${p.missing.join(', ')}.`
+                  : `${[...new Set(p.failures.map((f) => changes.published.value.find((c) => c.id === f.change)?.name ?? f.change))].map((n) => `“${n}”`).join(', ')} need adapting to your code: take them one by one below.`)}
+            </p>
+          ) : (
+            <div class="net-row net-actions">
+              <button class="net-small" disabled={!!busy || !!trial} onClick={() => run('Try all', () => changes.tryCatchUp())} title="Run them all live without committing">
+                Try all
+              </button>
+              <button class="net-small" disabled={!!busy || !!trial} onClick={apply} title="Commit them all, in order">
+                Apply all
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {busy && <p class="net-muted">{busy}…</p>}
+      {msg?.error && <p class="net-error">{msg.error}</p>}
+      {msg?.text && <p class="net-ok">{msg.text}</p>}
+    </section>
+  );
+}
+
 const MERGE_OVERLAY = 'base-merge';
 
 const mergeBrief = (files) =>
@@ -472,16 +544,38 @@ function BaseConflicts() {
 
 /** Your approved bundles, published or not. */
 function BundlesSection() {
-  const list = bundles.bundles.value;
-  if (!list.length) return null;
+  session.currentDoc.value; // re-render when another session opens
+  const all = bundles.bundles.value;
+  const here = all.filter((b) => b.room === session.currentDoc.value);
+  const elsewhere = all.filter((b) => b.room !== session.currentDoc.value);
+  if (!all.length) return null;
+  const nameOf = (doc) => session.sessions.value.find((s) => s.doc === doc)?.name ?? 'a forgotten session';
   return (
     <section>
       <label class="net-label">Your bundles</label>
-      <ul class="net-list net-change-list">
-        {list.map((b) => (
-          <BundleItem key={b.id} b={b} />
-        ))}
-      </ul>
+      {here.length ? (
+        <ul class="net-list net-change-list">
+          {here.map((b) => (
+            <BundleItem key={b.id} b={b} />
+          ))}
+        </ul>
+      ) : (
+        <p class="net-muted">None in this session.</p>
+      )}
+      {elsewhere.length > 0 && (
+        <details class="net-codefold">
+          <summary class="net-muted">
+            {elsewhere.length} in other sessions (their code runs only there, unless it reached the base)
+          </summary>
+          <ul class="net-files">
+            {elsewhere.map((b) => (
+              <li key={b.id}>
+                {b.name} <span class="net-muted">· {nameOf(b.room)} · {b.state === 'published' ? 'published' : 'not published'}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </section>
   );
 }

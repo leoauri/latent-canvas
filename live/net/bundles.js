@@ -43,6 +43,11 @@ export const ofSession = (sessionId) => bundles.value.filter((b) => b.sessionId 
 /** Whether the bundle's session document is the one open (only then can it be (un)published). */
 export const inOpenRoom = (b) => !!session.handle.value && b.room === session.currentDoc.value;
 
+/** Drops your bundles from a session (when it is forgotten with its code). */
+export function forgetRoom(doc) {
+  bundles.value = bundles.peek().filter((b) => b.room !== doc);
+}
+
 export function unpublish(id) {
   const b = byId(id);
   if (!b) return { ok: false, message: `no bundle ${id}` };

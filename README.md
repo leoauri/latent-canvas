@@ -71,9 +71,35 @@ live/           the live modules (entry: main.jsx)
 scripts/e2e.mjs end-to-end rig: dev server + headless tabs with separate profiles (e2e/README.md)
 ```
 
+## Sessions and code
+
+A **session** (see Multiplayer) is shared *data*: tracks, masks, the layer stack, and the changes
+peers published. *Code* is never shared directly. What runs on your page is built from three levels:
+
+```
+what runs = base             live/ on disk (git): the instrument, the same for every session
+          + session layer    what was committed in the page while this session was open
+          [+ an overlay]     only while it runs on trial: a chat's buffer or a peer's change
+```
+
+- **Base**: changed by your editor, an agent outside the browser, or git. Every session gets it;
+  where a session has its own version of a file, the base change is merged under it, and the
+  Changes window asks you to resolve overlaps.
+- **Session layer**: per session, on this machine only. Opening another session swaps it; a new
+  or joined session starts empty, on the base. Forgetting a session asks whether to keep it.
+- **Overlays**: unapplied edits. Each chat has one; a peer's change is staged in one to preview,
+  try, apply or adapt. Applying one commits it to the open session's layer.
+- **Between peers**, code travels only as **published changes** in the session document. Nothing
+  runs automatically: each peer applies (or adapts) them, one by one or by catching up on all of
+  them at once. Each change records what its author had (`after`), which orders them.
+- **Into the base**, code moves by promotion: an agent outside the browser reads a session's
+  layer and writes it to `live/` (step 6 below).
+- **Chats** belong to the page, not to a session. A chat that continues in another session is told
+  that the code changed under it.
+
 ## How a change happens
 
-1. Edits from the agent go into its chat's own overlay (`chat:<session id>`, a buffer other chats don't see; a session started on a change works in that change's overlay). Nothing runs yet. `try_changes` runs them live without committing, until kept or discarded.
+1. Edits from the agent go into its chat's own overlay (`chat:<chat id>`, a buffer other chats don't see; a chat started on a change works in that change's overlay). Nothing runs yet. `try_changes` runs them live without committing, until kept or discarded.
 2. `apply_changes` is a transaction:
    - stage: compile and evaluate the changed modules plus everything that imports them, next to the old instances;
    - swap them in and re-render from the root;
