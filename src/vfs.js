@@ -2,7 +2,8 @@
 //
 //   base        the instrument's code, the same in every session. Stored in IndexedDB; mirrored
 //               to live/ on disk when served by the Vite dev server ("most recent mtime wins" on
-//               boot). Changed by disk edits (your editor, an agent outside the browser, git).
+//               boot). In a build, the bundled files replace the local copies on boot.
+//               Changed by disk edits (your editor, an agent outside the browser, git).
 //   layer       the open session's own code: every file committed while that session is open, as
 //               { source, base } over the base (redaw-layers store, one record per session, with
 //               its history). Opening another session swaps its layer in; a new or joined session
@@ -154,6 +155,9 @@ export class VFS {
       }
     }
     if (!remote) remote = this.bundle || [];
+    // A build's bundle is the base, whatever the mtimes say: the page never writes the base, so
+    // local copies can only be older bundles (and builds may stamp every file with the same mtime).
+    const fromBundle = remote === this.bundle && remote.length > 0;
     const remoteMap = new Map(remote.map((f) => [f.path, f]));
     const pushes = [];
     const deletes = [];
@@ -162,7 +166,9 @@ export class VFS {
       const r = remoteMap.get(path);
       const l = local.get(path);
       const take = (src, mtime, diskMtime) => this.base.set(path, { source: src, mtime, diskMtime });
-      if (r && !l) take(r.source, r.mtime, r.mtime);
+      if (fromBundle) {
+        if (r) take(r.source, r.mtime, r.mtime);
+      } else if (r && !l) take(r.source, r.mtime, r.mtime);
       else if (r && l) {
         if (l.deleted) {
           if (l.mtime > r.mtime) deletes.push(path);
