@@ -10,6 +10,11 @@
 //     Changes with a patch have no files, so older code (which requires files) ignores them.
 //   files (older whole-file changes): [{ path, source (null = deleted), baseHash, afterHash }]
 // follows: the earlier change this one refines (a follow-up request to an agent, say).
+// after: the published changes already in the publisher's code when they published (only the
+//   latest ones: what those had before is implied). It orders changes without trusting anyone's
+//   clock: a change happened after everything in its after-closure, and two changes neither of
+//   which is in the other's closure were made in parallel. `at` (the publisher's clock) is only
+//   shown and breaks ties. Changes from before this field have no after: their order is unknown.
 // code.incorporated[id][name] = time: who has the change in their code (applied or published it).
 // baseHash/afterHash are vfs.hash() of the file before/after the change (null = absent).
 //
@@ -56,6 +61,7 @@ const wellFormed = (c) =>
     (Array.isArray(c.patch) && c.patch.every(wellFormedPatchFile))) &&
   (c.deps === undefined || (Array.isArray(c.deps) && c.deps.every((x) => typeof x === 'string'))) &&
   (c.follows === undefined || typeof c.follows === 'string') &&
+  (c.after === undefined || (Array.isArray(c.after) && c.after.every((x) => typeof x === 'string'))) &&
   (c.guide === undefined || typeof c.guide === 'string');
 
 function wellFormedPatchFile(f) {
@@ -214,6 +220,7 @@ export function publish({ name, intent, from, patch, deps = [], follows, superse
       ...(intent ? { intent } : {}),
       author: myName.value,
       at: Date.now(),
+      after: frontier(),
       patch: validatePatch(patch),
       deps: [...new Set([...deps, ...(follows ? [follows] : [])])],
       ...(follows ? { follows } : {}),
@@ -240,6 +247,7 @@ export function publish({ name, intent, from, patch, deps = [], follows, superse
     ...(intent ? { intent } : {}),
     author: myName.value,
     at: Date.now(),
+    after: frontier(),
     files: files.map((f) => ({
       path: f.path,
       source: f.after ?? null,
@@ -276,6 +284,52 @@ function write(h, change) {
     d.code.incorporated[change.id] ??= {};
     d.code.incorporated[change.id][change.author] ??= change.at;
   }, { message: JSON.stringify({ label: `publish ${change.name}`, origin: 'publish' }) });
+}
+
+// ---- causal order ------------------------------------------------------------------------------
+
+/** Ids of the published changes in `c`'s past: its after, and theirs, transitively. */
+export function pastOf(c) {
+  const out = new Set();
+  const todo = [...(c.after ?? [])];
+  while (todo.length) {
+    const id = todo.pop();
+    if (out.has(id)) continue;
+    out.add(id);
+    todo.push(...(byId(id)?.after ?? []));
+  }
+  return out;
+}
+
+/** The published changes in our code now, without those already in another one's past: the `after` of a new change. */
+function frontier() {
+  const have = published.value.filter((c) => isApplied(c));
+  const implied = new Set(have.flatMap((c) => [...pastOf(c)]));
+  return have.map((c) => c.id).filter((id) => !implied.has(id));
+}
+
+/**
+ * Published changes made in parallel with `c` (neither had the other) that touch a file it
+ * touches. Only changes that record `after` can be compared.
+ */
+export function parallelTo(c) {
+  if (!c.after) return [];
+  const mine = new Set(pathsOf(c));
+  const past = pastOf(c);
+  return published.value.filter((x) => x.id !== c.id && x.after && !past.has(x.id) && !pastOf(x).has(c.id) && pathsOf(x).some((p) => mine.has(p)));
+}
+
+/** `list` (published changes) ordered so each comes after everything in its past; ties by `at`. */
+export function causalOrder(list) {
+  const ids = new Set(list.map((c) => c.id));
+  const pasts = new Map(list.map((c) => [c.id, pastOf(c)]));
+  const left = [...list].sort((a, b) => a.at - b.at);
+  const out = [];
+  while (left.length) {
+    const i = left.findIndex((c) => ![...pasts.get(c.id)].some((id) => ids.has(id) && !out.some((o) => o.id === id)));
+    out.push(...left.splice(i === -1 ? 0 : i, 1)); // -1: a cycle (malformed after): fall back to time
+  }
+  return out;
 }
 
 /** Puts a change this page unpublished back, as it was (same id, so applies and follow-ups still match). */

@@ -149,6 +149,7 @@ function ChangeItem({ c, trial }) {
   const bases = changes.basesOf(c);
   const by = changes.incorporatedBy(c).filter((n) => n !== c.author).map((n) => (n === changes.myName.value ? 'you' : n));
   const needs = plan.order.filter((id) => id !== c.id).map((id) => changes.published.value.find((x) => x.id === id)?.name ?? id);
+  const parallel = changes.parallelTo(c);
   const onTrial = trial?.overlayId === `peer:${c.id}`;
   const canApply = !applied && !trial && !plan.missing.length && (plan.clean || (pv && !pv.conflicts.length && !pv.unresolved.length));
 
@@ -226,6 +227,18 @@ function ChangeItem({ c, trial }) {
               ))}
             </span>
           )}
+        </div>
+      )}
+      {parallel.length > 0 && (
+        <div class="net-bases" title="Neither author had the other's change when publishing, and both touch the same files">
+          <span>
+            made in parallel with{' '}
+            {parallel.map((x, i) => (
+              <span key={x.id} title={x.id}>
+                {i ? ', ' : ''}<strong>“{x.name}”</strong> by {x.author === changes.myName.value ? 'you' : x.author}
+              </span>
+            ))}
+          </span>
         </div>
       )}
       {c.intent && <p class="net-intent">{c.intent}</p>}
