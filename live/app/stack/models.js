@@ -13,6 +13,10 @@
 // meta): the files go into the blob store (net/blobs.js) and are recorded on the layer as `model`
 // by content hash, so peers in the session fetch them from whoever has them; the model runs on
 // anira (lib/streamModel.js) for as long as the layer has it.
+//
+// To encode or decode a whole buffer (not live), use renderOffline(layerId, data): it runs as fast as
+// the model goes and waits for every frame, where pushing into a live voice faster than real time
+// loses frames (late units are popped as zeros).
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import * as db from '../../lib/db.js';
@@ -168,6 +172,20 @@ export async function attachModel(layerId, files, name) {
 /** Deletes a pre-blob-store ref's files. (Blobs stay: the asset browser cleans up unused ones.) */
 function dropLegacyFiles(layerId, ref) {
   if (!ref.hashes) for (const n of ref.files) db.del('blobs', fileKey(layerId, n));
+}
+
+/**
+ * Runs a whole buffer through the model on operator layer `layerId`, offline: as fast as the
+ * inferences go, never missing a frame (lib/streamModel.js render). Encoder: context-rate mono
+ * audio in, latent frames out (n * dim, at `rate` per second). Decoder: the reverse.
+ * Resolves to { data, frames, missed, ms, dim, rate, sampleRate }.
+ */
+export async function renderOffline(layerId, data, opts) {
+  const rt = runtimes.peek()[layerId];
+  if (rt?.status !== 'ready') throw new Error(`no model is ready on layer ${layerId} (${rt?.status ?? 'none'})`);
+  const { model } = rt;
+  const r = await model.render(data, opts);
+  return { ...r, dim: model.output.kind === 'latent' ? model.output.channels : model.input.channels, rate: model.rate, sampleRate: model.sampleRate };
 }
 
 export function detachModel(layerId) {

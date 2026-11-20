@@ -199,7 +199,8 @@ export async function createStreamModel({ files, sampleRate }) {
       heap(m).HEAP64[outShape / 8 + 1] = BigInt(n);
       m._anira_tensor_init_host(outT, outData, ANIRA_DTYPE_F32, 2, outShape);
     };
-    const voice = { units: 0, missed: 0, errors: 0, lastError: null, lastPush: 0 };
+    // offline: a render that waits for every unit (render()): nothing is ever popped as overdue.
+    const voice = { units: 0, missed: 0, errors: 0, lastError: null, lastPush: 0, offline: false };
 
     const available = () => {
       m._anira_handler_get_available_samples(native, outSlot, 0, scratch);
@@ -231,7 +232,7 @@ export async function createStreamModel({ files, sampleRate }) {
         avail -= n;
       }
       while (pending.length) {
-        const due = avail >= output.samples || now - pending[0].at > OVERDUE_MS;
+        const due = avail >= output.samples || (!voice.offline && now - pending[0].at > OVERDUE_MS);
         if (!due) break;
         const st = m._anira_handler_pop_data(native, outT, outSlot, scratch + 4);
         if (st !== anira_status.ANIRA_OK && st !== anira_status.ANIRA_MISSED) {
@@ -260,6 +261,7 @@ export async function createStreamModel({ files, sampleRate }) {
       return true;
     };
     voice.drain = drain;
+    voice.inFlight = () => pending.length;
     /** Starts a new stream: zero state, empty rings (anira_handler_reset). */
     voice.begin = (fn) => {
       m._anira_handler_reset(native);
@@ -267,7 +269,7 @@ export async function createStreamModel({ files, sampleRate }) {
       seed = lat;
       onOutput = fn;
     };
-    voice.end = () => (onOutput = null);
+    voice.end = () => ((onOutput = null), (voice.offline = false));
     voice.free = () => m._free(base);
     return voice;
   }
@@ -282,6 +284,8 @@ export async function createStreamModel({ files, sampleRate }) {
   };
   for (let i = 1; i < PREPARED_VOICES; i++) idle.push(grow());
   const poll = setInterval(() => busy.forEach((v) => v.drain()), 4);
+  // Units an offline render keeps in flight: as many as a burst of the host, which the handler is sized for.
+  const RENDER_WINDOW = BURST_UNITS;
   let alive = true;
   const unitFrames = hop * ratio; // context frames per latent frame
 
@@ -357,6 +361,60 @@ export async function createStreamModel({ files, sampleRate }) {
           idle.push(v);
         },
       };
+    },
+    /**
+     * Offline: runs a whole stream through a fresh voice as fast as the inferences go, not at the
+     * pace of the clock. Each unit is waited for, so none misses (unlike a live voice, which pops a
+     * unit that is late as zeros). Takes context-rate mono audio (Float32Array) for an encoder, or
+     * latent frames (Float32Array of n * channels, frame-major) for a decoder. Resolves to
+     * { data, frames, missed, ms }: latent frames (n * channels) for an encoder, context-rate
+     * audio for a decoder; `frames`: units out; `ms`: how long it took. Runs on its own handler,
+     * beside live voices (they share the inference threads). `onProgress(done, total)` per unit;
+     * `signal` (AbortSignal) stops it.
+     */
+    async render(data, { onProgress, signal } = {}) {
+      if (!alive) throw new Error('the model was destroyed');
+      const t0 = performance.now();
+      const v = idle.shift() ?? grow();
+      const out = [];
+      let missed = 0;
+      const collect = (y, info) => (out.push(y), info.missed && missed++);
+      v.offline = true;
+      v.begin(output.kind === 'audio' ? audioOut(collect) : collect);
+      const units = []; // [unit, start]
+      if (input.kind === 'audio') audioIn((u, start) => units.push([u, start]))(data, 0);
+      else {
+        const n = Math.floor(data.length / input.channels);
+        for (let i = 0; i < n; i++) units.push([data.subarray(i * input.channels, (i + 1) * input.channels), Math.round(i * unitFrames)]);
+      }
+      const yieldNow = () => new Promise((r) => {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => r();
+        ch.port2.postMessage(null);
+      });
+      try {
+        for (let i = 0; i < units.length; i++) {
+          while (v.inFlight() >= RENDER_WINDOW) {
+            if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+            await yieldNow();
+            v.drain();
+          }
+          if (!v.push(units[i][0], units[i][1])) throw new Error(`push refused: ${v.lastError}`);
+          onProgress?.(i + 1, units.length);
+        }
+        while (v.inFlight()) {
+          if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+          await yieldNow();
+          v.drain();
+        }
+      } finally {
+        v.end();
+        if (alive) idle.push(v);
+      }
+      const len = out.reduce((a, y) => a + y.length, 0);
+      const joined = new Float32Array(len);
+      for (let i = 0, o = 0; i < out.length; o += out[i].length, i++) joined.set(out[i], o);
+      return { data: joined, frames: units.length, missed, ms: performance.now() - t0 };
     },
     /** Totals over every voice; `voices`: streaming now, `handlers`: prepared. */
     stats: () => {

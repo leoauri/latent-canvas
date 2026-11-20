@@ -68,6 +68,8 @@ Contract of bakeRender.js:
 - renderClip(clip) -> Promise<{ outs: [{ outId: audio-out layer id, offset: seconds from clip.t, data: Float32Array at audioContext().sampleRate }], missed }>. Throw with a clear message when something can't be rendered.
 - Changing bakeRender.js re-bakes everything automatically.
 
+Running models offline: renderOffline(layerId, data, { onProgress, signal }) in app/stack/models.js runs a whole buffer through the model on a layer as fast as inference goes and waits for every unit, so nothing is missed. Encoder: context-rate mono audio in, latent frames out; decoder: latent frames in, context-rate audio out. It resolves to { data, frames, missed, ms, dim, rate, sampleRate }. Use it for model layers rather than pushing into a live voice (voice()), which runs at the clock's pace and pops late units as zeros.
+
 How to work:
 1. Find how this session sounds live: what plays clips (app/stack/latentPlayback.js), how layers process messages (app/stack/models.js, app/stack/layerFunc.js, runLayer callers), and anything newer that touches the sound path (list_modules; search for emit(, mixer pushes, new layer types). Compare with bakeRender.js and list the differences to yourself.
 2. If the renderer already matches, say so and only verify. Otherwise write or edit bakeRender.js and apply_changes (label "pre-bake: …").
