@@ -29,3 +29,6 @@ scripts/__pycache__
 
 # always-on peer profile (scripts/peer.mjs)
 .peer/
+
+# Claude Code local state (worktrees)
+.claude/
