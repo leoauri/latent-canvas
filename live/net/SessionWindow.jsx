@@ -1,6 +1,7 @@
 // The session window: which session is open, its share link, who's connected, other sessions,
 // and this page's recent actions (undo). Opened from the session pill (bottom right).
 import { useState } from 'preact/hooks';
+import { vfs } from '@live/runtime';
 import { registerWindowKind, FloatingWindow } from '../ui/FloatingWindow.jsx';
 import { toggleWindow, findWindow } from '../ui/windows.js';
 import * as room from './room.js';
@@ -167,6 +168,22 @@ function SessionBody() {
             title="Everyone needs the new invite link afterwards"
           >
             Use
+          </button>
+        </div>
+      </details>
+
+      <details class="net-danger">
+        <summary class="net-label">Danger zone</summary>
+        <p class="net-hint">
+          Throw away this browser's copy of the app's code and reload with the latest version from the server. Code changes made here that
+          only live in this browser are lost.
+        </p>
+        <div class="net-row">
+          <button
+            class="net-danger-btn"
+            onClick={() => confirm('Discard the local copy of the code and reload with the server version?') && vfs.resetLocal()}
+          >
+            Reset code to server version
           </button>
         </div>
       </details>

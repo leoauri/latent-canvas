@@ -145,3 +145,8 @@
 .net-state-ready { color: oklch(0.5 0.12 75); border-color: currentColor; }
 .net-actions button.net-approve { background: oklch(0.88 0.17 95); color: #1b1b1b; border-color: transparent; font-weight: 600; }
 .net-bundle-off > :not(.net-actions):not(.net-row) { opacity: 0.6; }
+.net-danger > summary { color: var(--error); }
+.net-danger { display: flex; flex-direction: column; gap: 6px; }
+.net-danger[open] { border: 1px solid var(--error); border-radius: 6px; padding: 6px 8px; }
+.net-danger .net-hint { margin: 6px 0; }
+.net-danger-btn { color: var(--error); border-color: var(--error); }

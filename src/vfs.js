@@ -20,7 +20,7 @@
 // A trial runs an overlay's (merged) sources live without committing; only one at a time. It
 // ends with keep (commit what is running) or discard (swap the committed instances back).
 // onTrial(fn) listeners hear { phase: 'start'|'keep'|'discard', overlayId }.
-import { createStore, get, set, del, entries } from 'idb-keyval';
+import { createStore, get, set, del, entries, clear } from 'idb-keyval';
 import { collectErrors, record, reportError } from './errors.js';
 import { normalizePath } from './loader.js';
 import { merge3, hashSource, hasConflictMarkers } from './merge.js';
@@ -181,6 +181,20 @@ export class VFS {
     }
     this._ensureOverlay(DEFAULT, { label: 'default', origin: 'agent' });
     this._changed();
+  }
+
+  /**
+   * Forget this page's committed copies of the live files (the redaw-files store) and reload, so
+   * the next boot takes every file from the server (the dev server's live/ folder, or the build's
+   * bundle). Queued behind any running transaction so no commit lands after the wipe. Overlays and
+   * history are kept.
+   */
+  resetLocal() {
+    return this._serial(async () => {
+      await clear(fileStore);
+      location.reload();
+      await new Promise(() => {}); // hold the queue until the page goes away
+    });
   }
 
   disk_list() {

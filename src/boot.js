@@ -36,6 +36,9 @@ const vfs = new VFS({ loader, disk: isDev, bundle: liveBundle, runCheck: (code) 
 runtime = createRuntime({ vfs, loader, env });
 vendor['@live/runtime'] = runtime;
 globalThis.__redaw.runtime = runtime; // handy from devtools
+// Last resort from the devtools console: drop this browser's copy of the live code and reload with
+// the server's version (the session window's Danger zone does the same).
+window.reset = () => vfs.resetLocal();
 
 const rootEl = document.getElementById('root');
 let swapCount = 0;
