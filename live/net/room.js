@@ -24,6 +24,11 @@ import { connectSignaling } from './signaling.js';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 export const CHANNELS = { mesh: 0, sync: 1, blob: 2 };
 const RETRY_ANNOUNCE_MS = 3000;
+// A connection must open within this, or it is dropped and retried. Without a deadline a lost offer
+// or answer leaves a connection that never fails, and greet() ignores that peer from then on.
+const CONNECT_TIMEOUT_MS = 15000;
+// A connection 'disconnected' this long is dropped and retried (Chrome may never call it 'failed').
+const DISCONNECTED_MS = 10000;
 const FRAGMENT = 64 * 1024; // payload bytes per data channel message
 const HEADER = 8; // u32 message id, u16 fragment index, u16 fragment count
 
@@ -203,6 +208,7 @@ function openRoom(link) {
     const c = conns.get(id);
     if (!c) return;
     conns.delete(id);
+    clearTimeout(c.timer);
     c.pc.onconnectionstatechange = null;
     for (const ch of Object.values(c.channels)) {
       ch.onclose = null;
@@ -216,6 +222,13 @@ function openRoom(link) {
   function retrySoon() {
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => !closed && publish('announce'), RETRY_ANNOUNCE_MS);
+  }
+
+  // Drop a connection that isn't working and ask everyone to reintroduce themselves.
+  function giveUp(id, why) {
+    console.info(`room: dropping ${id.slice(0, 8)}: ${why}`);
+    drop(id);
+    retrySoon();
   }
 
   function deliver(label, from, data) {
@@ -260,23 +273,29 @@ function openRoom(link) {
       ch.binaryType = 'arraybuffer';
       channels[label] = ch;
     }
-    const c = { pc, channels, queued: [], partial: new Map() };
+    const c = { pc, channels, queued: [], partial: new Map(), timer: null };
     conns.set(id, c);
     setPeer(id, 'connecting');
+    const deadline = (ms, why) => {
+      clearTimeout(c.timer);
+      c.timer = setTimeout(() => conns.get(id) === c && giveUp(id, why), ms);
+    };
+    deadline(CONNECT_TIMEOUT_MS, `not open after ${CONNECT_TIMEOUT_MS / 1000}s`);
 
     pc.onicecandidate = (e) => e.candidate && publish('signal', { candidate: e.candidate.toJSON() }, id);
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        drop(id);
-        retrySoon();
-      }
+      const state = pc.connectionState;
+      if (state === 'failed' || state === 'closed') giveUp(id, `connection ${state}`);
+      else if (state === 'disconnected') deadline(DISCONNECTED_MS, `disconnected for ${DISCONNECTED_MS / 1000}s`);
+      else if (state === 'connected' && peers.value[id]?.state === 'open') clearTimeout(c.timer);
     };
     for (const [label, ch] of Object.entries(channels)) {
-      ch.onopen = () => Object.values(channels).every((x) => x.readyState === 'open') && setPeer(id, 'open');
-      ch.onclose = () => {
-        drop(id);
-        retrySoon();
+      ch.onopen = () => {
+        if (!Object.values(channels).every((x) => x.readyState === 'open')) return;
+        clearTimeout(c.timer);
+        setPeer(id, 'open');
       };
+      ch.onclose = () => giveUp(id, `${label} channel closed`);
       ch.onmessage = (e) => {
         if (label !== 'mesh') return receiveBinary(c, label, id, e.data);
         let msg;

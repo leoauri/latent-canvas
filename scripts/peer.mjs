@@ -48,7 +48,8 @@ page.on('crash', () => exit(1, 'page crashed'));
 await page.goto(`http://localhost:${port}/?engine=off${hash}`);
 log('joined', hash.replace(/room=[^&]+/, 'room=…'));
 
-// What the peer is doing, once a minute: signaling connection, open peers, session load state.
+// What the peer is doing, once a minute: signaling connection, open and not-yet-open peers, session
+// load state.
 const status = () =>
   page
     .evaluate(() => {
@@ -63,6 +64,7 @@ const status = () =>
         received: blobs?.stats.received,
         signal: room?.signalStatus.value,
         peers: room?.openPeers().length,
+        connecting: Object.values(room?.peers.value ?? {}).filter((p) => p.state !== 'open').length,
         session: session?.status.value,
         name: session?.current.value?.name,
       };
