@@ -286,6 +286,7 @@ export async function createStreamModel({ files, sampleRate }) {
   const poll = setInterval(() => busy.forEach((v) => v.drain()), 4);
   // Units an offline render keeps in flight: as many as a burst of the host, which the handler is sized for.
   const RENDER_WINDOW = BURST_UNITS;
+  const RENDER_POLL_MS = 2; // how often an offline render looks for finished units (browsers clamp to ~4 ms)
   let alive = true;
   const unitFrames = hop * ratio; // context frames per latent frame
 
@@ -387,24 +388,29 @@ export async function createStreamModel({ files, sampleRate }) {
         const n = Math.floor(data.length / input.channels);
         for (let i = 0; i < n; i++) units.push([data.subarray(i * input.channels, (i + 1) * input.channels), Math.round(i * unitFrames)]);
       }
-      const yieldNow = () => new Promise((r) => {
-        const ch = new MessageChannel();
-        ch.port1.onmessage = () => r();
-        ch.port2.postMessage(null);
-      });
+      // Results are polled: anira has no non-blocking completion signal. Its waiting pop
+      // (anira_handler_pop_data_wait) blocks the calling thread, and handlers run on the page's
+      // main thread, so it would freeze the page. A render on its own thread could use it instead.
+      // A timer, not a back-to-back message loop, so the main thread is free between polls.
+      const poll = () => new Promise((r) => setTimeout(r, RENDER_POLL_MS));
+      const check = () => {
+        if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+        if (!alive) throw new Error('the model was destroyed');
+      };
       try {
         for (let i = 0; i < units.length; i++) {
+          check();
           while (v.inFlight() >= RENDER_WINDOW) {
-            if (signal?.aborted) throw signal.reason ?? new Error('aborted');
-            await yieldNow();
+            await poll();
+            check();
             v.drain();
           }
           if (!v.push(units[i][0], units[i][1])) throw new Error(`push refused: ${v.lastError}`);
           onProgress?.(i + 1, units.length);
         }
         while (v.inFlight()) {
-          if (signal?.aborted) throw signal.reason ?? new Error('aborted');
-          await yieldNow();
+          await poll();
+          check();
           v.drain();
         }
       } finally {

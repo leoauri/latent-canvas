@@ -32,12 +32,33 @@ export const bakeErrors = persist('prebake.errors', {}); // clip id -> { key, er
 export const togglePrebake = () => (prebakeOn.value = !prebakeOn.value);
 export const isBaked = (id) => prebakeOn.peek() && !!bakes.peek()[id];
 
+// Every bake runs under the current stop controller. stopBakes() aborts the bake in progress (its
+// renderClip gets the signal; the scaffold stops waiting for it even if the renderer ignores it)
+// and any bakeAll, e.g. when pre-bake is switched off, the session changes or this module is replaced.
+let stopper = new AbortController();
+export function stopBakes(reason = 'pre-bake stopped') {
+  stopper.abort(new Error(reason));
+  stopper = new AbortController();
+}
+/** Resolves `p`, or rejects as soon as `signal` aborts (`p` may still be running then). */
+function unlessAborted(p, signal) {
+  let off;
+  const aborted = new Promise((_, reject) => {
+    const on = () => reject(signal.reason);
+    if (signal.aborted) return on();
+    signal.addEventListener('abort', on, { once: true });
+    off = () => signal.removeEventListener('abort', on);
+  });
+  p.catch(() => {}); // still running after an abort when the renderer ignores the signal
+  return Promise.race([p, aborted]).finally(() => off?.());
+}
+
 // This evaluation of the renderer: bakes from earlier code (or another session) are dropped.
 const serial = persist('prebake.serial', 0);
 const RENDERER = ++serial.value;
 const forget = () => ((bakes.value = {}), (bakeErrors.value = {}));
 forget();
-const stopSessionWatch = effect(() => (currentDoc.value, forget()));
+const stopSessionWatch = effect(() => (currentDoc.value, stopBakes(), forget()));
 
 const ids = persist('prebake.dataIds', () => ({ map: new WeakMap(), n: 0 })).value;
 const dataId = (d) => (ids.map.has(d) || ids.map.set(d, ++ids.n), ids.map.get(d));
@@ -105,12 +126,13 @@ const level = (d) => {
   return { peak: +peak.toFixed(4), rms: +Math.sqrt(sum / (d.length || 1)).toFixed(4) };
 };
 
-async function bakeOne(c, key) {
+async function bakeOne(c, key, signal) {
+  if (signal.aborted) return { clip: c.id, aborted: true };
   baking.value = c.id;
   const t0 = performance.now();
   try {
-    const { outs, missed = 0 } = await renderer.renderClip(c);
-    if (alive) {
+    const { outs, missed = 0 } = await unlessAborted(Promise.resolve(renderer.renderClip(c, { signal })), signal);
+    if (alive && !signal.aborted) {
       bakes.value = { ...bakes.peek(), [c.id]: { key, outs, missed } };
       const { [c.id]: _, ...rest } = bakeErrors.peek();
       bakeErrors.value = rest;
@@ -119,6 +141,7 @@ async function bakeOne(c, key) {
     const sr = audioContext().sampleRate;
     return { clip: c.id, ms: Math.round(performance.now() - t0), missed, outs: outs.map((o) => ({ outId: o.outId, offset: +o.offset.toFixed(3), seconds: +(o.data.length / sr).toFixed(3), ...level(o.data) })) };
   } catch (e) {
+    if (signal.aborted) return { clip: c.id, aborted: true, ms: Math.round(performance.now() - t0) };
     console.warn('prebake:', e);
     const error = String(e?.message || e);
     if (alive) bakeErrors.value = { ...bakeErrors.peek(), [c.id]: { key, error } };
@@ -129,16 +152,24 @@ async function bakeOne(c, key) {
 }
 
 /**
- * Bakes every clip now (no settling), for checking the renderer: { problems, clips: [{ clip, ms,
- * missed, outs: [{ outId, offset, seconds, peak, rms }] } | { clip, error, stack }] }.
+ * Bakes clips now (no settling), for checking the renderer: { problems, clips: [{ clip, ms,
+ * missed, outs: [{ outId, offset, seconds, peak, rms }] } | { clip, error, stack } | { clip,
+ * aborted }], aborted? }. Every clip by default; `ids` picks some, `limit` caps how many (first
+ * ones in timeline order). `signal` (or stopBakes()) stops it after the clip in progress is abandoned.
  */
-export async function bakeAll() {
+export async function bakeAll({ ids, limit = Infinity, signal } = {}) {
   const why = notReady();
   if (why) return { error: `can't bake: ${why}` };
   const ck = contextKey();
+  const stop = AbortSignal.any([stopper.signal, ...(signal ? [signal] : [])]);
+  const want = ids && new Set(ids);
+  const todo = clips.peek().filter((c) => bakeable(c) && (!want || want.has(c.id))).slice(0, limit);
   const report = [];
-  for (const c of clips.peek().filter(bakeable)) report.push(await exclusive(() => bakeOne(c, clipKey(c, ck))));
-  return { problems: renderProblems.peek(), clips: report };
+  for (const c of todo) {
+    if (stop.aborted) break;
+    report.push(await exclusive(() => bakeOne(c, clipKey(c, ck), stop)));
+  }
+  return { problems: renderProblems.peek(), clips: report, ...(stop.aborted && { aborted: String(stop.reason?.message || stop.reason) }) };
 }
 
 let alive = true;
@@ -157,7 +188,7 @@ const seen = new Map(); // clip id -> { key, at }: when its current inputs were 
       if (s?.key !== key) seen.set(c.id, { key, at: now });
       else if (now - s.at >= SETTLE_MS && !todo) todo = { c, key };
     }
-    if (todo) await exclusive(() => bakeOne(todo.c, todo.key));
+    if (todo) await exclusive(() => bakeOne(todo.c, todo.key, stopper.signal));
   }
 })();
 
@@ -197,6 +228,8 @@ function end() {
 }
 
 end();
+// Switching pre-bake off abandons the bake in progress instead of letting it run to its end.
+const stopOnOff = effect(() => void (prebakeOn.value || stopBakes('pre-bake switched off')));
 const stopEffect = effect(() => {
   const want = playing.value && prebakeOn.value;
   const c = cue.value;
@@ -206,6 +239,8 @@ const stopEffect = effect(() => {
 
 export function dispose() {
   alive = false;
+  stopBakes('the pre-bake scaffold was replaced');
+  stopOnOff();
   stopEffect();
   stopSessionWatch();
   end();
