@@ -222,13 +222,16 @@ SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 
 {
 	#category : #'app menu',
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:50'
 }
 SRRedawSessionView >> addFeatureItemsTo: aMenu [
+	"The toggle waits for the next frame, and the menu reads its labels right after the action: read them again once it has run."
 	self defaultFeatures do: [:each |
 		aMenu
 			addItem: [((self isEnabled: each) ifTrue: ['[x] '] ifFalse: ['[ ] ']), each menuLabel]
-			action: [self world ifNotNil: [:w | w addDeferredFrameMessage: [self toggle: each]]]
+			action: [self world ifNotNil: [:w | w addDeferredFrameMessage: [
+				self toggle: each.
+				aMenu labelsChanged]]]
 			keepOpen: true]
 ]
 

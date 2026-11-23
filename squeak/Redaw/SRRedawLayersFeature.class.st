@@ -3,42 +3,80 @@ The layer stack as panes, back to front from left to right: every field of a lay
 "
 Class {
 	#name : #SRRedawLayersFeature,
-	#superclass : #SRRedawPanesFeature,
+	#superclass : #SRRedawFeature,
+	#instVars : [
+		'layers',
+		'stack'
+	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
 }
 
 {
-	#category : #updating,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:21'
+	#category : #stack,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:52'
 }
-SRRedawLayersFeature >> entries [
-	| layers |
-	layers := self session layers asArray.
-	^ layers withIndexCollect: [:layer :index |
-		{layer at: 'id' ifAbsent: [index printString].
-		 (layer at: 'name' ifAbsent: ['?']), ' (', (layer at: 'type' ifAbsent: ['?']), ')'.
-		 self textFor: layer at: index of: layers size}]
+SRRedawLayersFeature >> deactivate [
+	stack ifNil: [^ self].
+	stack remove.
+	stack := nil.
 ]
 
 {
-	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:21'
+	#category : #initialization,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:36'
 }
-SRRedawLayersFeature >> side [
-	^ -1
+SRRedawLayersFeature >> initialize [
+	super initialize.
+	layers := #().
 ]
 
 {
 	#category : #updating,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:21'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:52'
 }
-SRRedawLayersFeature >> textFor: aLayer at: anIndex of: aCount [
-	^ String streamContents: [:s |
-		s nextPutAll: (aLayer at: 'name' ifAbsent: ['?']); cr.
-		s nextPutAll: 'layer '; print: anIndex; nextPutAll: ' of '; print: aCount; nextPutAll: ', back to front'; cr; cr.
-		(aLayer keys asSortedCollection reject: [:key | #('func' 'name') includes: key]) do: [:key |
-			s nextPutAll: key; nextPutAll: ': '; nextPutAll: (self show: (aLayer at: key)); cr].
-		(aLayer at: 'func' ifAbsent: [nil]) ifNotNil: [:source |
-			s cr; nextPutAll: '---- layer function (JavaScript, run in the browsers) ----'; cr; cr; nextPutAll: source]]
+SRRedawLayersFeature >> layout [
+	stack ifNil: [self openStack].
+	stack layers: layers.
+]
+
+{
+	#category : #stack,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:04'
+}
+SRRedawLayersFeature >> openStack [
+	"Panels face along -z, my stack along +z like the other XR objects: turn it round."
+	stack := SRRedawLayerStack new view: view; yourself.
+	self addChild: stack.
+	self placeInFrontOfPlayer: stack sideways: -95cm up: 35cm.
+	stack globalRotation: stack globalRotation * (Quaternion angle: 180 axis: Vector3 up).
+]
+
+{
+	#category : #updating,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:52'
+}
+SRRedawLayersFeature >> relayout [
+	"Not cleared as other features are: the stack is the user's to move."
+	[self layout] on: Error do: [:e | lastError := e]
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:52'
+}
+SRRedawLayersFeature >> stack [
+	^ stack
+]
+
+{
+	#category : #updating,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:36'
+}
+SRRedawLayersFeature >> update [
+	| new |
+	new := self session layers asArray.
+	new = layers ifTrue: [^ false].
+	layers := new.
+	^ true
 ]

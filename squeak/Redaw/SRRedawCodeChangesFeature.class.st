@@ -3,7 +3,13 @@ The code changes shared in the session (code.changes) as panes, newest nearest t
 "
 Class {
 	#name : #SRRedawCodeChangesFeature,
-	#superclass : #SRRedawPanesFeature,
+	#superclass : #SRRedawFeature,
+	#instVars : [
+		'changes',
+		'applied',
+		'browser',
+		'panel'
+	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
 }
@@ -17,53 +23,99 @@ SRRedawCodeChangesFeature class >> menuLabel [
 ]
 
 {
-	#category : #updating,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:21'
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
 }
-SRRedawCodeChangesFeature >> entries [
-	| code applied |
-	code := (self session document ifNil: [^ #()]) at: 'code' ifAbsent: [^ #()].
-	applied := code at: 'incorporated' ifAbsent: [JsonObject new].
-	^ ((code at: 'changes' ifAbsent: [JsonObject new]) values
-		asSortedCollection: [:a :b | (a at: 'at' ifAbsent: [0]) >= (b at: 'at' ifAbsent: [0])])
-			asArray collect: [:change |
-				{change at: 'id' ifAbsent: ['?'].
-				 change at: 'name' ifAbsent: ['(unnamed)'].
-				 self textFor: change applied: (applied at: (change at: 'id' ifAbsent: ['']) ifAbsent: [nil])}]
+SRRedawCodeChangesFeature >> browser [
+	^ browser
 ]
 
 {
-	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:21'
+	#category : #browser,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
 }
-SRRedawCodeChangesFeature >> side [
-	^ 1
+SRRedawCodeChangesFeature >> deactivate [
+	| window |
+	panel ifNil: [^ self].
+	window := panel morph.
+	panel remove.
+	window ifNotNil: [window delete].
+	panel := nil.
+	browser := nil.
 ]
 
 {
-	#category : #updating,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:21'
+	#category : #initialization,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
 }
-SRRedawCodeChangesFeature >> textFor: aChange applied: whoOrNil [
-	^ String streamContents: [:s |
-		s nextPutAll: (aChange at: 'name' ifAbsent: ['(unnamed)']); cr.
-		s nextPutAll: (self timeOf: aChange); nextPutAll: '   '; nextPutAll: (aChange at: 'author' ifAbsent: ['?']); cr.
-		whoOrNil ifNotNil: [s nextPutAll: 'applied by: '; nextPutAll: (self join: whoOrNil keys asSortedCollection with: ', '); cr].
-		(aChange at: 'deps' ifAbsent: [#()]) ifNotEmpty: [:deps | s nextPutAll: 'after: '; nextPutAll: (self join: deps with: ', '); cr].
-		s cr; nextPutAll: (aChange at: 'intent' ifAbsent: ['']); cr.
-		(aChange at: 'guide' ifAbsent: [nil]) ifNotNil: [:guide | s cr; nextPutAll: 'guide: '; nextPutAll: (self show: guide); cr].
-		(aChange at: 'files' ifAbsent: [#()]) do: [:file |
-			s cr; nextPutAll: '==== '; nextPutAll: (file at: 'path' ifAbsent: ['?']); nextPutAll: ' ===='; cr; cr.
-			s nextPutAll: ((file at: 'source' ifAbsent: ['']) ifNil: ['']); cr].
-		(aChange at: 'patch' ifAbsent: [nil]) ifNotNil: [:patch |
-			s cr; nextPutAll: '==== patch ===='; cr; cr; nextPutAll: (self show: patch)]]
+SRRedawCodeChangesFeature >> initialize [
+	super initialize.
+	changes := #().
 ]
 
 {
 	#category : #updating,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:21'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
 }
-SRRedawCodeChangesFeature >> timeOf: aChange [
-	^ (((DateAndTime fromUnixTime: (aChange at: 'at' ifAbsent: [0]) // 1000) printString first: 16)
-		copyReplaceAll: 'T' with: ' '), ' UTC'
+SRRedawCodeChangesFeature >> layout [
+	panel ifNil: [self openPanel].
+	browser changes: changes applied: applied.
+]
+
+{
+	#category : #browser,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
+}
+SRRedawCodeChangesFeature >> openPanel [
+	| window |
+	browser := RedawCodeChangesBrowser new.
+	window := SRMorphPanel withoutAddingToWorldDo: [
+		ToolBuilder open: browser.
+		browser dependents detect: [:each | each isSystemWindow]].
+	window extent: (self panelSize * SRMorphPanel defaultPixelsPerMeter) rounded.
+	panel := SRMorphPanel new morph: window; yourself.
+	self addChild: panel.
+	self placeInFrontOfPlayer: panel sideways: 45cm up: -5cm.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
+}
+SRRedawCodeChangesFeature >> panel [
+	^ panel
+]
+
+{
+	#category : #browser,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
+}
+SRRedawCodeChangesFeature >> panelSize [
+	"In metres."
+	^ 1.4 @ 0.9
+]
+
+{
+	#category : #updating,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
+}
+SRRedawCodeChangesFeature >> relayout [
+	"Not cleared as other features are: the browser is the user's to move."
+	[self layout] on: Error do: [:e | lastError := e]
+]
+
+{
+	#category : #updating,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
+}
+SRRedawCodeChangesFeature >> update [
+	| code new newApplied |
+	code := (self session document ifNil: [^ false]) at: 'code' ifAbsent: [^ false].
+	new := ((code at: 'changes' ifAbsent: [JsonObject new]) values
+		asSortedCollection: [:a :b | (a at: 'at' ifAbsent: [0]) >= (b at: 'at' ifAbsent: [0])]) asArray.
+	newApplied := code at: 'incorporated' ifAbsent: [JsonObject new].
+	(new = changes and: [newApplied = applied]) ifTrue: [^ false].
+	changes := new.
+	applied := newApplied.
+	^ true
 ]

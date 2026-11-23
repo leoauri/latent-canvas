@@ -138,6 +138,21 @@ SRRedawFeature >> pageBounds [
 ]
 
 {
+	#category : #placing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
+}
+SRRedawFeature >> placeInFrontOfPlayer: anObject sideways: aDistance up: aHeight [
+	"The canvas can be tens of metres wide: a widget put beside it may open far out of reach."
+	| camera forward ahead right |
+	camera := (view world ifNil: [^ self]) camera.
+	forward := camera forward.
+	ahead := (Vector3 x: forward x y: 0 z: forward z) normalize.
+	right := Vector3 x: ahead z negated y: 0 z: ahead x.
+	anObject globalTranslation: camera globalTranslation + (ahead * 130cm) + (right * aDistance) + (0 @ aHeight @ 0).
+	anObject globalRotation: (anObject rotationFacingAxisThrough: camera globalTranslation).
+]
+
+{
 	#category : #text,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:21'
 }
