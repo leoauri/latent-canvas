@@ -16,6 +16,7 @@
 
 pub mod blobs;
 pub mod crypto;
+pub mod decoder;
 pub mod doc;
 pub mod ffi;
 pub mod link;
