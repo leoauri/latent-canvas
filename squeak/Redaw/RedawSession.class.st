@@ -279,3 +279,12 @@ RedawSession >> updateLayers: aCollectionJson [
 	(new size = layers size and: [(1 to: new size) allSatisfy: [:i | (new at: i) == (layers at: i)]])
 		ifFalse: [layers removeAll; addAll: new]
 ]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:20'
+}
+RedawSession >> updated [
+	"Set once a refresh has merged the document, so a reader polling it never sees a half-merged one."
+	^ updated
+]
