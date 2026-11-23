@@ -70,6 +70,22 @@ int64_t rp_blob_wait(RpPeer *peer, const char *hash, uint32_t timeout_ms);
 /* {"hash","state":"absent|waiting|fetching|done","bytes","total","name","peers"}: length or -2. */
 int64_t rp_blob_status_buf(RpPeer *peer, const char *hash, uint8_t *buf, int64_t cap);
 
+/* Decoding: latents to audio with a decoder layer's streaming model (its ONNX file and anira
+ * config, fetched as blobs), on worker threads. Submit a clip, then poll for its audio. */
+typedef struct RpDecoder RpDecoder;
+/* onnx: the model's bytes; config: the *.anira.json text; sample_rate: the meta's. NULL on error. */
+RpDecoder *rp_decoder_open(const uint8_t *onnx, int64_t onnx_len, const char *config, int32_t sample_rate, int32_t threads);
+void rp_decoder_close(RpDecoder *decoder);
+/* Audio samples per latent frame; latent channels per frame. -1 on error. */
+int32_t rp_decoder_hop(RpDecoder *decoder);
+int32_t rp_decoder_channels(RpDecoder *decoder);
+/* Queue count floats of frame-major latents at clip_rate frames/s (held onto the model's rate).
+ * The job id (> 0), or -1. */
+int64_t rp_decoder_submit(RpDecoder *decoder, const float *latents, int64_t count, double clip_rate);
+/* The job's audio, 16-bit mono PCM: samples written (then the job is forgotten); if more than cap,
+ * the count and nothing written (the job is kept). -1 while decoding, -2 on error. */
+int64_t rp_decoder_pcm16(RpDecoder *decoder, int64_t job, int16_t *buf, int64_t cap);
+
 #ifdef __cplusplus
 }
 #endif

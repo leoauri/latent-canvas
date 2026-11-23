@@ -253,6 +253,99 @@ pub unsafe extern "C" fn rp_blob_status_buf(p: *mut RpPeer, hash: *const c_char,
     guard(-2, || Ok(fill(buf, cap, &serde_json::to_string(&peer(p)?.blob_status(str_arg(hash, "hash")?))?)))
 }
 
+// ---- decoding -------------------------------------------------------------------------------
+//
+// Latents to audio with a decoder layer's model (decoder.rs), on worker threads: submit a clip,
+// then poll for its audio, so no call blocks the VM for long.
+
+pub struct RpDecoder(crate::decoder::Renderer);
+
+unsafe fn decoder<'a>(d: *mut RpDecoder) -> Result<&'a crate::decoder::Renderer> {
+    d.as_ref().map(|d| &d.0).ok_or_else(|| anyhow!("decoder is NULL"))
+}
+
+/// Loads a streaming decoder: its ONNX model's bytes, its anira config's text (*.anira.json),
+/// the audio sample rate (the meta's sample_rate) and how many worker threads decode. NULL on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_decoder_open(onnx: *const u8, onnx_len: i64, config: *const c_char, sample_rate: i32, threads: i32) -> *mut RpDecoder {
+    guard(ptr::null_mut(), || {
+        if onnx.is_null() || onnx_len <= 0 {
+            return Err(anyhow!("no model bytes"));
+        }
+        if sample_rate <= 0 {
+            return Err(anyhow!("sample rate must be positive"));
+        }
+        let bytes = std::slice::from_raw_parts(onnx, onnx_len as usize);
+        let d = crate::decoder::Decoder::load(bytes, str_arg(config, "config")?)?;
+        Ok(Box::into_raw(Box::new(RpDecoder(crate::decoder::Renderer::new(d, sample_rate as f64, threads.max(1) as usize)))))
+    })
+}
+
+/// Stops the workers (after the clips they are decoding) and frees the decoder.
+#[no_mangle]
+pub unsafe extern "C" fn rp_decoder_close(d: *mut RpDecoder) {
+    if !d.is_null() {
+        guard((), || {
+            drop(Box::from_raw(d));
+            Ok(())
+        })
+    }
+}
+
+/// Audio samples per latent frame, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_decoder_hop(d: *mut RpDecoder) -> i32 {
+    guard(-1, || Ok(decoder(d)?.decoder().hop as i32))
+}
+
+/// Latent channels per frame, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_decoder_channels(d: *mut RpDecoder) -> i32 {
+    guard(-1, || Ok(decoder(d)?.decoder().channels as i32))
+}
+
+/// Queues a clip: `count` floats of frame-major latents at `clip_rate` frames per second (held
+/// onto the model's frame rate). Answers the job id (> 0), -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_decoder_submit(d: *mut RpDecoder, latents: *const f32, count: i64, clip_rate: f64) -> i64 {
+    guard(-1, || {
+        if latents.is_null() || count < 0 {
+            return Err(anyhow!("no latents"));
+        }
+        let data = std::slice::from_raw_parts(latents, count as usize).to_vec();
+        Ok(decoder(d)?.submit(data, clip_rate) as i64)
+    })
+}
+
+/// A job's audio as 16-bit PCM (mono, the decoder's sample rate) into `buf`: the number of
+/// samples, then the job is forgotten. If that exceeds `cap` samples nothing is written and the
+/// job is kept: call again with a bigger buffer. -1 while it is decoding, -2 on error (and for a
+/// failed decode, whose reason is in rp_last_error).
+#[no_mangle]
+pub unsafe extern "C" fn rp_decoder_pcm16(d: *mut RpDecoder, job: i64, buf: *mut i16, cap: i64) -> i64 {
+    guard(-2, || {
+        let r = decoder(d)?;
+        let id = job as u64;
+        match r.done_len(id) {
+            Some(Err(_)) => {}
+            Some(Ok(n)) if n as i64 > cap || buf.is_null() => return Ok(n as i64),
+            Some(Ok(_)) => {}
+            None => {}
+        }
+        match r.take(id) {
+            crate::decoder::Job::Pending => Ok(-1),
+            crate::decoder::Job::Failed(e) => Err(anyhow!(e)),
+            crate::decoder::Job::Done(audio) => {
+                let out = std::slice::from_raw_parts_mut(buf, audio.len());
+                for (o, x) in out.iter_mut().zip(&audio) {
+                    *o = (x.clamp(-1.0, 1.0) * 32767.0) as i16;
+                }
+                Ok(audio.len() as i64)
+            }
+        }
+    })
+}
+
 /// `rp_last_error` into a buffer: its length, 0 if there was no error. Does not reset it.
 #[no_mangle]
 pub unsafe extern "C" fn rp_last_error_buf(buf: *mut u8, cap: i64) -> i64 {
