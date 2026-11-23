@@ -203,6 +203,14 @@ SRRedawAudioFeature >> refresh [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+}
+SRRedawAudioFeature >> sounds [
+	^ sounds
+]
+
+{
 	#category : #playback,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
 }

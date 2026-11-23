@@ -73,6 +73,15 @@ SRRedawFeature >> boundsOnCanvas [
 
 {
 	#category : #layout,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+}
+SRRedawFeature >> canvasLift [
+	"How far the canvas has to be raised to make room below it."
+	^ 0
+]
+
+{
+	#category : #layout,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:21'
 }
 SRRedawFeature >> clear [

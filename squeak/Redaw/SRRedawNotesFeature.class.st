@@ -54,13 +54,16 @@ SRRedawNotesFeature >> fontPixels [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:22'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
 }
 SRRedawNotesFeature >> layout [
-	(tour ifNil: [#()]) do: [:each | self place: each color: Color white pin: (Color r: 1 g: 0.85 b: 0.2)].
+	| tourLevel chatLevel |
+	tourLevel := view levelOfAnnotation: #tour.
+	chatLevel := view levelOfAnnotation: #chat.
+	(tour ifNil: [#()]) do: [:each | self place: each color: Color white pin: (Color r: 1 g: 0.85 b: 0.2) level: tourLevel].
 	(chat ifNil: [#()]) do: [:each | | c |
 		c := self colorForAuthor: (each at: 'author' ifAbsent: ['?']).
-		self place: each color: c pin: c]
+		self place: each color: c pin: c level: chatLevel]
 ]
 
 {
@@ -100,9 +103,9 @@ SRRedawNotesFeature >> pageBounds [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:22'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
 }
-SRRedawNotesFeature >> place: aNote color: textColor pin: pinColor [
+SRRedawNotesFeature >> place: aNote color: textColor pin: pinColor level: aHeight [
 	| m h p |
 	m := view metersPerPixel.
 	h := view blockHeight.
@@ -111,11 +114,11 @@ SRRedawNotesFeature >> place: aNote color: textColor pin: pinColor [
 		color: pinColor;
 		ignoreCollision: true;
 		scale: (3 * m) @ (3 * m) @ (2 * h);
-		translation: p x @ p y @ h;
+		translation: p x @ p y @ (aHeight + h);
 		yourself).
 	self
 		addLines: (self linesOf: aNote)
-		at: (p x + (6 * m)) @ p y @ (2 * h)
+		at: (p x + (6 * m)) @ p y @ (aHeight + (2 * h))
 		height: self fontPixels * m
 		color: textColor
 ]

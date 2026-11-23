@@ -23,7 +23,8 @@ Class {
 		'pageBounds',
 		'metersPerPixel',
 		'blockHeight',
-		'transport'
+		'transport',
+		'appliedLift'
 	],
 	#classVars : [
 		'InviteLink'
@@ -254,11 +255,27 @@ SRRedawSessionView >> blockHeight: aNumber [
 
 {
 	#category : #layout,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+}
+SRRedawSessionView >> canvasBounds [
+	^ pageBounds
+]
+
+{
+	#category : #layout,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:21'
 }
 SRRedawSessionView >> canvasExtent [
 	"In metres."
 	^ pageBounds extent * metersPerPixel
+]
+
+{
+	#category : #layout,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+}
+SRRedawSessionView >> canvasLift [
+	^ features inject: 0 into: [:max :each | max max: each canvasLift]
 ]
 
 {
@@ -298,10 +315,10 @@ SRRedawSessionView >> computePageBounds [
 
 {
 	#category : #features,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:22'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
 }
 SRRedawSessionView >> defaultFeatures [
-	^ {SRRedawClipsFeature. SRRedawNotesFeature. SRRedawLayersFeature. SRRedawCodeChangesFeature. SRRedawPlayheadFeature. SRRedawAudioFeature}
+	^ {SRRedawClipsFeature. SRRedawNotesFeature. SRRedawLayersFeature. SRRedawStackFeature. SRRedawCodeChangesFeature. SRRedawPlayheadFeature. SRRedawAudioFeature}
 ]
 
 {
@@ -344,6 +361,19 @@ SRRedawSessionView >> featureOf: aFeatureClass [
 }
 SRRedawSessionView >> features [
 	^ features
+]
+
+{
+	#category : #layout,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+}
+SRRedawSessionView >> fitLift [
+	"Relative, so a canvas the user carried elsewhere keeps its place."
+	| lift |
+	lift := self canvasLift.
+	lift = (appliedLift ifNil: [0]) ifTrue: [^ self].
+	self translation: self translation + (0 @ (lift - (appliedLift ifNil: [0])) @ 0).
+	appliedLift := lift.
 ]
 
 {
@@ -397,7 +427,7 @@ SRRedawSessionView >> isPlaying [
 
 {
 	#category : #opening,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:19'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
 }
 SRRedawSessionView >> layOnFloor [
 	"Flat on the floor ahead of the camera, its near edge half a metre away, the page's top pointing the way the camera looks."
@@ -407,8 +437,9 @@ SRRedawSessionView >> layOnFloor [
 	forward := camera forward.
 	yaw := (forward x negated arcTan: forward z negated) radiansToDegrees.
 	ahead := (Vector3 x: forward x y: 0 z: forward z) normalize.
+	appliedLift := self canvasLift.
 	self rotation: (Quaternion angle: -90 axis: Vector3 right) * (Quaternion angle: yaw axis: Vector3 up).
-	self translation: (camera globalTranslation x @ 1cm @ camera globalTranslation z) + (ahead * (50cm + (self canvasExtent y / 2)))
+	self translation: (camera globalTranslation x @ (1cm + appliedLift) @ camera globalTranslation z) + (ahead * (50cm + (self canvasExtent y / 2)))
 ]
 
 {
@@ -419,6 +450,15 @@ SRRedawSessionView >> layoutPlane [
 	plane
 		scale: (self canvasExtent x) @ (self canvasExtent y) @ 1cm;
 		translation: 0 @ 0 @ -0.5cm
+]
+
+{
+	#category : #'page layout',
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+}
+SRRedawSessionView >> levelOfAnnotation: aSymbol [
+	"How far above the canvas the tour (#tour) or the chat notes (#chat) float."
+	^ (self featureOf: SRRedawStackFeature) ifNil: [0] ifNotNil: [:stack | stack levelOfAnnotation: aSymbol]
 ]
 
 {
