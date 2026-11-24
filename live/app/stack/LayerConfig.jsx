@@ -221,8 +221,10 @@ const FORMAT = `A layer function is JS source of ONE expression evaluating to { 
     },
   },
   transform(params, ctx) { /* params = { gain, label } with the user's current values */ },
+  // optional: tick(params, ctx) { … } to sound on after a voice ended (an echo ringing out)
 })
 \`\`\`
+- Streams carry only real frames: nothing sends a function zero or "silence" frames for missing input, and a function must not invent them either (a zero vector is a point in latent space a decoder renders; silence differs per model). A voice's start and end are events, not values. For a latent operator the contract is at its runLayer caller in app/stack/models.js: transform gets each frame with ctx.clip (the clip the voice plays, so fades can use its start and end); a function that rings out after the end returns its own frames from tick and returns none when it is done.
 - Each param: desc, widget (a preact component), default, plus props passed to the widget (e.g. min/max/step, placeholder, label for the row title). The panel renders the widget with { ...props, value, onChange, default }.
 - In scope: the default widgets ${WIDGET_NAMES.join(', ')} (Knob and Slider take min/max/step; NumberInput min/max/step; TextInput placeholder), plus preact's h and Fragment for custom widgets, e.g. ({ value, onChange }) => h('input', { type: 'checkbox', checked: value, onChange: (e) => onChange(e.currentTarget.checked) }). No JSX, no imports.
 - The user's values survive edits for params whose name you keep. app/stack/layerFunc.js exports runLayer(layer, ctx) to call transform.

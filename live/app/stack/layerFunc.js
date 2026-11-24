@@ -1,6 +1,9 @@
 // Layer functions: JS source (written by an agent, stored on the layer as `func`) of one expression
-//   ({ meta: { desc, params: { name: { desc, widget, default, ...widgetProps } } }, transform(params, ctx) { … } })
+//   ({ meta: { desc, params: { name: { desc, widget, default, ...widgetProps } } }, transform(params, ctx) { … }, tick?(params, ctx) { … } })
 // evaluated with preact's h/Fragment and the default widgets (widgets.jsx) in scope.
+// transform gets the frames that reach the layer; the optional tick lets it sound on after a voice
+// ended (ring out). What ctx holds is set by the callers (app/stack/models.js, the layer-function
+// operator). They send a function only real frames: never a zero or "silence" frame for missing input.
 // User-set parameter values live on the layer as `paramValues: { name: value }`.
 import { h, Fragment } from 'preact';
 import * as widgets from './widgets.jsx';
@@ -33,7 +36,8 @@ function check(v) {
     if (!p || typeof p !== 'object') throw new Error(`meta.params.${name} must be an object`);
     if (p.widget !== undefined && typeof p.widget !== 'function') throw new Error(`meta.params.${name}.widget must be a preact component`);
   }
-  return { meta: { desc: String(v.meta?.desc ?? ''), params }, transform: v.transform };
+  if (v.tick !== undefined && typeof v.tick !== 'function') throw new Error('tick must be a function');
+  return { meta: { desc: String(v.meta?.desc ?? ''), params }, transform: v.transform, ...(v.tick && { tick: v.tick }) };
 }
 
 /** Widget for a param: its own, else a default from its shape. */
@@ -51,4 +55,14 @@ export function runLayer(l, ctx) {
   const c = compileLayerFunc(l.func);
   if (!c?.transform) throw new Error(c?.error ?? `layer ${l.name} has no function`);
   return c.transform(paramValues(l), ctx);
+}
+
+/** Whether a layer's function rings out after a voice ends (has a tick). */
+export const hasTick = (l) => typeof compileLayerFunc(l.func)?.tick === 'function';
+
+/** Runs a layer's tick (ring-out after a voice ended) with its current parameter values. */
+export function tickLayer(l, ctx) {
+  const c = compileLayerFunc(l.func);
+  if (!c?.tick) throw new Error(c?.error ?? `layer ${l.name} has no tick`);
+  return c.tick(paramValues(l), ctx);
 }

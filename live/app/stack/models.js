@@ -9,6 +9,14 @@
 // let it pass. Consumers: an operator's model, a latent recording layer (app/stack/recorder.js)
 // and an audio output layer, which plays the audio reaching it.
 //
+// Principle: streams carry only real frames. A frame is data that something produced; absence is
+// never encoded as a value. Nothing in the chain invents frames to stand for "no input": a zero
+// vector (or any "silence" vector) is a point in latent space that a decoder will render, and what
+// is silence differs per model. The start and end of a voice are events (its first frame; an `end`
+// message), not values. A layer that wants to sound on after its input ended (an echo ringing
+// out) produces those frames itself, on its own clock (a layer function's tick), and decides
+// when it is done. A frame that arrives late is only late: it never means the stream ended.
+//
 // A model is dropped on an operator layer as a folder (its anira config, model file and optional
 // meta): the files go into the blob store (net/blobs.js) and are recorded on the layer as `model`
 // by content hash, so peers in the session fetch them from whoever has them; the model runs on
@@ -28,7 +36,8 @@ import { createTap, createMixer } from '../../lib/audioBlocks.js';
 import { stack, updateStackLayer, stackLayerById, LAYER_TYPES } from './stack.js';
 import { playing, inputPointAt, setOutputDelay } from '../timeline/Playhead.jsx';
 import { operatesAt } from '../timeline/layers.js';
-import { runLayer } from './layerFunc.js';
+import { runLayer, tickLayer, hasTick } from './layerFunc.js';
+import { clips } from '../timeline/clips.js';
 
 /**
  * @typedef {object} ModelRef  stored on an operator layer as `model`
@@ -47,9 +56,13 @@ import { runLayer } from './layerFunc.js';
  *
  * @typedef {{ kind: 'audio', data: Float32Array, start: number, voice: string }
  *   | { kind: 'latent', data: Float32Array, dim: number, rate: number, start: number, voice: string, missed?: boolean }
+ *   | { kind: 'end', voice: string, start: number }
  *   | { kind: 'flush', voices: string[] }} StreamMsg
  *   `start`: the context frame this unit belongs to. `voice`: which of the stream's parallel
  *   voices it belongs to (a clip, an input); a model keeps a separate state per voice.
+ *   `end`: that voice's stream ended at `start` (its clip ran out, left the masks, its input stopped):
+ *   what is on its way still plays out, and each layer passes the end on after its own last frame
+ *   of the voice. A voice's frames after its end start it again.
  *   `flush`: those voices were cut off (a seek or stop): drop what is still on its way for them.
  *   Optional `t` (timeline seconds) and `y` (world y): where on the timeline a unit comes from (clip
  *   playback; live input enters at the playhead, mid-view; models' outputs keep their input's). An operator processes only units inside its
@@ -64,7 +77,10 @@ import { runLayer } from './layerFunc.js';
  */
 
 const AUDIO_BLOCK = 1024; // samples per block an audio-in layer streams
-const VOICE_IDLE_MS = 250; // a voice that sent nothing this long has ended: its model voice is freed
+// A model voice whose producer sent nothing this long and no `end` (audio input, which has no end to
+// announce) is ended as if it had been, so its model voice is freed.
+const VOICE_IDLE_MS = 250;
+const RING_MAX_S = 60; // a layer function's ring-out is ended after this long, in case tick never returns none
 
 const fileKey = (layerId, name) => `model:${layerId}:${name}`;
 /** An operator without a model but with a layer function: it transforms the latents reaching it. */
@@ -310,15 +326,26 @@ function holdResample(hop, fn) {
 
 /**
  * A model operator's input: one model voice per voice that reaches it (each stream decoded or
- * encoded on its own handler, in parallel), ended once that voice has sent nothing for a while.
+ * encoded on its own handler, in parallel). A voice ends on its `end` once its last units are out
+ * of the model (or when it has sent nothing for VOICE_IDLE_MS), and the end goes on after them.
  * `prepare(msg)` turns a message into units for the voice's push, or reports and returns null.
  */
 function modelVoices(l, model, prepare) {
-  const voices = new Map(); // voice -> { voice, feed, last }
-  const reap = setInterval(() => {
+  const sr = audioContext().sampleRate;
+  const voices = new Map(); // voice -> { voice, feed, last, ending, outEnd, tOff, y }
+  const close = (key, v) => {
+    v.voice.end();
+    v.feed.stop?.();
+    voices.delete(key);
+    const start = v.outEnd ?? v.ending?.start;
+    if (start === undefined) return; // nothing came out: nothing to end
+    emit(l.id, { kind: 'end', voice: key, start, ...(v.tOff !== undefined && { t: start / sr + v.tOff, y: v.y }) });
+  };
+  const drained = (v) => !v.feed.busy?.() && !v.voice.inFlight?.();
+  const settle = setInterval(() => {
     const now = performance.now();
-    for (const [key, v] of voices) if (now - v.last > VOICE_IDLE_MS && !v.feed.busy?.()) (v.voice.end(), v.feed.stop?.(), voices.delete(key));
-  }, VOICE_IDLE_MS / 2);
+    for (const [key, v] of voices) if (drained(v) && (v.ending || now - v.last > VOICE_IDLE_MS)) close(key, v);
+  }, 10);
   return {
     handler(msg) {
       if (msg.kind === 'flush') {
@@ -326,11 +353,18 @@ function modelVoices(l, model, prepare) {
         for (const key of msg.voices) voices.get(key)?.voice.end(), voices.get(key)?.feed.stop?.(), voices.delete(key);
         return emit(l.id, msg);
       }
+      if (msg.kind === 'end') {
+        const v = voices.get(msg.voice);
+        if (!v) return emit(l.id, msg); // a voice this model never took: its end passes, like its frames
+        v.ending = msg; // closed once what was pushed is out (settle)
+        return;
+      }
       if (msg.kind !== model.input.kind || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) return emit(l.id, msg);
       let v = voices.get(msg.voice);
+      if (v?.ending) close(msg.voice, v), (v = null); // frames after its end start it again
       if (!v) {
-        const sr = audioContext().sampleRate;
         const voice = model.voice((data, { missed, start }) => {
+          v.outEnd = start + (model.output.kind === 'audio' ? data.length : sr / model.rate);
           const pos = v.tOff === undefined ? {} : { t: start / sr + v.tOff, y: v.y };
           emit(
             l.id,
@@ -342,12 +376,12 @@ function modelVoices(l, model, prepare) {
         v = { voice, feed: prepare((unit, start) => voice.push(unit, start)), last: 0 };
         voices.set(msg.voice, v);
       }
-      if (msg.t !== undefined) (v.tOff = msg.t - msg.start / audioContext().sampleRate), (v.y = msg.y);
+      if (msg.t !== undefined) (v.tOff = msg.t - msg.start / sr), (v.y = msg.y);
       v.last = performance.now();
       v.feed(msg);
     },
     stop() {
-      clearInterval(reap);
+      clearInterval(settle);
       for (const v of voices.values()) v.voice.end(), v.feed.stop?.();
       voices.clear();
     },
@@ -357,44 +391,79 @@ function modelVoices(l, model, prepare) {
 /** What a consumer does with the stream reaching it: { handler, stop? } or { error }. */
 function consumerOf(l, src, kind) {
   if (l.type === 'operator' && isFuncOperator(l)) {
-    // Layer function on latents: transform(params, { msg, state }) returns the messages to send on.
-    // When a voice's input stops, it gets zero frames on its grid until the output dies down (tails).
+    // Layer function on latents. transform(params, ctx) gets each latent frame inside the layer's
+    // masks, ctx = { msg, state, sampleRate, clip } (clip: the clip the voice plays, voice id =
+    // clip id, so a function knows where its clip starts and ends), and returns the messages to
+    // send on. It only ever sees frames a producer sent: nothing is made up for it (see the
+    // principle at the top). When a voice ends:
+    // - without tick: its state is dropped and the `end` passes on at once;
+    // - with tick(params, ctx): the function rings out. tick is called once per frame of the voice's
+    //   grid after its end, ctx = { voice, at, state, sampleRate, clip }, where `at` = { voice,
+    //   start, rate, dim, t?, y? } places the frame due (spread it into a frame you return:
+    //   { kind: 'latent', ...ctx.at, data }). It returns the frames to send on; returning none
+    //   ends the ring-out, and then the voice's `end` goes on. New frames of the voice stop it.
     const state = {};
-    const tails = new Map(); // voice -> last latent msg in
+    const seen = new Map(); // voice -> its last frame in, while transform has it and no end yet
+    const ringing = new Map(); // voice -> { at, end, until }: the frame due next after its end
     const ctx = audioContext();
     const sr = ctx.sampleRate;
-    const run = (msg) => {
-      let out;
-      try {
-        out = runLayer(stackLayerById(l.id) ?? l, { msg, state, sampleRate: sr });
-      } catch (e) {
-        const text = `layer function: ${e?.message || e}`;
-        if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
-        out = msg;
-      }
-      const list = [out ?? []].flat();
-      for (const m of list) emit(l.id, m);
-      return list.some((m) => m.kind === 'latent' && m.data.some((x) => Math.abs(x) > 1e-3));
+    const layer = () => stackLayerById(l.id) ?? l;
+    const clipOf = (voice) => clips.peek().find((c) => c.id === voice);
+    const report = (e, where) => {
+      const text = `layer function${where}: ${e?.message || e}`;
+      if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
     };
+    const forget = (voice) => (seen.delete(voice), ringing.delete(voice), delete state[voice]);
     const timer = setInterval(() => {
+      if (!ringing.size) return;
       const now = ctx.currentTime * sr;
-      for (const [voice, last] of tails) {
-        const hop = sr / last.rate;
-        if (now < last.start + 1.5 * hop) continue;
-        const msg = { ...last, data: new Float32Array(last.data.length), start: last.start + hop, missed: false, ...(last.t !== undefined && { t: last.t + 1 / last.rate }) };
-        msg.loudAt = run(msg) ? msg.start : (last.loudAt ?? last.start);
-        if (msg.start - msg.loudAt > 5 * sr) tails.delete(voice), delete state[voice];
-        else tails.set(voice, msg);
+      for (const [voice, r] of ringing) {
+        while (ringing.get(voice) === r && now >= r.at.start) {
+          let out = [];
+          if (r.at.start > r.until) report(`${voice} rang out for over ${RING_MAX_S} s: ended`, ' tick');
+          else
+            try {
+              out = [tickLayer(layer(), { voice, at: r.at, state, sampleRate: sr, clip: clipOf(voice) }) ?? []].flat();
+            } catch (e) {
+              report(e, ' tick');
+            }
+          if (!out.length) {
+            forget(voice);
+            emit(l.id, { ...r.end, start: r.at.start, ...(r.at.t !== undefined && { t: r.at.t }) });
+            break;
+          }
+          for (const m of out) emit(l.id, m);
+          const { start, t, rate } = r.at;
+          r.at = { ...r.at, start: start + sr / rate, ...(t !== undefined && { t: t + 1 / rate }) };
+        }
       }
     }, 5);
     return {
       handler: (msg) => {
-        if (msg.kind !== 'latent' || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) {
-          if (msg.kind === 'flush') for (const v of msg.voices) delete state[v], tails.delete(v);
+        if (msg.kind === 'flush') {
+          for (const v of msg.voices) forget(v);
           return emit(l.id, msg);
         }
-        tails.set(msg.voice, msg);
-        run(msg);
+        if (msg.kind === 'end') {
+          const last = seen.get(msg.voice);
+          if (!last || !hasTick(layer())) return forget(msg.voice), emit(l.id, msg);
+          seen.delete(msg.voice);
+          const y = msg.y ?? last.y;
+          const at = { voice: msg.voice, start: msg.start, rate: last.rate, dim: last.dim, ...(msg.t !== undefined && { t: msg.t }), ...(y !== undefined && { y }) };
+          ringing.set(msg.voice, { at, end: msg, until: msg.start + RING_MAX_S * sr });
+          return;
+        }
+        if (msg.kind !== 'latent' || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) return emit(l.id, msg);
+        ringing.delete(msg.voice); // its input is back: the ring-out stops
+        seen.set(msg.voice, msg);
+        let out;
+        try {
+          out = runLayer(layer(), { msg, state, sampleRate: sr, clip: clipOf(msg.voice) });
+        } catch (e) {
+          report(e, '');
+          out = msg;
+        }
+        for (const m of [out ?? []].flat()) emit(l.id, m);
       },
       stop: () => clearInterval(timer),
     };

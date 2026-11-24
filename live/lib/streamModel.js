@@ -341,7 +341,7 @@ export async function createStreamModel({ files, sampleRate }) {
     /** The warm-up's figures (one inference alone), and the budget every voice runs with. */
     plan: plan && { budgetMs, measuredMs: plan.budgetMs, medianMs: plan.medianMs, rtFactor: plan.rtFactor, rtVerdict: plan.rtVerdict },
     /**
-     * A voice for one stream: { push(data, start), end() }. Its outputs go to onOutput(data,
+     * A voice for one stream: { push(data, start), inFlight(), end() }. Its outputs go to onOutput(data,
      * { missed, start }) in stream order, one per input unit (the latency's seeded zeros are
      * discarded). Prepared handlers are reused, from a fresh state; more are made on demand
      * (which blocks the page for the new handler's warm-up).
@@ -356,6 +356,8 @@ export async function createStreamModel({ files, sampleRate }) {
       busy.add(v);
       return {
         push,
+        /** Units pushed and not yet out. */
+        inFlight: () => v.inFlight(),
         end() {
           if (!busy.delete(v)) return;
           v.end();
