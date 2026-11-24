@@ -16,10 +16,10 @@
 
 pub mod blobs;
 pub mod crypto;
-pub mod decoder;
 pub mod doc;
 pub mod ffi;
 pub mod link;
+pub mod model;
 mod peer;
 pub mod signaling;
 
