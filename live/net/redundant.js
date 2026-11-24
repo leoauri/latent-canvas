@@ -6,6 +6,9 @@
 //   notRedundant(c)   the user overrules a verdict (holds until a file it touches changes in the base)
 //   checking          signal: the change id an agent is judging now
 //   lastError         signal: why the last agent check failed (retried after RETRY_MS)
+//   request(c)        c's verdict, or null after asking for one soon (auto-merge waits for it):
+//                     wanted changes go first, after URGENT_MS instead of QUIET_MS
+//   retryNow()        lifts the pause after an endpoint/network error (e.g. the LLM settings changed)
 //
 // A verdict is keyed by the hashes of the base files the change touches (sig), so a change is
 // judged again only when one of those files changes. Cheap checks first: every edit already in the
@@ -23,6 +26,7 @@ import * as session from './session.js';
 import { complete, APIError } from '../chat/llm.js';
 
 const QUIET_MS = 30_000;
+const URGENT_MS = 1_000;
 const RETRY_MS = 5 * 60_000;
 const MAX_FILE_CHARS = 80_000;
 
@@ -53,7 +57,10 @@ export function state(c) {
 }
 export const isRedundant = (c) => state(c)?.v === 'redundant';
 
-const setVerdict = (c, v) => (verdicts.value = { ...verdicts.peek(), [c.id]: { ...v, sig: sigOf(c), at: Date.now() } });
+const setVerdict = (c, v) => {
+  wanted.delete(c.id);
+  verdicts.value = { ...verdicts.peek(), [c.id]: { ...v, sig: sigOf(c), at: Date.now() } };
+};
 
 export function notRedundant(c) {
   setVerdict(c, { v: 'no', by: 'you', reason: 'you marked it not redundant' });
@@ -137,9 +144,11 @@ const isTransport = (e) => e instanceof APIError || e instanceof TypeError;
 
 // ---- scheduling --------------------------------------------------------------------------------
 
+const wanted = new Set(); // ids someone waits on (auto-merge): checked first, without the quiet wait
 const textMiss = new Map(); // id -> sig the text check couldn't decide
 const skipped = new Map(); // id -> { sig, until }: its last answer was unusable
 let timer = 0;
+let timerAt = 0; // when the timer fires
 let pendingKey = '';
 let retryAt = 0;
 let running = false;
@@ -166,7 +175,34 @@ function unchecked() {
     }
     out.push(c);
   }
-  return out;
+  // Wanted first, in the order they were asked for (auto-merge asks in its own order); the rest as listed.
+  const rank = new Map([...wanted].map((id, i) => [id, i]));
+  return out.sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
+}
+
+/**
+ * The verdict on change `c` for the current base, or null after asking for one soon. The cheap
+ * checks run now; an agent check runs after URGENT_MS, ahead of the others. A change with no files
+ * can't be judged: it counts as not redundant.
+ */
+export function request(c) {
+  const v = state(c);
+  if (v) return v;
+  if (!changes.pathsOf(c).length) return { v: 'no', by: 'text', reason: 'touches no files' };
+  if (!wanted.has(c.id)) {
+    wanted.add(c.id);
+    queueMicrotask(() => !stopped && update());
+  }
+  return null;
+}
+
+/** Lifts the pause after an endpoint or network error, so the queue goes on now. */
+export function retryNow() {
+  if (!retryAt && !skipped.size) return;
+  retryAt = 0;
+  skipped.clear();
+  pendingKey = '';
+  if (!running) update();
 }
 
 function update() {
@@ -178,17 +214,22 @@ function update() {
     if (!running && Number.isFinite(until) && !timer) timer = setTimeout(() => ((timer = 0), (pendingKey = ''), update()), Math.max(0, until - Date.now()) + 1000);
   }
   if (!todo.length || running) return void (pendingKey = key);
-  if (key === pendingKey && timer) return; // nothing new: let the timer run
+  const at = Date.now() + Math.max(wanted.has(todo[0].id) ? URGENT_MS : QUIET_MS, retryAt - Date.now());
+  if (key === pendingKey && timer && timerAt <= at) return; // nothing new (or nothing sooner): let the timer run
   pendingKey = key;
   clearTimeout(timer);
-  timer = setTimeout(run, Math.max(QUIET_MS, retryAt - Date.now()));
+  timerAt = at;
+  timer = setTimeout(run, at - Date.now());
 }
 
 async function run() {
   timer = 0;
   running = true;
   try {
-    for (const c of unchecked()) {
+    // One at a time, taking the list again after each: a change asked for meanwhile goes next.
+    const tried = new Set();
+    for (let c; (c = unchecked().find((x) => !tried.has(x.id))); ) {
+      tried.add(c.id);
       if (stopped) return;
       checking.value = c.id;
       try {

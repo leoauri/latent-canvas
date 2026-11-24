@@ -332,10 +332,31 @@ export function parallelTo(c) {
   return published.value.filter((x) => x.id !== c.id && x.after && !past.has(x.id) && !pastOf(x).has(c.id) && pathsOf(x).some((p) => mine.has(p)));
 }
 
-/** `list` (published changes) ordered so each comes after everything in its past; ties by `at`. */
+/**
+ * What must come before `c`, transitively: its past (`after`) and what it builds on (declared deps,
+ * what it follows up on, and deps implied by file hashes; the changes plan() stages with it).
+ */
+function earlierOf(c) {
+  const out = new Set();
+  const direct = (x) => [...(x.after ?? []), ...(x.deps ?? []), ...(x.follows ? [x.follows] : []), ...impliedDeps(x.files ?? [], x.id)];
+  const todo = direct(c);
+  while (todo.length) {
+    const id = todo.pop();
+    if (out.has(id) || id === c.id) continue;
+    out.add(id);
+    const x = byId(id);
+    if (x) todo.push(...direct(x));
+  }
+  return out;
+}
+
+/**
+ * `list` (published changes) ordered so each comes after everything in its past and everything it
+ * builds on (the order auto-merge and catching up take them in); ties by `at`.
+ */
 export function causalOrder(list) {
   const ids = new Set(list.map((c) => c.id));
-  const pasts = new Map(list.map((c) => [c.id, pastOf(c)]));
+  const pasts = new Map(list.map((c) => [c.id, earlierOf(c)]));
   const left = [...list].sort((a, b) => a.at - b.at);
   const out = [];
   while (left.length) {

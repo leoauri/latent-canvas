@@ -80,7 +80,8 @@ function ChangesBody() {
   };
   const mineIds = new Set(bundles.bundles.value.map((b) => b.id));
   redundant.verdicts.value; // re-render on new verdicts
-  const shown = (showAll ? list : incoming).filter((c) => !mineIds.has(c.id) && !redundant.isRedundant(c));
+  // In the order auto-merge takes them: what a change builds on first, then by time.
+  const shown = changes.causalOrder((showAll ? list : incoming).filter((c) => !mineIds.has(c.id) && !redundant.isRedundant(c)));
   const ready = session.status.value === 'ready';
 
   return (
@@ -380,6 +381,12 @@ const JOB_TEXT = { reviewing: 'an agent is reviewing it', waiting: 'reviewed: ap
 /** What auto-merge did or is doing with a change, with its chat. */
 function AutoMergeNote({ c }) {
   const j = automerge.jobOf(c.id);
+  if (!j && automerge.autoMergeOn.value && automerge.awaitingVerdict.value.includes(c.id))
+    return (
+      <div class="net-row net-automerge-note">
+        <span class="net-grow net-muted">Auto-merge: waiting for the redundancy check{redundant.lastError.value ? ` (${redundant.lastError.value})` : ''}</span>
+      </div>
+    );
   if (!j) return null;
   const open = async () => (await import('../chat/store.js')).openSession(j.sessionId);
   const bad = j.state === 'held' || j.state === 'failed';

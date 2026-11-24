@@ -16,6 +16,9 @@
 // settings change, and when another change merges (the LLM works again). A change that builds on a
 // failed one tries that one again first (pulled forward once, then it waits for its retries); one
 // that builds on a held-back change is held back too, so the held code doesn't come in with it.
+//
+// Redundant changes (the base already has them, redundant.js) are never merged: a change waits for
+// its verdict, and the verdicts of what is staged with it, asking redundant.js to check them first.
 import { effect, computed, signal } from '@preact/signals';
 import { vfs, persist } from '@live/runtime';
 import * as changes from './changes.js';
@@ -93,8 +96,11 @@ const llmSettings = [
 ];
 const offSettings = llmSettings.map((sig) => {
   let first = true;
-  return sig.subscribe(() => (first ? (first = false) : retryFailed()));
+  return sig.subscribe(() => (first ? (first = false) : (retryFailed(), redundant.retryNow())));
 });
+
+/** Changes auto-merge waits on for a redundancy verdict (ids; for the Changes window). */
+export const awaitingVerdict = signal([]);
 /** The job running now, with its change: { change, job } or null. */
 export const current = computed(() => {
   const id = active.value;
@@ -231,21 +237,33 @@ export function retry(id) {
   jobs.value = rest;
 }
 
+const WAIT = Symbol('wait'); // the queue stops here until a redundancy verdict comes
+
 /**
- * What to run for change `c`: c itself, a failed change it builds on (tried again first), or null
- * to leave it for now (it is held back, or waits for a change it builds on).
+ * What to run for change `c`: c itself, a failed change it builds on (tried again first), null to
+ * leave it for now (it is held back, redundant, or waits for a change it builds on), or WAIT when it
+ * waits for a redundancy verdict (nothing after it runs meanwhile, so the order holds).
  */
 function nextStep(c) {
   const all = jobs.peek();
   if (all[c.id] && !isDue(all[c.id])) return null;
   const p = changes.plan(c.id);
   if (p.missing.length) return void setJob(c.id, { state: 'held', note: `needs changes that aren't published: ${p.missing.join(', ')}` }), null;
+  // Redundant or not? Ask for what isn't judged yet (it and what is staged with it), and wait.
+  const byId = (id) => changes.published.peek().find((x) => x.id === id);
+  const unjudged = p.order.map(byId).filter((x) => x && !redundant.request(x));
+  if (unjudged.length) {
+    if (!awaitingVerdict.peek().includes(c.id)) awaitingVerdict.value = [...awaitingVerdict.peek(), c.id];
+    return WAIT;
+  }
+  if (awaitingVerdict.peek().includes(c.id)) awaitingVerdict.value = awaitingVerdict.peek().filter((x) => x !== c.id);
+  if (redundant.isRedundant(c)) return null; // judged just now: left out like the others
   for (const id of p.order) {
     const d = all[id];
-    if (id === c.id || !d) continue; // not tried yet: staged together with c
+    if (id === c.id || !d || redundant.isRedundant(byId(id) ?? {})) continue; // not tried yet (staged with c), or the base has it
     if (d.state === 'held') return void setJob(c.id, { state: 'held', note: `builds on “${nameOf(id)}”, which was held back${d.note ? `: ${d.note}` : ''}` }), null;
     if (d.state !== 'failed') continue;
-    const dep = changes.published.peek().find((x) => x.id === id);
+    const dep = byId(id);
     if (dep && isDue(d)) return dep;
     if (dep && canRetry(d) && !d.pulled) return setJob(id, { pulled: true, retryAt: 0 }), dep;
     return null; // it waits for that one's retries (or for the user, when they ran out)
@@ -264,8 +282,12 @@ const offRun = effect(() => {
   if (!todo.length) return;
   queueMicrotask(() => {
     if (active.peek() || !autoMergeOn.peek()) return;
+    const left = awaitingVerdict.peek().filter((id) => todo.some((c) => c.id === id));
+    if (left.length !== awaitingVerdict.peek().length) awaitingVerdict.value = left;
+    for (const c of todo) redundant.request(c); // queue every verdict now, so they come back to back
     for (const c of todo) {
       const step = nextStep(c);
+      if (step === WAIT) return;
       if (step) return void run(step);
     }
   });
