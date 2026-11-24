@@ -70,21 +70,47 @@ int64_t rp_blob_wait(RpPeer *peer, const char *hash, uint32_t timeout_ms);
 /* {"hash","state":"absent|waiting|fetching|done","bytes","total","name","peers"}: length or -2. */
 int64_t rp_blob_status_buf(RpPeer *peer, const char *hash, uint8_t *buf, int64_t cap);
 
-/* Decoding: latents to audio with a decoder layer's streaming model (its ONNX file and anira
- * config, fetched as blobs), on worker threads. Submit a clip, then poll for its audio. */
-typedef struct RpDecoder RpDecoder;
-/* onnx: the model's bytes; config: the *.anira.json text; sample_rate: the meta's. NULL on error. */
+/* Add bytes to the peer's blob store (served to peers that ask); name and mime may be NULL.
+ * Writes the blob's id ("sha256-...") into buf: its length (nothing written if > cap), -2 error. */
+int64_t rp_blob_put(RpPeer *peer, const uint8_t *bytes, int64_t len, const char *name, const char *mime, uint8_t *buf, int64_t cap);
+
+/* Add a clip to the timeline, as the page's recorder does: count floats of frame-major latents
+ * (dim per frame, rate frames/s) into the blob store, its metadata into state/timeline.clips at
+ * t seconds and world y, in one change. Writes the clip's id into buf: its length, -2 on error.
+ * The latents are served from this peer: keep it open until the others have them. */
+int64_t rp_clip_add(RpPeer *peer, const float *latents, int64_t count, int32_t dim, double rate, double t, double y, uint8_t *buf, int64_t cap);
+
+/* Models: an operator layer's streaming model (its ONNX file and anira config, fetched as blobs)
+ * on worker threads. A decoder turns latents into audio, an encoder audio into latents. Submit a
+ * job, then poll for its result. Both are RpModel handles: rp_decoder_close, _hop and _channels
+ * work on either. */
+typedef struct RpModel RpModel;
+typedef RpModel RpDecoder;
+typedef RpModel RpEncoder;
+/* onnx: the model's bytes; config: the *.anira.json text; sample_rate: the meta's. NULL on error
+ * (also for an encoder's model). */
 RpDecoder *rp_decoder_open(const uint8_t *onnx, int64_t onnx_len, const char *config, int32_t sample_rate, int32_t threads);
-void rp_decoder_close(RpDecoder *decoder);
+void rp_decoder_close(RpModel *model);
 /* Audio samples per latent frame; latent channels per frame. -1 on error. */
-int32_t rp_decoder_hop(RpDecoder *decoder);
-int32_t rp_decoder_channels(RpDecoder *decoder);
+int32_t rp_decoder_hop(RpModel *model);
+int32_t rp_decoder_channels(RpModel *model);
 /* Queue count floats of frame-major latents at clip_rate frames/s (held onto the model's rate).
  * The job id (> 0), or -1. */
 int64_t rp_decoder_submit(RpDecoder *decoder, const float *latents, int64_t count, double clip_rate);
 /* The job's audio, 16-bit mono PCM: samples written (then the job is forgotten); if more than cap,
  * the count and nothing written (the job is kept). -1 while decoding, -2 on error. */
 int64_t rp_decoder_pcm16(RpDecoder *decoder, int64_t job, int16_t *buf, int64_t cap);
+
+/* As rp_decoder_open, for an encoder's model. NULL on error (also for a decoder's model). */
+RpEncoder *rp_encoder_open(const uint8_t *onnx, int64_t onnx_len, const char *config, int32_t sample_rate, int32_t threads);
+/* Queue count samples of mono audio at audio_rate samples/s (resampled to the model's rate), as
+ * 16-bit PCM or floats in -1..1. The job id (> 0), or -1. */
+int64_t rp_encoder_submit_pcm16(RpEncoder *encoder, const int16_t *pcm, int64_t count, double audio_rate);
+int64_t rp_encoder_submit_f32(RpEncoder *encoder, const float *audio, int64_t count, double audio_rate);
+/* The job's latents (frame-major float32, channels per frame, sample_rate / hop frames/s: a
+ * clip's dataHash blob): floats written (then the job is forgotten); if more than cap, the count
+ * and nothing written (the job is kept). -1 while encoding, -2 on error. */
+int64_t rp_encoder_latents(RpEncoder *encoder, int64_t job, float *buf, int64_t cap);
 
 #ifdef __cplusplus
 }

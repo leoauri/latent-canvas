@@ -253,40 +253,101 @@ pub unsafe extern "C" fn rp_blob_status_buf(p: *mut RpPeer, hash: *const c_char,
     guard(-2, || Ok(fill(buf, cap, &serde_json::to_string(&peer(p)?.blob_status(str_arg(hash, "hash")?))?)))
 }
 
-// ---- decoding -------------------------------------------------------------------------------
+/// Adds bytes to the peer's blob store, served to peers that ask (e.g. a clip's latents before
+/// its `dataHash` goes into the document). `name` and `mime` may be NULL. Writes the blob's id
+/// ("sha256-…") into `buf` and answers its length (nothing is written if it exceeds `cap`; the
+/// blob is stored either way), -2 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_blob_put(p: *mut RpPeer, bytes: *const u8, len: i64, name: *const c_char, mime: *const c_char, buf: *mut u8, cap: i64) -> i64 {
+    guard(-2, || {
+        if bytes.is_null() && len != 0 || len < 0 {
+            return Err(anyhow!("no bytes"));
+        }
+        let data = if len == 0 { vec![] } else { std::slice::from_raw_parts(bytes, len as usize).to_vec() };
+        let name = if name.is_null() { None } else { Some(str_arg(name, "name")?.to_owned()) };
+        let mime = if mime.is_null() { None } else { Some(str_arg(mime, "mime")?.to_owned()) };
+        Ok(fill(buf, cap, &peer(p)?.put_blob(data, name, mime)))
+    })
+}
+
+/// Adds a clip to the timeline: `count` floats of frame-major latents (`dim` per frame, `rate`
+/// frames per second) into the blob store, its metadata into the document at `t` seconds and world
+/// y `y`, in one change. Writes the clip's id into `buf` and answers its length, -2 on error. Its
+/// latents are served from this peer: keep it open until the others have them.
+#[no_mangle]
+pub unsafe extern "C" fn rp_clip_add(p: *mut RpPeer, latents: *const f32, count: i64, dim: i32, rate: f64, t: f64, y: f64, buf: *mut u8, cap: i64) -> i64 {
+    guard(-2, || {
+        if latents.is_null() || count <= 0 || dim <= 0 {
+            return Err(anyhow!("no latents"));
+        }
+        let data = std::slice::from_raw_parts(latents, count as usize);
+        Ok(fill(buf, cap, &peer(p)?.add_clip(data, dim as usize, rate, t, y)?))
+    })
+}
+
+// ---- models: decoding and encoding ----------------------------------------------------------
 //
-// Latents to audio with a decoder layer's model (decoder.rs), on worker threads: submit a clip,
-// then poll for its audio, so no call blocks the VM for long.
+// An operator layer's streaming model (model.rs) on worker threads: a decoder turns a clip's
+// latents into audio, an encoder audio into latents. Submit a job, then poll for its result, so
+// no call blocks the VM for long. Decoders and encoders share one handle type: rp_decoder_close,
+// _hop and _channels work on both.
 
-pub struct RpDecoder(crate::decoder::Renderer);
+pub struct RpModel(crate::model::Renderer);
 
-unsafe fn decoder<'a>(d: *mut RpDecoder) -> Result<&'a crate::decoder::Renderer> {
-    d.as_ref().map(|d| &d.0).ok_or_else(|| anyhow!("decoder is NULL"))
+unsafe fn model<'a>(m: *mut RpModel) -> Result<&'a crate::model::Renderer> {
+    m.as_ref().map(|m| &m.0).ok_or_else(|| anyhow!("model is NULL"))
+}
+
+unsafe fn open_model(onnx: *const u8, onnx_len: i64, config: *const c_char, sample_rate: i32, threads: i32, decoder: bool) -> Result<*mut RpModel> {
+    if onnx.is_null() || onnx_len <= 0 {
+        return Err(anyhow!("no model bytes"));
+    }
+    if sample_rate <= 0 {
+        return Err(anyhow!("sample rate must be positive"));
+    }
+    let bytes = std::slice::from_raw_parts(onnx, onnx_len as usize);
+    let m = crate::model::StreamModel::load(bytes, str_arg(config, "config")?)?;
+    match (decoder, m.is_decoder()) {
+        (true, false) => return Err(anyhow!("this model encodes audio to latents: open it with rp_encoder_open")),
+        (false, true) => return Err(anyhow!("this model decodes latents to audio: open it with rp_decoder_open")),
+        _ => {}
+    }
+    Ok(Box::into_raw(Box::new(RpModel(crate::model::Renderer::new(m, sample_rate as f64, threads.max(1) as usize)))))
+}
+
+/// The finished job's floats through `write` (given the buffer and the result), with the
+/// protocol of rp_decoder_pcm16 / rp_encoder_latents.
+unsafe fn take_job<T>(m: *mut RpModel, job: i64, buf: *mut T, cap: i64, write: impl FnOnce(&mut [T], &[f32])) -> Result<i64> {
+    let r = model(m)?;
+    let id = job as u64;
+    if let Some(Ok(n)) = r.done_len(id) {
+        if n as i64 > cap || buf.is_null() {
+            return Ok(n as i64);
+        }
+    }
+    match r.take(id) {
+        crate::model::Job::Pending => Ok(-1),
+        crate::model::Job::Failed(e) => Err(anyhow!(e)),
+        crate::model::Job::Done(out) => {
+            write(std::slice::from_raw_parts_mut(buf, out.len()), &out);
+            Ok(out.len() as i64)
+        }
+    }
 }
 
 /// Loads a streaming decoder: its ONNX model's bytes, its anira config's text (*.anira.json),
 /// the audio sample rate (the meta's sample_rate) and how many worker threads decode. NULL on error.
 #[no_mangle]
-pub unsafe extern "C" fn rp_decoder_open(onnx: *const u8, onnx_len: i64, config: *const c_char, sample_rate: i32, threads: i32) -> *mut RpDecoder {
-    guard(ptr::null_mut(), || {
-        if onnx.is_null() || onnx_len <= 0 {
-            return Err(anyhow!("no model bytes"));
-        }
-        if sample_rate <= 0 {
-            return Err(anyhow!("sample rate must be positive"));
-        }
-        let bytes = std::slice::from_raw_parts(onnx, onnx_len as usize);
-        let d = crate::decoder::Decoder::load(bytes, str_arg(config, "config")?)?;
-        Ok(Box::into_raw(Box::new(RpDecoder(crate::decoder::Renderer::new(d, sample_rate as f64, threads.max(1) as usize)))))
-    })
+pub unsafe extern "C" fn rp_decoder_open(onnx: *const u8, onnx_len: i64, config: *const c_char, sample_rate: i32, threads: i32) -> *mut RpModel {
+    guard(ptr::null_mut(), || open_model(onnx, onnx_len, config, sample_rate, threads, true))
 }
 
-/// Stops the workers (after the clips they are decoding) and frees the decoder.
+/// Stops the workers (after the jobs they are running) and frees the decoder or encoder.
 #[no_mangle]
-pub unsafe extern "C" fn rp_decoder_close(d: *mut RpDecoder) {
-    if !d.is_null() {
+pub unsafe extern "C" fn rp_decoder_close(m: *mut RpModel) {
+    if !m.is_null() {
         guard((), || {
-            drop(Box::from_raw(d));
+            drop(Box::from_raw(m));
             Ok(())
         })
     }
@@ -294,26 +355,26 @@ pub unsafe extern "C" fn rp_decoder_close(d: *mut RpDecoder) {
 
 /// Audio samples per latent frame, -1 on error.
 #[no_mangle]
-pub unsafe extern "C" fn rp_decoder_hop(d: *mut RpDecoder) -> i32 {
-    guard(-1, || Ok(decoder(d)?.decoder().hop as i32))
+pub unsafe extern "C" fn rp_decoder_hop(m: *mut RpModel) -> i32 {
+    guard(-1, || Ok(model(m)?.model().hop as i32))
 }
 
 /// Latent channels per frame, -1 on error.
 #[no_mangle]
-pub unsafe extern "C" fn rp_decoder_channels(d: *mut RpDecoder) -> i32 {
-    guard(-1, || Ok(decoder(d)?.decoder().channels as i32))
+pub unsafe extern "C" fn rp_decoder_channels(m: *mut RpModel) -> i32 {
+    guard(-1, || Ok(model(m)?.model().channels as i32))
 }
 
 /// Queues a clip: `count` floats of frame-major latents at `clip_rate` frames per second (held
 /// onto the model's frame rate). Answers the job id (> 0), -1 on error.
 #[no_mangle]
-pub unsafe extern "C" fn rp_decoder_submit(d: *mut RpDecoder, latents: *const f32, count: i64, clip_rate: f64) -> i64 {
+pub unsafe extern "C" fn rp_decoder_submit(m: *mut RpModel, latents: *const f32, count: i64, clip_rate: f64) -> i64 {
     guard(-1, || {
         if latents.is_null() || count < 0 {
             return Err(anyhow!("no latents"));
         }
         let data = std::slice::from_raw_parts(latents, count as usize).to_vec();
-        Ok(decoder(d)?.submit(data, clip_rate) as i64)
+        Ok(model(m)?.submit_latents(data, clip_rate)? as i64)
     })
 }
 
@@ -322,28 +383,54 @@ pub unsafe extern "C" fn rp_decoder_submit(d: *mut RpDecoder, latents: *const f3
 /// job is kept: call again with a bigger buffer. -1 while it is decoding, -2 on error (and for a
 /// failed decode, whose reason is in rp_last_error).
 #[no_mangle]
-pub unsafe extern "C" fn rp_decoder_pcm16(d: *mut RpDecoder, job: i64, buf: *mut i16, cap: i64) -> i64 {
+pub unsafe extern "C" fn rp_decoder_pcm16(m: *mut RpModel, job: i64, buf: *mut i16, cap: i64) -> i64 {
     guard(-2, || {
-        let r = decoder(d)?;
-        let id = job as u64;
-        match r.done_len(id) {
-            Some(Err(_)) => {}
-            Some(Ok(n)) if n as i64 > cap || buf.is_null() => return Ok(n as i64),
-            Some(Ok(_)) => {}
-            None => {}
-        }
-        match r.take(id) {
-            crate::decoder::Job::Pending => Ok(-1),
-            crate::decoder::Job::Failed(e) => Err(anyhow!(e)),
-            crate::decoder::Job::Done(audio) => {
-                let out = std::slice::from_raw_parts_mut(buf, audio.len());
-                for (o, x) in out.iter_mut().zip(&audio) {
-                    *o = (x.clamp(-1.0, 1.0) * 32767.0) as i16;
-                }
-                Ok(audio.len() as i64)
+        take_job(m, job, buf, cap, |out, audio| {
+            for (o, x) in out.iter_mut().zip(audio) {
+                *o = (x.clamp(-1.0, 1.0) * 32767.0) as i16;
             }
-        }
+        })
     })
+}
+
+/// Loads a streaming encoder, as rp_decoder_open loads a decoder. NULL on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_encoder_open(onnx: *const u8, onnx_len: i64, config: *const c_char, sample_rate: i32, threads: i32) -> *mut RpModel {
+    guard(ptr::null_mut(), || open_model(onnx, onnx_len, config, sample_rate, threads, false))
+}
+
+/// Queues `count` samples of mono 16-bit PCM at `audio_rate` samples per second (resampled to the
+/// model's rate) to encode. Answers the job id (> 0), -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_encoder_submit_pcm16(m: *mut RpModel, pcm: *const i16, count: i64, audio_rate: f64) -> i64 {
+    guard(-1, || {
+        if pcm.is_null() && count != 0 || count < 0 {
+            return Err(anyhow!("no audio"));
+        }
+        let samples = if count == 0 { &[][..] } else { std::slice::from_raw_parts(pcm, count as usize) };
+        Ok(model(m)?.submit_audio(samples.iter().map(|&s| s as f32 / 32768.0).collect(), audio_rate)? as i64)
+    })
+}
+
+/// Queues `count` float samples (mono, -1..1) at `audio_rate`, as rp_encoder_submit_pcm16.
+#[no_mangle]
+pub unsafe extern "C" fn rp_encoder_submit_f32(m: *mut RpModel, audio: *const f32, count: i64, audio_rate: f64) -> i64 {
+    guard(-1, || {
+        if audio.is_null() && count != 0 || count < 0 {
+            return Err(anyhow!("no audio"));
+        }
+        let samples = if count == 0 { &[][..] } else { std::slice::from_raw_parts(audio, count as usize) };
+        Ok(model(m)?.submit_audio(samples.to_vec(), audio_rate)? as i64)
+    })
+}
+
+/// A job's latents (frame-major float32, `channels` per frame, at sample rate / hop frames per
+/// second: a clip's dataHash blob) into `buf`: the number of floats, then the job is forgotten.
+/// If that exceeds `cap` floats nothing is written and the job is kept. -1 while it is encoding,
+/// -2 on error.
+#[no_mangle]
+pub unsafe extern "C" fn rp_encoder_latents(m: *mut RpModel, job: i64, buf: *mut f32, cap: i64) -> i64 {
+    guard(-2, || take_job(m, job, buf, cap, |out, latents| out.copy_from_slice(latents)))
 }
 
 /// `rp_last_error` into a buffer: its length, 0 if there was no error. Does not reset it.

@@ -320,6 +320,37 @@ impl Peer {
         hash
     }
 
+    /// Adds a clip to the timeline, as the page's recorder does (app/timeline/clips.js): its
+    /// latents (frame-major, `dim` per frame, `rate` frames per second) into the blob store as
+    /// `dataHash`, its metadata into `state/timeline.clips` (on top), in one change. `t`: start in
+    /// seconds, `y`: world y of its top edge. Answers the clip's id. The latents are served from
+    /// this peer's memory: keep it in the room until the others have fetched them.
+    pub fn add_clip(&self, latents: &[f32], dim: usize, rate: f64, t: f64, y: f64) -> Result<String> {
+        if dim == 0 || latents.len() % dim != 0 {
+            return Err(anyhow!("{} floats is not a whole number of {dim}-d frames", latents.len()));
+        }
+        if !(rate > 0.0 && rate.is_finite() && t.is_finite() && y.is_finite()) {
+            return Err(anyhow!("rate must be positive, t and y finite"));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let bytes: Vec<u8> = latents.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let hash = self.put_blob(bytes, Some(format!("clip {id}.f32")), Some("application/x-redaw-latents".into()));
+        let clip = serde_json::json!({
+            "id": id, "t": t, "y": y, "rate": rate, "dim": dim, "length": latents.len() / dim, "dataHash": hash,
+        });
+        self.edit("add clip", |d| {
+            if doc::get_json(d, "state/timeline.clips")?.is_none() {
+                if doc::get_json(d, "state")?.is_none() {
+                    doc::put_json(d, "state", &serde_json::json!({}))?;
+                }
+                doc::put_json(d, "state/timeline.clips", &serde_json::json!({ "items": {}, "order": [] }))?;
+            }
+            doc::put_json(d, &format!("state/timeline.clips/items/{id}"), &clip)?;
+            doc::put_json(d, "state/timeline.clips/order/-", &Json::String(id.clone()))
+        })?;
+        Ok(id)
+    }
+
     /// Blocks until a peer has confirmed our heads (see [`Status::synced`]) or `timeout` passes.
     pub fn wait_synced(&self, timeout: Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
