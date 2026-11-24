@@ -271,7 +271,7 @@ export default function TimelineCanvas() {
       selection.value = ids;
       // Alt: the copy is made once the pointer moves, so an Alt+click doesn't stack a hidden duplicate.
       if (!e.altKey) bringAllToFront(ids);
-      drag = { mode: 'clip', from: origins(ids), copy: e.altKey, deselect: e.shiftKey && !e.altKey && was ? c.id : null, x: e.clientX, y: e.clientY };
+      drag = { mode: 'clip', ids, from: origins(ids), copies: null, deselect: e.shiftKey && !e.altKey && was ? c.id : null, x: e.clientX, y: e.clientY };
       canvas.setPointerCapture(e.pointerId);
     };
     const onPointerMove = (e) => {
@@ -296,21 +296,39 @@ export default function TimelineCanvas() {
         schedule();
         return;
       }
-      let dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      drag.cx = e.clientX;
+      drag.cy = e.clientY;
+      applyClipDrag(e);
+    };
+    // Moves the dragged clips for the latest pointer position under the given modifiers. Also run when
+    // Shift or Alt changes mid-drag, so those take effect at once instead of on the next pointer move.
+    const applyClipDrag = (mods) => {
+      let dx = (drag.cx ?? drag.x) - drag.x, dy = (drag.cy ?? drag.y) - drag.y;
       if (drag.deselect) {
         if (Math.hypot(dx, dy) < 3) return;
         drag.deselect = null; // a drag after all
       }
-      if (drag.copy) {
-        if (Math.hypot(dx, dy) < 3) return;
-        drag.copy = false;
-        drag.copied = true;
-        drag.from = origins(duplicateClips(Object.keys(drag.from), 0).map((d) => d.id)); // originals stay
+      // Alt duplicates while it is held: pressing it (at the press or mid-drag) makes copies once the
+      // pointer has moved, and the originals go back to where they were; releasing it drops the copies
+      // and moves the originals again.
+      if (mods.altKey && !drag.copies && Math.hypot(dx, dy) < 3) return; // an Alt+click doesn't nudge
+      const copy = !!mods.altKey;
+      if (copy && !drag.copies) {
+        moveClips(drag.from, 0, 0); // put the originals back before copying
+        drag.copies = origins(duplicateClips(drag.ids, 0).map((d) => d.id));
+      } else if (!copy && drag.copies) {
+        removeClips(Object.keys(drag.copies));
+        drag.copies = null;
+        selection.value = drag.ids;
+        bringAllToFront(drag.ids);
       }
-      canvas.style.cursor = drag.copied ? 'copy' : 'grabbing';
+      canvas.style.cursor = drag.copies ? 'copy' : 'grabbing';
       // Shift constrains the move (or Alt+Shift the copy) to the dominant axis.
-      if (e.shiftKey) Math.abs(dx) >= Math.abs(dy) ? (dy = 0) : (dx = 0);
-      moveClips(drag.from, dx / view.value.pps, dy / view.value.ys);
+      if (mods.shiftKey) Math.abs(dx) >= Math.abs(dy) ? (dy = 0) : (dx = 0);
+      moveClips(drag.copies ?? drag.from, dx / view.value.pps, dy / view.value.ys);
+    };
+    const onModifierKey = (e) => {
+      if ((e.key === 'Shift' || e.key === 'Alt') && drag?.mode === 'clip' && !e.repeat) applyClipDrag(e);
     };
     const onPointerUp = (e) => {
       const was = drag;
@@ -370,6 +388,8 @@ export default function TimelineCanvas() {
       [canvas, 'pointercancel', onPointerUp],
       [canvas, 'click', onClick],
       [window, 'keydown', onKeyDown],
+      [window, 'keydown', onModifierKey],
+      [window, 'keyup', onModifierKey],
     ];
     for (const [target, type, fn, opts] of listeners) target.addEventListener(type, fn, opts);
 
