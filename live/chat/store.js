@@ -75,6 +75,10 @@ function track(s) {
       if (first) return void (first = false);
       if (s.hydrated && messages.length) persistSession(s);
     }),
+    // A turn's error (bad key, rate limit, …) is saved too, so it can be read later (e.g. via /__live/db).
+    s.error.subscribe((error) => {
+      if (error && s.hydrated && s.messages.peek().length) persistSession(s);
+    }),
   );
 }
 for (const s of sessions.values()) track(s);
@@ -232,10 +236,12 @@ function persistSession(s) {
     changes: changesOf(messages),
     // The label of a change waiting for approval, so it can be listed without loading the transcript.
     ...(s.approval?.value ? { ready: s.approval.value.label } : {}),
+    // The last turn's error, if it ended in one.
+    ...(s.error?.peek() ? { error: s.error.peek() } : {}),
     preview: messages.find((m) => m.role === 'user' && typeof m.content === 'string')?.content.slice(0, 120) ?? '',
   };
   chat.index.value = [entry, ...chat.index.value.filter((c) => c.id !== id)];
-  return Promise.all([db.put('chats', id, { id, scope, messages, ...extra, published: s.published?.value ?? [], approval: s.approval?.value ?? null }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
+  return Promise.all([db.put('chats', id, { id, scope, messages, ...extra, published: s.published?.value ?? [], approval: s.approval?.value ?? null, error: s.error?.peek() ?? null }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
     console.warn('chat: saving failed', e),
   );
 }

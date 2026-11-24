@@ -5,12 +5,18 @@
 // interrupted. One change at a time, oldest first in causal order. A change the agent holds back
 // (or fails on) stays in the Changes window for the user, with the agent's reason.
 //
-// Jobs, by change id: { state, sessionId?, note?, at }
+// Jobs, by change id: { state, sessionId?, note?, at, tries?, retryAt?, pulled? }
 //   state: 'reviewing' (agent working) | 'waiting' (ready to apply, waiting for a pause) | 'merged'
 //          | 'held' (the agent didn't apply it: note says why) | 'failed' (error: note)
 // Kept in localStorage, so held changes aren't reviewed again on every boot; an unfinished job
 // (the page reloaded under it) is started again.
-import { effect, computed } from '@preact/signals';
+//
+// A failed job (missing API key, network, rate limit, …) is tried again after RETRY_MS[tries - 1],
+// up to MAX_TRIES times. Failed jobs start over (tries 0, due now) when the page loads, when the LLM
+// settings change, and when another change merges (the LLM works again). A change that builds on a
+// failed one tries that one again first (pulled forward once, then it waits for its retries); one
+// that builds on a held-back change is held back too, so the held code doesn't come in with it.
+import { effect, computed, signal } from '@preact/signals';
 import { vfs, persist } from '@live/runtime';
 import * as changes from './changes.js';
 import * as session from './session.js';
@@ -22,6 +28,8 @@ const IDLE_MS = 4000;
 const ON_KEY = 'redaw.net.autoMerge';
 const JOBS_KEY = 'redaw.net.autoMerge.jobs';
 const DONE = new Set(['merged', 'held', 'failed']);
+const RETRY_MS = [15e3, 60e3, 5 * 60e3, 15 * 60e3, 30 * 60e3];
+const MAX_TRIES = 6;
 
 const load = (k, d) => {
   try {
@@ -34,7 +42,14 @@ const load = (k, d) => {
 /** Whether peers' changes are merged automatically. */
 export const autoMergeOn = persist('net.autoMerge.on', () => load(ON_KEY, false));
 /** Change id -> job (see above). Unfinished jobs from an earlier page load are dropped (retried). */
-export const jobs = persist('net.autoMerge.jobs', () => Object.fromEntries(Object.entries(load(JOBS_KEY, {})).filter(([, j]) => DONE.has(j?.state))));
+// Failed ones start over: whatever failed them (a missing key, the network) may be fixed by now.
+export const jobs = persist('net.autoMerge.jobs', () =>
+  Object.fromEntries(
+    Object.entries(load(JOBS_KEY, {}))
+      .filter(([, j]) => DONE.has(j?.state))
+      .map(([id, j]) => [id, j.state === 'failed' ? { ...j, tries: 0, retryAt: 0, pulled: false } : j]),
+  ),
+);
 /** The change being worked on now (one at a time), or null. */
 const active = persist('net.autoMerge.active', null);
 /** What auto-merge did, newest last: { id, name, author, state, note } (for the arrival bubble). */
@@ -47,6 +62,39 @@ const offSave = [
 
 const setJob = (id, patch) => (jobs.value = { ...jobs.peek(), [id]: { ...jobs.peek()[id], ...patch, at: Date.now() } });
 export const jobOf = (id) => jobs.value[id] ?? null;
+
+const canRetry = (j) => j?.state === 'failed' && (j.tries ?? 0) < MAX_TRIES;
+const isDue = (j) => canRetry(j) && (j.retryAt ?? 0) <= Date.now();
+const nameOf = (id) => changes.published.peek().find((c) => c.id === id)?.name ?? id;
+
+/** Lets every failed change be tried again now (something that may have failed them changed). */
+function retryFailed() {
+  const all = jobs.peek();
+  const failed = Object.keys(all).filter((id) => all[id].state === 'failed');
+  if (!failed.length) return;
+  jobs.value = { ...all, ...Object.fromEntries(failed.map((id) => [id, { ...all[id], tries: 0, retryAt: 0, pulled: false }])) };
+}
+
+// Ticks when the next failed job is due, so the scheduler below looks again.
+const clock = signal(Date.now());
+let retryTimer = 0;
+const offTimer = effect(() => {
+  clearTimeout(retryTimer);
+  const due = Object.values(jobs.value).filter(canRetry).map((j) => j.retryAt ?? 0);
+  if (due.length) retryTimer = setTimeout(() => (clock.value = Date.now()), Math.max(0, Math.min(...due) - Date.now()) + 50);
+});
+
+// The chat's LLM settings (same persist keys and loaders as chat/store.js, which net/ doesn't import
+// statically). A new key, endpoint or model may fix what failed.
+const llmSettings = [
+  persist('chat.apiKey', () => load('redaw.apiKey', '')),
+  persist('chat.baseURL', () => load('redaw.baseURL', '')),
+  persist('chat.model', () => load('redaw.chat.model', '')),
+];
+const offSettings = llmSettings.map((sig) => {
+  let first = true;
+  return sig.subscribe(() => (first ? (first = false) : retryFailed()));
+});
 /** The job running now, with its change: { change, job } or null. */
 export const current = computed(() => {
   const id = active.value;
@@ -157,7 +205,11 @@ async function run(c) {
     note = String(e?.message || e);
   } finally {
     if (state === 'failed' && !autoMergeOn.peek()) retry(c.id); // switched off mid-way: try again when it's back on
-    else setJob(c.id, { state, note });
+    else if (state === 'failed') {
+      const tries = (jobs.peek()[c.id]?.tries ?? 0) + 1;
+      setJob(c.id, { state, note, tries, retryAt: Date.now() + RETRY_MS[Math.min(tries, RETRY_MS.length) - 1] });
+    } else setJob(c.id, { state, note });
+    if (state === 'merged') retryFailed(); // the LLM works (again): what failed may go through now
     if (jobs.peek()[c.id]) outcomes.value = [...outcomes.peek(), { id: c.id, name: c.name, author: c.author, state, note }].slice(-20);
     if (active.peek() === c.id) active.value = null;
   }
@@ -179,18 +231,43 @@ export function retry(id) {
   jobs.value = rest;
 }
 
-// One at a time: when nothing runs, start on the oldest change not handled yet (and not redundant).
+/**
+ * What to run for change `c`: c itself, a failed change it builds on (tried again first), or null
+ * to leave it for now (it is held back, or waits for a change it builds on).
+ */
+function nextStep(c) {
+  const all = jobs.peek();
+  if (all[c.id] && !isDue(all[c.id])) return null;
+  const p = changes.plan(c.id);
+  if (p.missing.length) return void setJob(c.id, { state: 'held', note: `needs changes that aren't published: ${p.missing.join(', ')}` }), null;
+  for (const id of p.order) {
+    const d = all[id];
+    if (id === c.id || !d) continue; // not tried yet: staged together with c
+    if (d.state === 'held') return void setJob(c.id, { state: 'held', note: `builds on “${nameOf(id)}”, which was held back${d.note ? `: ${d.note}` : ''}` }), null;
+    if (d.state !== 'failed') continue;
+    const dep = changes.published.peek().find((x) => x.id === id);
+    if (dep && isDue(d)) return dep;
+    if (dep && canRetry(d) && !d.pulled) return setJob(id, { pulled: true, retryAt: 0 }), dep;
+    return null; // it waits for that one's retries (or for the user, when they ran out)
+  }
+  return c;
+}
+
+// One at a time: when nothing runs, start on the oldest change not handled yet (or failed and due
+// again), and not redundant.
 const offRun = effect(() => {
   if (!autoMergeOn.value || session.status.value !== 'ready' || active.value) return;
   const all = jobs.value;
+  clock.value; // look again when a failed job is due
   redundant.verdicts.value; // changes the base already has are left out (the Changes window folds them)
-  const next = changes.catchUpList.value.find((c) => !all[c.id] && !redundant.isRedundant(c));
-  if (!next) return;
+  const todo = changes.catchUpList.value.filter((c) => (!all[c.id] || canRetry(all[c.id])) && !redundant.isRedundant(c));
+  if (!todo.length) return;
   queueMicrotask(() => {
-    if (active.peek() || jobs.peek()[next.id] || !autoMergeOn.peek()) return;
-    const p = changes.plan(next.id);
-    if (p.missing.length) return setJob(next.id, { state: 'held', note: `needs changes that aren't published: ${p.missing.join(', ')}` });
-    run(next);
+    if (active.peek() || !autoMergeOn.peek()) return;
+    for (const c of todo) {
+      const step = nextStep(c);
+      if (step) return void run(step);
+    }
   });
 });
 const offOff = autoMergeOn.subscribe((on) => !on && stopCurrent());
@@ -199,6 +276,9 @@ export function dispose() {
   unregister();
   offRun();
   offOff();
+  offTimer();
+  clearTimeout(retryTimer);
+  offSettings.forEach((f) => f());
   offSave.forEach((f) => f());
   for (const t of INPUT_EVENTS) window.removeEventListener(t, onInput, { capture: true });
 }

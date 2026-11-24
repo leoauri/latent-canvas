@@ -8,6 +8,8 @@
 //          /__live/db/<db>/<store>[?values]   keys, or all { key, value }   relayed to the page,
 //          /__live/db/<db>/<store>/<key>      one value (?jkey=<json> for    src/db-bridge.js;
 //                                             non-string keys; ?full: binary data in full)
+//   GET    /__live/ls[/<key>]     -> the open page's localStorage (read-only, relayed the same way;
+//                                    both answer with header x-redaw-page: the tab that answered)
 //   ws event "live:change"        { path, mtime, source | null }  (disk edits from your editor)
 //   ws     /__live/signal          WebRTC signaling relay for multiplayer rooms (vite/signal.js),
 //                                  also under `vite preview`
@@ -165,6 +167,23 @@ export default function livePlugin({ dir = 'live' } = {}) {
             q = { op: 'get', db, store, key, full };
           } else q = { op: url.searchParams.has('values') ? 'all' : 'keys', db, store, full };
           const r = await askPage(q);
+          if (r.page) res.setHeader('x-redaw-page', r.page);
+          if (!r.ok) return send(r.status || 400, { error: r.error });
+          send(200, r.result);
+        } catch (err) {
+          send(400, { error: String(err.message || err) });
+        }
+      });
+
+      // Read-only view of the open page's localStorage (auto-merge jobs, chat settings, …), same relay.
+      server.middlewares.use('/__live/ls', async (req, res) => {
+        const send = sender(res);
+        try {
+          if (!guard(req, send)) return;
+          if (req.method !== 'GET') return send(405, { error: 'method not allowed' });
+          const key = decodeURIComponent(new URL(req.url || '/', 'http://x').pathname.replace(/^\/+/, ''));
+          const r = await askPage(key ? { op: 'ls', key } : { op: 'ls' });
+          if (r.page) res.setHeader('x-redaw-page', r.page);
           if (!r.ok) return send(r.status || 400, { error: r.error });
           send(200, r.result);
         } catch (err) {

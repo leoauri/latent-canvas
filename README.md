@@ -28,7 +28,16 @@ curl -sH "$H" "$DB/redaw/kv?values"                # every key and value in a st
 ```
 
 Typed arrays come back as `{ $type, length, head }` unless you add `?full`. Use `?jkey=<json>` for
-keys that are not strings. With several tabs open, the first one to answer wins.
+keys that are not strings. With several tabs open, the first one to answer wins; the response header
+`x-redaw-page` names the tab that did. A chat that ended in an error (bad key, rate limit, …) keeps
+it as `error`, in its record and in `chat.index`.
+
+The page's localStorage goes through the same door at `/__live/ls` (API keys and tokens redacted):
+
+```sh
+curl -sH "$H" http://localhost:5173/__live/ls                             # every key and value
+curl -sH "$H" http://localhost:5173/__live/ls/redaw.net.autoMerge.jobs    # auto-merge jobs: state, note, tries, retryAt
+```
 
 ## Commit messages
 

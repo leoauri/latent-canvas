@@ -5,6 +5,9 @@
 //   { op: 'keys', db, store }              -> [key, …]
 //   { op: 'all',  db, store }              -> [{ key, value }, …]
 //   { op: 'get',  db, store, key }         -> value (undefined -> 404)
+//   { op: 'ls' }                           -> { key: value, … } of this page's localStorage (keys/tokens redacted)
+//   { op: 'ls', key }                      -> one localStorage value (missing -> 404)
+//                                             (values that are JSON come back parsed)
 //
 // Values are made JSON-safe: typed arrays and binary become { $type, length, head } summaries
 // unless `full` is set, Maps/Sets/Dates/Blobs are tagged.
@@ -44,7 +47,23 @@ function jsonSafe(v, full, seen = new WeakSet()) {
   return out;
 }
 
+// Keys and tokens stay in the page.
+const SECRET = /api.?key|token|secret|password/i;
+const parsed = (v) => {
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v;
+  }
+};
+
 async function handle({ op, db: name, store, key, full }) {
+  if (op === 'ls') {
+    const read = (k) => (SECRET.test(k) && localStorage.getItem(k) ? '[redacted]' : parsed(localStorage.getItem(k)));
+    if (key == null) return Object.fromEntries(Object.keys(localStorage).sort().map((k) => [k, read(k)]));
+    if (localStorage.getItem(key) === null) throw Object.assign(new Error(`no localStorage key ${JSON.stringify(key)}`), { status: 404 });
+    return read(key);
+  }
   if (op === 'dbs') {
     const list = await indexedDB.databases();
     return Promise.all(
@@ -86,7 +105,7 @@ export function attachDbBridge(hot) {
     try {
       hot.send('live:db-reply', { id, ok: true, result: await handle(q), page: location.href });
     } catch (e) {
-      hot.send('live:db-reply', { id, ok: false, status: e.status || 400, error: String(e.message || e) });
+      hot.send('live:db-reply', { id, ok: false, status: e.status || 400, error: String(e.message || e), page: location.href });
     }
   });
 }
