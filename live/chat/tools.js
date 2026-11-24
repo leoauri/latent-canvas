@@ -152,7 +152,7 @@ export const tools = [
   custom('list_published', 'Code changes published in the session (by anyone), with whether each applies cleanly here.', {}),
   custom(
     'eval_js',
-    'Run JavaScript in the page (async function body: top-level await works, `return` a value to see it). In scope: modules(path) -> namespace of the running module, vfs, loader, vendor, runtime, plus all browser globals. Console output during the run is returned. Not transactional: side effects stay. Use it to inspect the DOM, call into modules, and verify behaviour.',
+    'Run JavaScript in the page (async function body: top-level await works, `return` a value to see it). In scope: modules(path) -> namespace of the running module, vfs, loader, vendor, runtime, overlay, plus all browser globals. vfs.read(path) gives the committed code, without your buffered edits; overlay is this chat\'s own overlay, the one the file tools edit: overlay.read(path) and overlay.list() see your buffered edits, overlay.write(path, source) buffers one like the file tools do, overlay.changes() lists them. Run them with apply_changes or try_changes, as usual. Console output during the run is returned. Not transactional: side effects stay. Use it to inspect the DOM, call into modules, and verify behaviour.',
     {
       description: { type: 'string', description: 'What this run does, ~5 words (shown in the chat), e.g. "list chat modules".' },
       code: { type: 'string' },
@@ -282,7 +282,7 @@ export async function runTool(block, ctx = {}) {
         return ok(id, `Reverted: ${r.reverted.map((e) => e.label).join(', ')}. Rebuilt: ${r.rebuilt.join(', ') || '-'}`);
       }
       case 'eval_js':
-        return evalJs(id, input, ctx.session?.controller.value?.signal);
+        return evalJs(id, input, ctx.session?.controller.value?.signal, fs);
       case 'read_console': {
         const entries = logs.read({
           since: input.since_id ?? 0,
@@ -542,13 +542,13 @@ function listPublished() {
 }
 
 // Stop (signal) and the timeout end the wait, not the code: JS can't cancel it, so pending awaits keep running.
-async function evalJs(id, { code, timeout_ms = 10000 }, signal) {
+async function evalJs(id, { code, timeout_ms = 10000 }, signal, overlay) {
   const output = [];
   const off = logs.on((e) => output.push(`[${e.level}] ${e.text}`));
   let timer, onAbort;
   try {
     const result = await Promise.race([
-      runScript(code),
+      runScript(code, { overlay }),
       new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`timed out after ${timeout_ms}ms`)), timeout_ms))),
       new Promise((_, reject) => {
         onAbort = () => reject(new Error('Cancelled by the user (the code may still be running in the background).'));
@@ -559,7 +559,7 @@ async function evalJs(id, { code, timeout_ms = 10000 }, signal) {
     const shown = result === undefined ? 'undefined' : logs.format(result);
     return ok(id, `${output.length ? 'Console:\n' + output.join('\n') + '\n\n' : ''}Result: ${clip(shown)}`);
   } catch (err) {
-    return fail(id, `${output.length ? 'Console:\n' + output.join('\n') + '\n\n' : ''}${loader.mapUrls(err?.stack || String(err))}`);
+    return fail(id, `${output.length ? 'Console:\n' + output.join('\n') + '\n\n' : ''}${loader.mapUrls(logs.errorText?.(err) ?? (err?.stack || String(err)))}`);
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);

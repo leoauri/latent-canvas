@@ -8,8 +8,19 @@ const log = [];
 const collectors = new Set();
 const listeners = new Set();
 
+/**
+ * An error as text for the agent: its message, then its stack. Chrome's stack starts with the
+ * message; Firefox's and Safari's don't, so the stack alone would hide what went wrong.
+ */
+export function errorText(e) {
+  if (!e || typeof e !== 'object') return String(e);
+  const head = e.message ? `${e.name || 'Error'}: ${e.message}` : String(e);
+  if (!e.stack) return head;
+  return e.message && e.stack.includes(e.message) ? e.stack : `${head}\n${e.stack}`;
+}
+
 export function formatValue(v, depth = 0) {
-  if (v instanceof Error) return v.stack || `${v.name}: ${v.message}`;
+  if (v instanceof Error) return errorText(v);
   if (typeof v === 'string') return v;
   if (typeof v === 'function') return `[Function ${v.name || 'anonymous'}]`;
   if (typeof Element !== 'undefined' && v instanceof Element) {

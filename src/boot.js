@@ -4,7 +4,7 @@
 // bootstrap, so it works even when every live module is broken) offers to revert.
 import { h, render, Component } from 'preact';
 import liveBundle from 'virtual:live-bundle';
-import { installErrorCapture, reportError, record } from './errors.js';
+import { installErrorCapture, reportError, record, errorText } from './errors.js';
 import { Loader } from './loader.js';
 import { VFS, formatErrors } from './vfs.js';
 import { createRuntime } from './runtime.js';
@@ -51,7 +51,7 @@ class RootBoundary extends Component {
     this.setState({ err });
   }
   render({ children }, { err }) {
-    return err ? h(Recovery, { title: 'The live app crashed while rendering', detail: err.stack || String(err) }) : children;
+    return err ? h(Recovery, { title: 'The live app crashed while rendering', detail: errorText(err) }) : children;
   }
 }
 

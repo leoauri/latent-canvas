@@ -13,7 +13,7 @@
 // Old instances are never disposed before finalize, so rollback needs no re-evaluation.
 import { transform } from 'sucrase';
 import { init as initLexer, parse as parseImports } from 'es-module-lexer';
-import { reportError } from './errors.js';
+import { reportError, errorText } from './errors.js';
 
 const RESOLVE_EXTS = ['', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.json', '.css'];
 const CODE_RE = /\.(jsx?|tsx?|mjs)$/i;
@@ -165,7 +165,7 @@ export class Loader {
 
     const addError = (path, err) => {
       failed.add(path);
-      errors.push({ path, message: this.mapUrls(err?.stack || err?.message || String(err)) });
+      errors.push({ path, message: this.mapUrls(errorText(err)) });
     };
 
     // 1. Walk everything reachable from the entry, the changed modules and the

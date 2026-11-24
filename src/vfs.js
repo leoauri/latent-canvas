@@ -32,7 +32,7 @@
 // ends with keep (commit what is running) or discard (swap the committed instances back).
 // onTrial(fn) listeners hear { phase: 'start'|'keep'|'discard', overlayId }.
 import { createStore, get, set, del, entries, clear } from 'idb-keyval';
-import { collectErrors, record, reportError } from './errors.js';
+import { collectErrors, record, reportError, errorText } from './errors.js';
 import { normalizePath } from './loader.js';
 import { merge3, hashSource, hasConflictMarkers, lineDiff } from './merge.js';
 
@@ -1067,7 +1067,7 @@ export class VFS {
       try {
         await this.runCheck(check);
       } catch (err) {
-        checkErrors.push({ path: '(check)', message: this.loader.mapUrls(err?.stack || String(err)) });
+        checkErrors.push({ path: '(check)', message: this.loader.mapUrls(errorText(err)) });
       }
     }
     if (observeMs > 0) await sleep(observeMs);

@@ -1,7 +1,7 @@
 // `@live/runtime`: what the bootstrap offers to live modules.
 //   import { vfs, loader, persist, env, logs, chatLog } from '@live/runtime';
 import { signal } from '@preact/signals';
-import { readLog, onLog, record, reportError, formatValue } from './errors.js';
+import { readLog, onLog, record, reportError, formatValue, errorText } from './errors.js';
 import { VFS } from './vfs.js';
 
 const persisted = (globalThis.__redaw_persist ||= new Map());
@@ -72,9 +72,9 @@ export function createRuntime({ vfs, loader, env }) {
     vendor: globalThis.__redaw.vendor,
   });
 
-  /** Run JS in page context with top-level await; `return` produces the result. */
-  async function runScript(code) {
-    const scope = scriptScope();
+  /** Run JS in page context with top-level await; `return` produces the result. `extra`: more names in scope. */
+  async function runScript(code, extra = {}) {
+    const scope = { ...scriptScope(), ...extra };
     const fn = VFS.compileScript(code, Object.keys(scope));
     return fn(...Object.values(scope));
   }
@@ -88,7 +88,7 @@ export function createRuntime({ vfs, loader, env }) {
     chatArchive,
     vfsVersion, // read .value inside a component to re-render on VFS changes
     runScript,
-    logs: { read: readLog, on: onLog, record, reportError, format: formatValue },
+    logs: { read: readLog, on: onLog, record, reportError, format: formatValue, errorText },
   };
   return runtime;
 }
