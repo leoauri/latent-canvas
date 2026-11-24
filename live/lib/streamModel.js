@@ -153,7 +153,9 @@ export async function createStreamModel({ files, sampleRate }) {
 
   let first;
   try {
-    await context.ready(); // the warm-up runs on the Workers
+    // The warm-up runs on the Workers. Each Worker downloads ONNX Runtime's wasm (12.8 MB) before
+    // its loop, so on a slow link (four downloads at once) starting them takes well over 10 s.
+    await context.ready(60000);
     first = prepareHandler({ budget: 'measured', warmup: 'until_stable' });
   } catch (e) {
     for (const h of handlers) h.destroy();
