@@ -43,13 +43,22 @@ async function storeData(c) {
   clips.value = [...clips.value]; // now shareable: let the binding write it
 }
 
-async function loadData(hash, name) {
-  if (decoded.value.has(hash)) return decoded.value.get(hash);
-  const blob = (await blobs.get(hash)) ?? (await blobs.ensure(hash, { name }));
-  const data = new Float32Array(await blob.arrayBuffer());
-  hashes.value.set(data, hash);
-  decoded.value.set(hash, data);
-  return data;
+// Concurrent loads of one blob (clips sharing vectors, re-reads while loading) share one read.
+const loading = new Map(); // blob hash -> Promise<Float32Array>
+function loadData(hash, name) {
+  if (decoded.value.has(hash)) return Promise.resolve(decoded.value.get(hash));
+  let p = loading.get(hash);
+  if (!p) {
+    p = (async () => {
+      const blob = (await blobs.get(hash)) ?? (await blobs.ensure(hash, { name }));
+      const data = new Float32Array(await blob.arrayBuffer());
+      hashes.value.set(data, hash);
+      decoded.value.set(hash, data);
+      return data;
+    })().finally(() => loading.delete(hash));
+    loading.set(hash, p);
+  }
+  return p;
 }
 
 const unbind = [

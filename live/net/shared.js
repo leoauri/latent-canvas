@@ -107,6 +107,7 @@ export function shared(key, sig, opts = {}) {
     offSig();
     offDoc();
     b.offChange?.();
+    clearTimeout(b.rereadTimer);
     if (bindings.get(key) === b) bindings.delete(key);
   };
   return b.unbind;
@@ -233,7 +234,9 @@ function fromDoc(b, d) {
     return setSignal(b, out);
   }
   const seen = new Map(enc.map((e) => [e.id, e]));
-  if (b.seen && b.seen.size === seen.size && same([...b.seen.values()], enc)) return;
+  const reread = b.reread;
+  b.reread = false;
+  if (!reread && b.seen && b.seen.size === seen.size && same([...b.seen.values()], enc)) return;
   const prevList = b.sig.value ?? [];
   const prevById = new Map(prevList.map((e) => [e.id, e]));
   const prevSeen = b.seen;
@@ -252,14 +255,24 @@ function fromDoc(b, d) {
     const local = { ...b.locals?.get(String(e.id)) };
     if (prev) for (const f of b.local) if (prev[f] !== undefined) local[f] = prev[f];
     const json = JSON.stringify(e);
-    const cached = b.decoded.get(e.id);
-    let v = cached?.json === json ? cached.value : b.decode(e, prev);
+    const cached = b.decoded.get(e.id)?.json === json ? b.decoded.get(e.id) : null;
+    // A decode already in flight for this version is waited for, not started again: every re-read
+    // while N entities load would otherwise start N more (each reading and copying a whole blob).
+    let v = cached ? (cached.pending ?? cached.value) : b.decode(e, prev);
     if (v?.then) {
       // Not available yet (e.g. a blob still downloading): leave it out, re-read once it is.
-      v.then((value) => {
-        b.decoded.set(e.id, { json, value });
-        if (value) refresh(b);
-      }, (err) => console.warn(`shared: decoding ${b.key} ${e.id} failed`, err));
+      if (!cached) {
+        const entry = { json, pending: v };
+        b.decoded.set(e.id, entry);
+        v.then((value) => {
+          if (b.decoded.get(e.id) !== entry) return; // superseded by a newer version
+          b.decoded.set(e.id, { json, value });
+          if (value) rereadSoon(b);
+        }, (err) => {
+          if (b.decoded.get(e.id) === entry) b.decoded.delete(e.id); // retried on the next read
+          console.warn(`shared: decoding ${b.key} ${e.id} failed`, err);
+        });
+      }
       if (prev) {
         // Keep showing the old version meanwhile; `seen` records it, so local edits of it diff right.
         out.push(prev);
@@ -319,11 +332,27 @@ function checkDrift(b) {
   queueMicrotask(() => refresh(b));
 }
 
-/** Re-reads a binding from its document (after an async decode finished). */
+/** Re-reads a binding from its document from scratch (after drift). */
 function refresh(b) {
   if (!b.attachedTo) return;
   b.seen = null;
   fromDoc(b, b.attachedTo.doc());
+}
+
+/**
+ * Re-reads a binding once async decodes have finished, batched: loading a session resolves many
+ * decodes in a burst, and each re-read walks the whole list and sets the signal (re-rendering
+ * everything that shows it). Unchanged entities keep their objects (`seen` is kept).
+ */
+const REREAD_MS = 50;
+function rereadSoon(b) {
+  if (b.rereadTimer) return;
+  b.rereadTimer = setTimeout(() => {
+    b.rereadTimer = 0;
+    if (!b.attachedTo) return;
+    b.reread = true;
+    fromDoc(b, b.attachedTo.doc());
+  }, REREAD_MS);
 }
 
 function setSignal(b, v) {
