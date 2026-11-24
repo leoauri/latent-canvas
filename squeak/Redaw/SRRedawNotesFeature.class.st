@@ -103,24 +103,46 @@ SRRedawNotesFeature >> pageBounds [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 18:53'
 }
 SRRedawNotesFeature >> place: aNote color: textColor pin: pinColor level: aHeight [
-	| m h p |
+	| m h p lines size top |
 	m := view metersPerPixel.
 	h := view blockHeight.
 	p := view localPointFor: (self anchorOf: aNote).
+	lines := self linesOf: aNote.
+	size := self fontPixels * m.
+	top := (p x + (6 * m)) @ p y @ (aHeight + (2 * h)).
 	self addChild: (SRCube new
 		color: pinColor;
 		ignoreCollision: true;
 		scale: (3 * m) @ (3 * m) @ (2 * h);
 		translation: p x @ p y @ (aHeight + h);
 		yourself).
+	self addChild: (self plateFor: lines at: top size: size color: pinColor).
 	self
-		addLines: (self linesOf: aNote)
-		at: (p x + (6 * m)) @ p y @ (aHeight + (2 * h))
-		height: self fontPixels * m
+		addLines: lines
+		at: top
+		height: size
 		color: textColor
+]
+
+{
+	#category : #layout,
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 18:53'
+}
+SRRedawNotesFeature >> plateFor: lines at: aVector3 size: fontSize color: aColor [
+	"Raylib glyph quads write depth: without one backing per note, the translucent sheets behind are cut out character by character."
+	| pad width height |
+	pad := fontSize * 0.5.
+	width := ((lines inject: 0 into: [:max :each | max max: each size]) * fontSize * 0.65) + (2 * pad).
+	height := (((lines size - 1) max: 0) * fontSize * self lineSpacing) + fontSize + (2 * pad).
+	^ SRCube new
+		color: ((aColor mixed: 0.15 with: Color black) alpha: 0.85);
+		ignoreCollision: true;
+		scale: width @ height @ 1mm;
+		translation: (aVector3 x - pad + (width / 2)) @ (aVector3 y + pad - (height / 2)) @ (aVector3 z - 2mm);
+		yourself
 ]
 
 {

@@ -170,7 +170,7 @@ SRRedawStackFeature >> buildFlow [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 18:21'
 }
 SRRedawStackFeature >> buildSheets [
 	| extent |
@@ -179,7 +179,7 @@ SRRedawStackFeature >> buildSheets [
 		c := self colorOf: layer.
 		z := i = self latentIndex ifTrue: [5mm] ifFalse: [self levelAt: i].
 		i = self latentIndex ifFalse: [
-			sheets at: 0 @ 0 @ z extent: extent x @ extent y @ 3mm color: (c alpha: ((self isMasked: layer) ifTrue: [0.03] ifFalse: [0.08]))].
+			sheets at: 0 @ 0 @ z extent: extent x @ extent y @ 3mm color: (c alpha: ((self isMasked: layer) ifTrue: [0.03] ifFalse: [0.02]))].
 		(self isMasked: layer) ifTrue: [
 			(self masksOf: layer) do: [:m | (self pageRectOf: m) ifNotNil: [:r |
 				self add: sheets page: r z: z thickness: 8mm color: (c alpha: 0.3)]]].
