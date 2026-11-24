@@ -2,7 +2,7 @@
 // common str_replace text editor; its writes go to the chat session's own VFS overlay
 // ('chat:<session id>', or the one the session was started on) and only run after apply_changes.
 import { vfs, loader, logs, runScript } from '@live/runtime';
-import { extensionTool, extensionToolDefs } from './extensions.js';
+import { extensionTool, extensionToolDefs, beforeApply } from './extensions.js';
 import { overlayIdOf, sessionTitle, saveSession, pushMessage } from './store.js';
 import { whereNow } from './whereabouts.js';
 import { requestTrial } from '../net/trials.js';
@@ -247,7 +247,7 @@ export async function runTool(block, ctx = {}) {
         fs.remove(livePath(input.path));
         return ok(id, `Buffered deletion of ${livePath(input.path)}. Call apply_changes to run it.`);
       case 'apply_changes':
-        return applyChanges(id, input, fs);
+        return applyChanges(id, input, fs, ctx.session);
       case 'discard_changes':
         return ok(id, `Discarded buffered changes: ${fs.discard(input.paths?.map(livePath)).join(', ') || '(none)'}`);
       case 'try_changes':
@@ -421,7 +421,9 @@ function badFollows(id, input) {
   return fail(id, `follows: no published change has id ${JSON.stringify(input.follows)}. See list_published, or omit follows.`);
 }
 
-async function applyChanges(id, input, fs) {
+async function applyChanges(id, input, fs, session) {
+  // E.g. auto-merge waits here until the user pauses.
+  await beforeApply(session?.scope?.value, { session, signal: session?.controller.value?.signal });
   const r = await fs.apply({ ...txOpts(input), label: input.label, intent: input.intent, markConflicts: true });
   return afterCommit(id, r, input, fs);
 }

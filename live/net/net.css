@@ -45,6 +45,12 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
 }
 .net-pill:hover, .net-pill-on { background: var(--input-bg); }
+.net-pill-split { cursor: default; max-width: none; }
+.net-pill-part { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.net-pill-sep { align-self: stretch; width: 1px; margin: -2px 4px; background: var(--border); opacity: 0.6; }
+.net-dot-pulse { animation: net-dot-pulse 1s ease-in-out infinite; }
+@keyframes net-dot-pulse { 50% { opacity: 0.35; } }
+.net-automerge-note { font-size: 12px; }
 .net-pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Pill group (bottom right): Assets, Changes, Session. */

@@ -9,6 +9,7 @@
 // and the two conflict (vfs layers), to resolve by taking the base, keeping the session's version,
 // or having an agent merge them.
 // At the bottom, folded: changes the base already has (redundant.js), yours and peers'.
+// The pill is split: "Changes" opens the window, "Auto-merge" (with its lamp) switches automerge.js on and off.
 import { useState, useEffect } from 'preact/hooks';
 import { signal, computed } from '@preact/signals';
 import { vfs, vfsVersion, loader, persist } from '@live/runtime';
@@ -18,6 +19,7 @@ import * as changes from './changes.js';
 import * as session from './session.js';
 import * as bundles from './bundles.js';
 import * as redundant from './redundant.js';
+import * as automerge from './automerge.js';
 import { showGuide, dismissGuide, activeGuide } from '../ui/guide/guide.js';
 import './net.css';
 
@@ -302,6 +304,7 @@ function ChangeItem({ c, trial }) {
       )}
       {c.intent && <p class="net-intent">{c.intent}</p>}
       <PartialNote c={c} />
+      <AutoMergeNote c={c} />
       <GuideBlock guide={changes.guideOf(c.id)} source={`change:${c.id}`} live={applied} hint={applied ? null : 'Try it to see this in place.'} />
       <details class="net-codefold">
         <summary>
@@ -369,6 +372,28 @@ function ChangeItem({ c, trial }) {
       {msg?.error && <p class="net-error">{msg.error}</p>}
       {msg?.text && <p class="net-ok">{msg.text}</p>}
     </li>
+  );
+}
+
+const JOB_TEXT = { reviewing: 'an agent is reviewing it', waiting: 'reviewed: applies when you pause', merged: 'merged', held: 'held back', failed: 'failed' };
+
+/** What auto-merge did or is doing with a change, with its chat. */
+function AutoMergeNote({ c }) {
+  const j = automerge.jobOf(c.id);
+  if (!j) return null;
+  const open = async () => (await import('../chat/store.js')).openSession(j.sessionId);
+  const bad = j.state === 'held' || j.state === 'failed';
+  const busy = automerge.busyReason();
+  return (
+    <div class="net-row net-automerge-note">
+      <span class={`net-grow ${bad ? 'net-error' : 'net-muted'}`} title={j.note || undefined}>
+        Auto-merge: {JOB_TEXT[j.state] ?? j.state}
+        {j.state === 'waiting' && busy ? ` (${busy})` : ''}
+        {bad && j.note ? `: ${j.note.replace(/^held back:\s*/i, '')}` : ''}
+      </span>
+      {j.sessionId && <button class="net-small" onClick={open} title="Open the agent's chat">Chat</button>}
+      {bad && <button class="net-small" onClick={() => automerge.retry(c.id)} title="Let auto-merge try it again">Retry</button>}
+    </div>
   );
 }
 
@@ -716,6 +741,17 @@ const offArrivals = changes.arrivals.subscribe((list) => {
   bubbleTimer = setTimeout(() => (bubble.value = []), BUBBLE_MS);
 });
 
+let outcomesUpTo = automerge.outcomes.peek().length;
+const offOutcomes = automerge.outcomes.subscribe((list) => {
+  if (list.length < outcomesUpTo) outcomesUpTo = 0;
+  const news = list.slice(outcomesUpTo).map((o) => ({ ...o, id: `am:${o.id}:${o.state}`, outcome: o.state }));
+  outcomesUpTo = list.length;
+  if (!news.length) return;
+  bubble.value = [...bubble.peek(), ...news].slice(-6);
+  clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(() => (bubble.value = []), BUBBLE_MS);
+});
+
 function Bubble({ onOpen }) {
   const lines = bubble.value;
   if (!lines.length) return null;
@@ -723,7 +759,16 @@ function Bubble({ onOpen }) {
     <div class="net-bubble" role="status" onClick={onOpen}>
       {lines.map((c) => (
         <div key={c.id} class="net-bubble-line">
-          <span class="net-bubble-who">{c.author}</span> published <strong>“{c.name}”</strong>
+          {c.outcome ? (
+            <>
+              {c.outcome === 'merged' ? 'Merged' : c.outcome === 'held' ? 'Held back' : 'Could not merge'} <strong>“{c.name}”</strong> by{' '}
+              <span class="net-bubble-who">{c.author}</span>
+            </>
+          ) : (
+            <>
+              <span class="net-bubble-who">{c.author}</span> published <strong>“{c.name}”</strong>
+            </>
+          )}
         </div>
       ))}
     </div>
@@ -740,11 +785,19 @@ export function ChangesPill() {
     bubble.value = [];
     if (!findWindow('changes')) toggleWindow('changes', {}, { rect: { w: 420, h: 620 } });
   };
+  const am = automerge.autoMergeOn.value;
+  const cur = automerge.current.value;
+  const amTitle = !am
+    ? 'Auto-merge off: click to have an agent review and merge peers\' changes in the background'
+    : cur
+      ? `Auto-merge on: ${cur.job.state === 'waiting' ? `“${cur.change.name}” applies when you pause` : `reviewing “${cur.change.name}” by ${cur.change.author}`}. Click to turn off`
+      : 'Auto-merge on: peers\' changes are reviewed by an agent and merged when you pause. Click to turn off';
   return (
     <span class="net-bubble-anchor">
     <Bubble onOpen={openWin} />
+    <div class={`net-pill net-pill-split${open ? ' net-pill-on' : ''}`}>
     <button
-      class={`net-pill${open ? ' net-pill-on' : ''}`}
+      class="net-pill-part"
       onClick={() => toggleWindow('changes', {}, { rect: { w: 420, h: 620 } })}
       title={
         n
@@ -755,6 +808,12 @@ export function ChangesPill() {
       Changes
       {n > 0 && <span class="net-badge">{n}</span>}
     </button>
+    <span class="net-pill-sep" />
+    <button class="net-pill-part" onClick={automerge.toggleAutoMerge} title={amTitle} aria-pressed={am}>
+      Auto-merge
+      <span class={`net-dot ${!am ? 'net-idle' : cur ? 'net-connecting net-dot-pulse' : 'net-open'}`} />
+    </button>
+    </div>
     </span>
   );
 }
@@ -762,6 +821,7 @@ export function ChangesPill() {
 export function dispose() {
   unregister();
   offArrivals();
+  offOutcomes();
   offSeen();
   clearTimeout(bubbleTimer);
 }
