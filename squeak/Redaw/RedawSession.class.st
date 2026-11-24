@@ -21,7 +21,8 @@ Class {
 		'version',
 		'updated',
 		'process',
-		'lastError'
+		'lastError',
+		'encoder'
 	],
 	#category : #'Redaw-Peer',
 	#'squeak_changestamp' : '<historical>'
@@ -53,6 +54,31 @@ RedawSession class >> on: aRedawPeer [
 ]
 
 {
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+}
+RedawSession >> addClipFromSound: aSound t: seconds [
+	"Below the lowest clip."
+	^ self addClipFromSound: aSound t: seconds y: self yBelowClips
+]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawSession >> addClipFromSound: aSound t: seconds y: worldY [
+	"Encode aSound with the session's encoder and add it to the timeline as a clip at seconds, worldY (px). Waits (yielding) for the encoding. Answer the clip's id; its latents are served from this session's peer, so keep it open until the others have them."
+	| enc |
+	enc := self encoder.
+	^ peer
+		addClipLatents: (enc latentsOfSound: aSound)
+		dim: enc channels
+		rate: enc frameRate
+		t: seconds
+		y: worldY
+]
+
+{
 	#category : #accessing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:47'
 }
@@ -71,11 +97,12 @@ RedawSession >> clips [
 
 {
 	#category : #lifecycle,
-	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:47'
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
 }
 RedawSession >> close [
 	"Stop following and leave the room."
 	self stop.
+	encoder ifNotNil: [encoder close. encoder := nil].
 	peer close
 ]
 
@@ -86,6 +113,51 @@ RedawSession >> close [
 RedawSession >> document [
 	"The whole shared document: { meta, state, code } (live)."
 	^ document
+]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+}
+RedawSession >> encoder [
+	"The session's encoder (see #encoderLayer), loaded once; waits (yielding) for its files to arrive from the room."
+	| deadline |
+	deadline := Time millisecondClockValue + 60000.
+	[self encoderIfReady] whileNil: [
+		Time millisecondClockValue > deadline ifTrue: [
+			^ self error: (self encoderLayer ifNil: ['no encoder layer in the session'] ifNotNil: ['the encoder''s files did not arrive from the room'])].
+		(Delay forMilliseconds: 100) wait].
+	^ encoder
+]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+}
+RedawSession >> encoderIfReady [
+	"The session's encoder (see #encoderLayer) if it is loaded; else start fetching its files from the room and answer nil. Never waits."
+	| layer |
+	(encoder notNil and: [encoder isOpen]) ifTrue: [^ encoder].
+	layer := self encoderLayer ifNil: [^ nil].
+	^ encoder := RedawEncoder forLayer: layer peer: peer
+]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawSession >> encoderLayer [
+	"The first operator layer whose model encodes audio, or nil. Its config is fetched from the room if it is not here: answers nil until it is."
+	^ layers detect: [:each | | hashes config |
+		(each at: 'type' ifAbsent: [nil]) = 'operator' and: [
+			hashes := (each at: 'model' ifAbsent: [JsonObject new]) at: 'hashes' ifAbsent: [JsonObject new].
+			config := hashes keys detect: [:name | name endsWith: '.anira.json'] ifNone: [nil].
+			config notNil and: [
+				peer fetchBlob: (hashes at: config).
+				(peer blobAt: (hashes at: config))
+					ifNil: [false]
+					ifNotNil: [:bytes | RedawEncoder isEncoderConfig: bytes asString]]]]
+		ifNone: [nil]
 ]
 
 {
@@ -287,4 +359,13 @@ RedawSession >> updateLayers: aCollectionJson [
 RedawSession >> updated [
 	"Set once a refresh has merged the document, so a reader polling it never sees a half-merged one."
 	^ updated
+]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+}
+RedawSession >> yBelowClips [
+	"World y for a new clip: below the lowest clip."
+	^ clips inject: 0 into: [:max :c | max max: (c y ifNil: [0]) + 30]
 ]

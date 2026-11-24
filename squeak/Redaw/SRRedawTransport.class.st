@@ -7,7 +7,8 @@ Class {
 	#instVars : [
 		'playButton',
 		'display',
-		'canvas'
+		'canvas',
+		'recButton'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -23,9 +24,17 @@ SRRedawTransport class >> for: aSessionView [
 
 {
 	#category : #initialization,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:58'
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
 }
 SRRedawTransport >> addButton: aString at: x do: aBlock [
+	^ self addButton: aString at: x y: -1.5cm do: aBlock
+]
+
+{
+	#category : #initialization,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+}
+SRRedawTransport >> addButton: aString at: x y: y do: aBlock [
 	"The button passes the trigger on to me, I find the button under the hit point."
 	| button |
 	button := SRActionSign new
@@ -35,7 +44,7 @@ SRRedawTransport >> addButton: aString at: x do: aBlock [
 		action: aBlock;
 		grabTarget: self;
 		cursorMode: SRCursorMode pass;
-		translation: x @ -3cm @ (self size z / 2 + 0.75cm);
+		translation: x @ y @ (self size z / 2 + 0.75cm);
 		yourself.
 	self addChild: button.
 	^ button
@@ -82,7 +91,7 @@ SRRedawTransport >> collisionGeometry [
 
 {
 	#category : #initialization,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
 }
 SRRedawTransport >> initialize [
 	super initialize.
@@ -103,7 +112,9 @@ SRRedawTransport >> initialize [
 	self addChild: display.
 	playButton := self addButton: 'Play' at: -9.5cm do: [canvas ifNotNil: [canvas togglePlay]].
 	self addButton: 'Tour >' at: 0 do: [canvas ifNotNil: [canvas nextTourStop]].
-	self addButton: 'Canvas' at: 9.5cm do: [canvas ifNotNil: [canvas layOnFloor]]
+	self addButton: 'Canvas' at: 9.5cm do: [canvas ifNotNil: [canvas layOnFloor]].
+	recButton := self addButton: 'Rec' at: -9.5cm y: -7cm do: [canvas ifNotNil: [canvas toggleRecording]].
+	recButton slabColor: (Color r: 0.6 g: 0.12 b: 0.12)
 ]
 
 {
@@ -167,24 +178,26 @@ SRRedawTransport >> setCanvas: aSessionView [
 
 {
 	#category : #accessing,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:42'
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
 }
 SRRedawTransport >> size [
-	^ 30cm @ 15cm @ 3cm
+	^ 30cm @ 20cm @ 3cm
 ]
 
 {
 	#category : #stepping,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:42'
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
 }
 SRRedawTransport >> step: deltaTime [
 	"Runs in the world process: an error here must not reach a debugger."
-	[| playhead |
+	[| playhead recording |
 	 playhead := self playhead.
+	 recording := canvas notNil and: [canvas isRecording].
 	 playButton label: ((playhead notNil and: [playhead isPlaying]) ifTrue: ['Stop'] ifFalse: ['Play']).
+	 recButton ifNotNil: [recButton label: (recording ifTrue: ['Stop rec'] ifFalse: ['Rec'])].
 	 display text: (playhead
 		ifNil: ['Redaw: no canvas']
-		ifNotNil: ['Redaw  ', (self clock: playhead time), (playhead isPlaying ifTrue: ['  playing'] ifFalse: ['  cue'])])]
+		ifNotNil: ['Redaw  ', (self clock: playhead time), (recording ifTrue: ['  REC'] ifFalse: [playhead isPlaying ifTrue: ['  playing'] ifFalse: ['  cue']])])]
 			on: Error do: [:e | display text: 'Redaw: ', e messageText]
 ]
 

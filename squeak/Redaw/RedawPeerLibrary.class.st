@@ -49,6 +49,15 @@ RedawPeerLibrary >> blobFetch: aPeer hash: hashString [
 
 {
 	#category : #primitives,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawPeerLibrary >> blobPut: aPeer bytes: aByteArray length: anInteger name: nameString type: mimeString into: aBuffer capacity: capacity [
+	<cdecl: int64_t 'rp_blob_put' (void* void* int64_t char* char* void* int64_t)>
+	^ self externalCallFailed
+]
+
+{
+	#category : #primitives,
 	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:46'
 }
 RedawPeerLibrary >> blobStatus: aPeer hash: hashString into: aByteArray capacity: anInteger [
@@ -62,6 +71,15 @@ RedawPeerLibrary >> blobStatus: aPeer hash: hashString into: aByteArray capacity
 }
 RedawPeerLibrary >> blobWait: aPeer hash: hashString timeout: milliseconds [
 	<cdecl: int64_t 'rp_blob_wait' (void* char* uint32_t)>
+	^ self externalCallFailed
+]
+
+{
+	#category : #primitives,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawPeerLibrary >> clipAdd: aPeer latents: aByteArray count: floats dim: dim rate: rate t: seconds y: y into: aBuffer capacity: capacity [
+	<cdecl: int64_t 'rp_clip_add' (void* void* int64_t int32_t double double double void* int64_t)>
 	^ self externalCallFailed
 ]
 

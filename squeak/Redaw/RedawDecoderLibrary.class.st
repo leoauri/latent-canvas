@@ -83,3 +83,30 @@ RedawDecoderLibrary >> decoderSubmit: aDecoder latents: aByteArray count: floats
 	<cdecl: int64_t 'rp_decoder_submit' (void* void* int64_t double)>
 	^ self externalCallFailed
 ]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawDecoderLibrary >> encoderLatents: anEncoder job: anInteger into: aByteArrayOrNil capacity: floats [
+	<cdecl: int64_t 'rp_encoder_latents' (void* int64_t void* int64_t)>
+	^ self externalCallFailed
+]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawDecoderLibrary >> encoderOpen: onnxBytes length: anInteger config: configString sampleRate: rate threads: threads [
+	<cdecl: void* 'rp_encoder_open' (void* int64_t char* int32_t int32_t)>
+	^ self externalCallFailed
+]
+
+{
+	#category : #encoding,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawDecoderLibrary >> encoderSubmit: anEncoder pcm16: samples count: anInteger rate: aFloat [
+	<cdecl: int64_t 'rp_encoder_submit_pcm16' (void* void* int64_t double)>
+	^ self externalCallFailed
+]

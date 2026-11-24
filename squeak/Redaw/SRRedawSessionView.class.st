@@ -205,14 +205,18 @@ SRRedawSessionView class >> xrMenuOtherLink: aMenu [
 ]
 
 {
-	#category : #'app menu',
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
+	#category : #menus,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
 }
 SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 	"Changes to my children wait for the next frame: menu actions run inside the input traversal."
 	aMenu
 		addItem: [self isPlaying ifTrue: ['Stop'] ifFalse: ['Play']]
 		action: [self togglePlay]
+		keepOpen: true.
+	aMenu
+		addItem: [self isRecording ifTrue: ['Stop recording'] ifFalse: ['Record']]
+		action: [self toggleRecording]
 		keepOpen: true.
 	aMenu addItem: 'Next tour stop' action: [self nextTourStop] keepOpen: true.
 	aMenu addItem: 'Controls' action: [self openTransportBeside: aMenu] keepOpen: false.
@@ -314,11 +318,11 @@ SRRedawSessionView >> computePageBounds [
 ]
 
 {
-	#category : #features,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+	#category : #accessing,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
 }
 SRRedawSessionView >> defaultFeatures [
-	^ {SRRedawClipsFeature. SRRedawNotesFeature. SRRedawLayersFeature. SRRedawStackFeature. SRRedawCodeChangesFeature. SRRedawPlayheadFeature. SRRedawAudioFeature}
+	^ {SRRedawClipsFeature. SRRedawNotesFeature. SRRedawLayersFeature. SRRedawStackFeature. SRRedawCodeChangesFeature. SRRedawPlayheadFeature. SRRedawAudioFeature. SRRedawRecordFeature}
 ]
 
 {
@@ -423,6 +427,14 @@ SRRedawSessionView >> isLaidOut [
 }
 SRRedawSessionView >> isPlaying [
 	^ (self featureOf: SRRedawPlayheadFeature) ifNil: [false] ifNotNil: [:playhead | playhead isPlaying]
+]
+
+{
+	#category : #playing,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+}
+SRRedawSessionView >> isRecording [
+	^ (self featureOf: SRRedawRecordFeature) ifNil: [false] ifNotNil: [:recorder | recorder isRecording]
 ]
 
 {
@@ -620,6 +632,16 @@ SRRedawSessionView >> toggle: aFeatureClass [
 }
 SRRedawSessionView >> togglePlay [
 	(self featureOf: SRRedawPlayheadFeature) ifNotNil: [:playhead | playhead toggle]
+]
+
+{
+	#category : #playing,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+}
+SRRedawSessionView >> toggleRecording [
+	"Changes to my children wait for the next frame: this runs inside the input traversal."
+	self world ifNotNil: [:w | w addDeferredFrameMessage: [
+		(self enable: SRRedawRecordFeature) toggle]]
 ]
 
 {

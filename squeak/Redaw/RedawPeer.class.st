@@ -96,6 +96,22 @@ RedawPeer class >> startUp: resuming [
 	resume ifNotNil: [resume do: [:s | s start]]
 ]
 
+{
+	#category : #clips,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawPeer >> addClipLatents: aByteArray dim: anInteger rate: framesPerSecond t: seconds y: worldY [
+	"Add a clip to the timeline (on top), as the page's recorder does: its latents (little-endian float32, frame-major, anInteger per frame) are served from this peer, its metadata goes into the document, in one change. Answer the clip's id. Keep the peer open until the others have fetched the latents."
+	| buffer size |
+	self checkOpen.
+	buffer := ByteArray new: 64.
+	size := library clipAdd: handle latents: aByteArray count: aByteArray size // 4 dim: anInteger
+		rate: framesPerSecond asFloat t: seconds asFloat y: worldY asFloat
+		into: buffer capacity: buffer size.
+	size < 0 ifTrue: [^ self error: 'redaw-peer: ', (library lastError ifNil: ['cannot add the clip'])].
+	^ (buffer copyFrom: 1 to: size) asString
+]
+
 { #category : #accessing }
 RedawPeer >> at: pathString [
 	"The value at pathString parsed from JSON (JsonObject, Array, String, Number, Boolean), or nil."
@@ -240,6 +256,23 @@ RedawPeer >> link [
 }
 RedawPeer >> printOn: aStream [
 	aStream nextPutAll: 'a RedawPeer('; nextPutAll: (self isOpen ifTrue: ['open'] ifFalse: ['closed']); nextPut: $)
+]
+
+{
+	#category : #blobs,
+	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 12:30'
+}
+RedawPeer >> putBlob: aByteArray name: nameStringOrNil type: mimeStringOrNil [
+	"Add bytes to this peer's blob store, served to the others when they ask. Answer the blob's id ('sha256-...'). The blob lives as long as this peer stays open."
+	| buffer size |
+	self checkOpen.
+	buffer := ByteArray new: 80.
+	size := library blobPut: handle bytes: aByteArray length: aByteArray size
+		name: (nameStringOrNil ifNotNil: [:s | s squeakToUtf8])
+		type: (mimeStringOrNil ifNotNil: [:s | s squeakToUtf8])
+		into: buffer capacity: buffer size.
+	size < 0 ifTrue: [^ self error: 'redaw-peer: ', (library lastError ifNil: ['cannot store the blob'])].
+	^ (buffer copyFrom: 1 to: size) asString
 ]
 
 { #category : #accessing }
