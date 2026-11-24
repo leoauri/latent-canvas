@@ -4,7 +4,7 @@
 // (old module instance) and the re-rendered UI (new instance) share them. Closing a window never
 // touches its session. Transcripts live in IndexedDB (lib/db.js); UI prefs stay in localStorage.
 import { signal, computed } from '@preact/signals';
-import { persist, chatLog, vfs } from '@live/runtime';
+import { persist, chatLog, chatArchive, vfs } from '@live/runtime';
 import * as db from '../lib/db.js';
 import { windows as allWindows, firstRun, openWindow, updateWindow, findWindow, getWindow, showWindow, closeWindow } from '../ui/windows.js';
 
@@ -241,7 +241,10 @@ function persistSession(s) {
     preview: messages.find((m) => m.role === 'user' && typeof m.content === 'string')?.content.slice(0, 120) ?? '',
   };
   chat.index.value = [entry, ...chat.index.value.filter((c) => c.id !== id)];
-  return Promise.all([db.put('chats', id, { id, scope, messages, ...extra, published: s.published?.value ?? [], approval: s.approval?.value ?? null, error: s.error?.peek() ?? null }), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
+  const record = { id, scope, messages, ...extra, published: s.published?.value ?? [], approval: s.approval?.value ?? null, error: s.error?.peek() ?? null };
+  // A copy on disk (.redaw/chats/<id>.json, dev only), so transcripts survive cleared browser storage.
+  chatArchive?.(id, { ...record, index: entry });
+  return Promise.all([db.put('chats', id, record), db.put('kv', 'chat.index', chat.index.value)]).catch((e) =>
     console.warn('chat: saving failed', e),
   );
 }
@@ -249,14 +252,14 @@ function persistSession(s) {
 export function pushMessage(session, message) {
   session.hydrated = true;
   session.messages.value = [...session.messages.value, message];
-  logTurn(message);
+  logTurn(message, session.id);
 }
 
 // Typed prompts arrive as string content; arrays from the user role are tool results.
-function logTurn({ role, content }) {
-  if (role === 'user' && typeof content === 'string') chatLog('human', content);
+function logTurn({ role, content }, chatId) {
+  if (role === 'user' && typeof content === 'string') chatLog('human', content, { chat: chatId });
   else if (role === 'assistant' && Array.isArray(content))
-    chatLog('agent', content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'));
+    chatLog('agent', content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'), { chat: chatId });
 }
 
 // ---- windows -------------------------------------------------------------------------------

@@ -32,6 +32,16 @@ keys that are not strings. With several tabs open, the first one to answer wins;
 `x-redaw-page` names the tab that did. A chat that ended in an error (bad key, rate limit, …) keeps
 it as `error`, in its record and in `chat.index`.
 
+IndexedDB lives only in the browser, so clearing site data loses it. In dev, every chat save is
+also mirrored to `.redaw/chats/<id>.json` (gitignored): the same record plus its `chat.index`
+entry, tool calls included. Those files outlive cleared storage and other browser profiles. Each line of
+`.redaw/chat.jsonl` names its `chat` id (and `session`, the doc), so you can go from a prompt
+to its full transcript:
+
+```sh
+grep -l 'clip fades' .redaw/chats/*.json
+```
+
 The page's localStorage goes through the same door at `/__live/ls` (API keys and tokens redacted):
 
 ```sh

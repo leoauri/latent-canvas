@@ -3,7 +3,9 @@
 //   GET    /__live/files          -> { files: [{ path, mtime, source }] }
 //   PUT    /__live/files/<path>   body = file text  -> { mtime }
 //   DELETE /__live/files/<path>   -> { ok: true }
-//   POST   /__live/chat-log       body = { role, text, session? } -> appended to .redaw/chat.jsonl (read by the commit hook)
+//   POST   /__live/chat-log       body = { role, text, session?, chat? } -> appended to .redaw/chat.jsonl (read by the commit hook)
+//   PUT    /__live/chat-archive/<id>  body = a page-chat record -> .redaw/chats/<id>.json (full transcript, survives
+//                                    cleared browser storage; the page writes it on every save)
 //   GET    /__live/db             -> the open page's IndexedDB databases and stores (read-only,
 //          /__live/db/<db>/<store>[?values]   keys, or all { key, value }   relayed to the page,
 //          /__live/db/<db>/<store>/<key>      one value (?jkey=<json> for    src/db-bridge.js;
@@ -125,11 +127,36 @@ export default function livePlugin({ dir = 'live' } = {}) {
         try {
           if (!guard(req, send)) return;
           if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
-          const { role, text, session } = JSON.parse(await readBody(req));
-          if (typeof role !== 'string' || typeof text !== 'string') return send(400, { error: 'expected { role, text, session? }' });
-          const line = { ts: new Date().toISOString(), role, text, ...(typeof session === 'string' && session && { session }) };
+          const { role, text, session, chat } = JSON.parse(await readBody(req));
+          if (typeof role !== 'string' || typeof text !== 'string') return send(400, { error: 'expected { role, text, session?, chat? }' });
+          const line = {
+            ts: new Date().toISOString(),
+            role,
+            text,
+            ...(typeof session === 'string' && session && { session }),
+            ...(typeof chat === 'string' && chat && { chat }),
+          };
           await fs.mkdir(path.dirname(chatLogPath), { recursive: true });
           await fs.appendFile(chatLogPath, JSON.stringify(line) + '\n', 'utf8');
+          send(200, { ok: true });
+        } catch (err) {
+          send(400, { error: String(err.message || err) });
+        }
+      });
+
+      server.middlewares.use('/__live/chat-archive', async (req, res) => {
+        const send = sender(res);
+        try {
+          if (!guard(req, send)) return;
+          if (req.method !== 'PUT') return send(405, { error: 'method not allowed' });
+          const id = decodeURIComponent(req.url.replace(/^\/+|[?#].*$/g, ''));
+          if (!/^[\w.-]{1,100}$/.test(id) || id.startsWith('.')) return send(400, { error: 'bad chat id' });
+          const record = JSON.parse(await readBody(req));
+          const dir = path.join(path.dirname(chatLogPath), 'chats');
+          await fs.mkdir(dir, { recursive: true });
+          const file = path.join(dir, `${id}.json`);
+          await fs.writeFile(`${file}.tmp`, JSON.stringify(record), 'utf8');
+          await fs.rename(`${file}.tmp`, file);
           send(200, { ok: true });
         } catch (err) {
           send(400, { error: String(err.message || err) });
