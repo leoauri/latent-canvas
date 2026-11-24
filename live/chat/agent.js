@@ -7,31 +7,10 @@ import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
 import { whereNow, lastWhere, sessionChangeNote } from './whereabouts.js';
+import { APIError, endpoint } from './llm.js';
 
 const MAX_STEPS = 60;
 export const EFFORTS = ['default', 'low', 'medium', 'high'];
-
-class APIError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-
-function endpoint() {
-  const baseURL = chat.baseURL.value.replace(/\/+$/, '');
-  if (env.proxy && !baseURL) {
-    // Dev server proxies /__llm and adds the key from .env; no key ever reaches the page.
-    return { url: `${location.origin}/__llm/chat/completions`, headers: {} };
-  }
-  // Without a key the request goes out unauthenticated (fine for local servers such as Ollama);
-  // a server that needs one answers 401, which is reported as an authentication failure.
-  const apiKey = chat.apiKey.value;
-  return {
-    url: `${baseURL || env.baseURL}/chat/completions`,
-    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-  };
-}
 
 export async function sendMessage(s, text) {
   if (s.running.value) return;

@@ -8,6 +8,7 @@
 // Above all that: files where the base (live/ on disk) changed under this session's own version
 // and the two conflict (vfs layers), to resolve by taking the base, keeping the session's version,
 // or having an agent merge them.
+// At the bottom, folded: changes the base already has (redundant.js), yours and peers'.
 import { useState, useEffect } from 'preact/hooks';
 import { signal, computed } from '@preact/signals';
 import { vfs, vfsVersion, loader, persist } from '@live/runtime';
@@ -16,6 +17,7 @@ import { toggleWindow, findWindow } from '../ui/windows.js';
 import * as changes from './changes.js';
 import * as session from './session.js';
 import * as bundles from './bundles.js';
+import * as redundant from './redundant.js';
 import { showGuide, dismissGuide, activeGuide } from '../ui/guide/guide.js';
 import './net.css';
 
@@ -75,15 +77,12 @@ function ChangesBody() {
     }
   };
   const mineIds = new Set(bundles.bundles.value.map((b) => b.id));
-  const shown = (showAll ? list : incoming).filter((c) => !mineIds.has(c.id));
+  redundant.verdicts.value; // re-render on new verdicts
+  const shown = (showAll ? list : incoming).filter((c) => !mineIds.has(c.id) && !redundant.isRedundant(c));
   const ready = session.status.value === 'ready';
 
   return (
     <div class="net-body net-changes">
-
-      <BaseConflicts />
-      <ReadySection />
-      <BundlesSection />
 
       {trial && (
         <section class="net-trial">
@@ -126,7 +125,65 @@ function ChangesBody() {
         )}
       </section>
 
+      <BaseConflicts />
+      <ReadySection />
+      <BundlesSection />
+
+      <RedundantSection />
+
     </div>
+  );
+}
+
+/** A "partly in the base" note from the redundancy check, if any. */
+function PartialNote({ c }) {
+  const v = redundant.state(c);
+  if (v?.v !== 'partial') return null;
+  return <p class="net-muted" title="From the redundancy check against the base">Partly in the base: {v.reason}</p>;
+}
+
+/** Changes the base already has: folded, each with why, and a way to overrule. */
+function RedundantSection() {
+  redundant.verdicts.value;
+  vfsVersion.value;
+  session.currentDoc.value;
+  const doc = session.currentDoc.value;
+  const mine = bundles.bundles.value.filter((b) => b.room === doc).map(redundant.asChange);
+  const mineIds = new Set(mine.map((c) => c.id));
+  const all = [...mine, ...changes.published.value.filter((c) => !mineIds.has(c.id))];
+  const list = all.filter(redundant.isRedundant);
+  const checking = redundant.checking.value && all.find((c) => c.id === redundant.checking.value);
+  const err = redundant.lastError.value;
+  if (!list.length && !checking && !err) return null;
+  const by = { text: 'its edits are in the base', duplicate: 'duplicate', agent: 'judged by an agent' };
+  return (
+    <section>
+      <details class="net-codefold">
+        <summary class="net-muted">
+          {list.length} redundant: already in the base
+          {checking && ` · checking “${checking.name}”…`}
+        </summary>
+        {err && <p class="net-error">Couldn't check with the LLM ({err}); retrying in a few minutes.</p>}
+        <ul class="net-list net-change-list">
+          {list.map((c) => {
+            const v = redundant.state(c);
+            return (
+              <li key={c.id} class="net-change net-bundle-off">
+                <div class="net-row">
+                  <span class="net-grow" title={c.id}>{c.name}</span>
+                  <button class="net-small" onClick={() => redundant.notRedundant(c)} title="Show it with the others again (until the base changes one of its files)">
+                    Not redundant
+                  </button>
+                </div>
+                <div class="net-muted">
+                  {mineIds.has(c.id) ? 'yours' : c.author} · {by[v.by] ?? v.by}: {v.reason}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </details>
+    </section>
   );
 }
 
@@ -244,6 +301,7 @@ function ChangeItem({ c, trial }) {
         </div>
       )}
       {c.intent && <p class="net-intent">{c.intent}</p>}
+      <PartialNote c={c} />
       <GuideBlock guide={changes.guideOf(c.id)} source={`change:${c.id}`} live={applied} hint={applied ? null : 'Try it to see this in place.'} />
       <details class="net-codefold">
         <summary>
@@ -546,7 +604,8 @@ function BaseConflicts() {
 function BundlesSection() {
   session.currentDoc.value; // re-render when another session opens
   const all = bundles.bundles.value;
-  const here = all.filter((b) => b.room === session.currentDoc.value);
+  redundant.verdicts.value; // re-render on new verdicts
+  const here = all.filter((b) => b.room === session.currentDoc.value && !redundant.isRedundant(redundant.asChange(b)));
   const elsewhere = all.filter((b) => b.room !== session.currentDoc.value);
   if (!all.length) return null;
   const nameOf = (doc) => session.sessions.value.find((s) => s.doc === doc)?.name ?? 'a forgotten session';
@@ -609,6 +668,7 @@ function BundleItem({ b }) {
         {followed && ` · follows up on “${followed}”`}
       </div>
       {b.intent && <p class="net-intent">{b.intent}</p>}
+      <PartialNote c={redundant.asChange(b)} />
       <GuideBlock guide={b.guide} source={`bundle:${b.id}`} live />
       <div class="net-row net-actions">
         {chat && (
