@@ -13,7 +13,8 @@ Prompts are split into numbered sentences, and Sonnet picks the sentences that c
 to the staged diff (copied here verbatim, it only returns ids; omissions are marked […]),
 which prompts still belong to uncommitted or not yet started work (carried to the next
 commit, together with the agent replies that proposed that work), and, only if needed,
-agent decisions that explain a change.
+agent decisions that explain a change. Quoted text goes through redact(): URL parameter
+values, credentials and random-looking tokens become <redacted>, since commits may be pushed.
 
 Page-chat turns made while a session was open (their log line names the session) worked on that
 session's own code, which never reaches the working tree by itself. They are not candidates for
@@ -311,8 +312,38 @@ into numbered sentences: [3.2] is sentence 2 of prompt 3.
 # ---- message
 
 
+REDACTED = "<redacted>"
+URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s<>\"'`)\]]+", re.I)
+URL_PARAM = re.compile(r"([?#&;][^=&#;\s]+=)[^&#;\s]*")
+SECRET_ASSIGN = re.compile(
+    r"(\b(?:[\w.-]*(?:key|token|secret|passw(?:or)?d|pwd|credentials?)|auth|authorization|cookie)"
+    r"[\"']?\s*[:=]\s*[\"']?)(?!Bearer\b|Basic\b)[^\s\"'&,;]{6,}", re.I)
+TOKEN_FORMATS = re.compile(
+    r"\b(?:sk-[\w-]{16,}|gh[pousr]_\w{20,}|github_pat_\w{20,}|xox[abpr]-[\w-]{10,}|AKIA[0-9A-Z]{16}"
+    r"|AIza[\w-]{30,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})")
+BEARER = re.compile(r"\b(Bearer|Basic)\s+[\w.~+/=-]{12,}", re.I)
+LONG_WORD = re.compile(r"(?<![\w/.-])[A-Za-z0-9_-]{24,}(?![\w/.-])")
+
+
+def looks_random(word):
+    """Mixed case and digits, and not just hex (commit hashes, UUIDs): an API key or similar."""
+    return (re.search(r"[a-z]", word) and re.search(r"[A-Z]", word) and re.search(r"\d", word)
+            and not re.fullmatch(r"[0-9a-fA-F-]+", word))
+
+
+def redact(text):
+    """Blank out credentials and private identifiers before prompts are quoted in a commit message,
+    which may end up public: URL parameter values (keys, doc and room ids), `name=secret` and
+    `token: secret` assignments, known token formats, and long random-looking strings."""
+    text = URL.sub(lambda m: URL_PARAM.sub(lambda p: p[1] + REDACTED, m[0]), text)
+    text = BEARER.sub(lambda m: f"{m[1]} {REDACTED}", text)
+    text = TOKEN_FORMATS.sub(REDACTED, text)
+    text = SECRET_ASSIGN.sub(lambda m: m[1] + REDACTED, text)
+    return LONG_WORD.sub(lambda m: REDACTED if looks_random(m[0]) else m[0], text)
+
+
 def quote(text):
-    return "\n".join(("> " + line).rstrip() for line in text.strip().splitlines())
+    return "\n".join(("> " + line).rstrip() for line in redact(text).strip().splitlines())
 
 
 def insert_section(message, addition):
@@ -419,7 +450,7 @@ def prepare(msg_file, source):
     if chosen:
         section.append(HEADER + "\n\n" + "\n\n".join(quote(q) for q in chosen))
     if decisions:
-        section.append("Agent decisions:\n\n" + "\n".join(f"- {d}" for d in decisions))
+        section.append("Agent decisions:\n\n" + "\n".join(f"- {redact(d)}" for d in decisions))
     if section:
         msg_path.write_text(insert_section(message, "\n\n".join(section)))
 
