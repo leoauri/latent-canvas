@@ -13,7 +13,9 @@ Class {
 		'startedAt',
 		'cursor',
 		'cueMark',
-		'sign'
+		'sign',
+		'inputY',
+		'inputDot'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -21,11 +23,11 @@ Class {
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:16'
 }
 SRRedawPlayheadFeature >> clear [
 	super clear.
-	cursor := cueMark := sign := nil
+	cursor := cueMark := inputDot := sign := nil.
 ]
 
 {
@@ -64,6 +66,15 @@ SRRedawPlayheadFeature >> initialize [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:16'
+}
+SRRedawPlayheadFeature >> inputY [
+	"World y (px) where live input enters the timeline, as the page's input dot: a take's centre line."
+	^ inputY ifNil: [self session yBelowClips + (view clipHeight / 2)]
+]
+
+{
 	#category : #updating,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:40'
 }
@@ -81,7 +92,7 @@ SRRedawPlayheadFeature >> isPlaying [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:58'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:16'
 }
 SRRedawPlayheadFeature >> layout [
 	| m h depth |
@@ -100,26 +111,44 @@ SRRedawPlayheadFeature >> layout [
 		ignoreCollision: true;
 		scale: (2 * m) @ depth @ (1.5 * h);
 		yourself.
+	inputDot := SRCube new
+		drawWires: false;
+		color: (Color r: 1 g: 0.3 b: 0.25);
+		ignoreCollision: true;
+		scale: (8 * m) @ (view clipHeight * m) @ (3 * h);
+		yourself.
 	sign := SRActionSign new
 		label: 'Play';
 		action: [self toggle];
 		cursorMode: SRCursorMode pass;
 		translation: 0 @ (depth / -2 - 12cm) @ 1cm;
 		yourself.
-	self addChild: cursor; addChild: cueMark; addChild: sign.
-	self showState
+	self addChild: cursor; addChild: cueMark; addChild: inputDot; addChild: sign.
+	self showState.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:16'
+}
+SRRedawPlayheadFeature >> nudgeInput: pixels [
+	"After a take, so the next one goes below it."
+	inputY := self inputY + pixels.
+	self showState.
 ]
 
 {
 	#category : #input,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:58'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:16'
 }
 SRRedawPlayheadFeature >> onButtonPress: anEvent [
-	| local |
+	| local page |
 	anEvent button == #trigger ifFalse: [^ self].
 	(sign notNil and: [sign redawContains: anEvent point]) ifTrue: [^ sign redawPress].
 	local := self globalTransform globalPointToLocal: anEvent point.
-	self seek: (view pagePointFor: local) x / view pixelsPerSecond
+	page := view pagePointFor: local.
+	inputY := page y.
+	self seek: page x / view pixelsPerSecond.
 ]
 
 {
@@ -159,16 +188,19 @@ SRRedawPlayheadFeature >> seek: seconds [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:05'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:16'
 }
 SRRedawPlayheadFeature >> showState [
-	| h |
+	| h dot |
 	(cursor isNil or: [view isLaidOut not]) ifTrue: [^ self].
 	h := view blockHeight.
 	cursor translation: (self xAt: time) @ 0 @ h.
 	cueMark translation: (self xAt: cue) @ 0 @ (0.75 * h).
 	cueMark visible: playing.
-	sign label: (playing ifTrue: ['Stop'] ifFalse: ['Play'])
+	inputDot ifNotNil: [
+		dot := view localPointFor: (view pagePointAt: time y: self inputY).
+		inputDot translation: dot x @ dot y @ (1.5 * h)].
+	sign label: (playing ifTrue: ['Stop'] ifFalse: ['Play']).
 ]
 
 {

@@ -8,12 +8,12 @@ Class {
 		'device',
 		'recorded',
 		'startT',
-		'pending',
-		'job',
-		'jobT',
 		'label',
 		'status',
-		'lastTry'
+		'lastTry',
+		'startY',
+		'armed',
+		'takes'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -37,6 +37,35 @@ SRRedawRecordFeature class >> menuLabel [
 ]
 
 {
+	#category : #private,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
+}
+SRRedawRecordFeature >> addClip: latents t: seconds y: inputY encoder: encoder [
+	"Like the page's recorder: the input y is the clip's centre line, and the next take goes a lane below."
+	self session peer
+		addClipLatents: latents
+		dim: encoder channels
+		rate: encoder frameRate
+		t: seconds
+		y: inputY - (view clipHeight / 2).
+	self playhead ifNotNil: [:playhead | playhead nudgeInput: view clipHeight + 6].
+	status := 'rec: added a ', (latents size // 4 // encoder channels / encoder frameRate roundTo: 0.1) printString, 's clip at ', (seconds roundTo: 0.1) printString, 's'.
+]
+
+{
+	#category : #recording,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:17'
+}
+SRRedawRecordFeature >> arm [
+	"The page's armed state is per machine, not in the document, so this is the Squeak peer's own. Rec while stopped also plays."
+	| layer |
+	layer := self latentLayer ifNil: [^ status := 'rec: no latent layer in front of the audio input'].
+	armed := true.
+	status := 'rec: armed ', (layer at: 'name' ifAbsent: ['latent recording']).
+	self playhead ifNotNil: [:playhead | playhead isPlaying ifFalse: [playhead play]].
+]
+
+{
 	#category : #'initialize-release',
 	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
 }
@@ -57,12 +86,22 @@ SRRedawRecordFeature >> closeDevice [
 
 {
 	#category : #'initialize-release',
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
 }
 SRRedawRecordFeature >> deactivate [
+	armed := false.
 	self closeDevice.
-	pending := nil.
-	job := nil
+	takes removeAll.
+]
+
+{
+	#category : #recording,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
+}
+SRRedawRecordFeature >> disarm [
+	armed := false.
+	self isRecording ifTrue: [self endTake] ifFalse: [status := 'rec: ready'].
+	self playhead ifNotNil: [:playhead | playhead isPlaying ifTrue: [playhead stop]].
 ]
 
 {
@@ -83,12 +122,49 @@ SRRedawRecordFeature >> drain [
 ]
 
 {
+	#category : #recording,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
+}
+SRRedawRecordFeature >> endTake [
+	"Takes are encoded in order once the encoder is here; a take is {pcm. t. y. job. deadline}."
+	| pcm |
+	self drain.
+	self closeDevice.
+	pcm := recorded contents.
+	recorded := nil.
+	pcm isEmpty ifTrue: [^ status := 'rec: nothing recorded'].
+	takes add: {pcm. startT. startY. nil. nil}.
+	status := 'rec: encoding ', (pcm size / 2 / self class captureRate roundTo: 0.1) printString, 's'.
+]
+
+{
+	#category : #recording,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
+}
+SRRedawRecordFeature >> followTransport [
+	"As the page's recorder: an armed layer records while the transport plays, one take per play."
+	| playing |
+	playing := self playhead notNil and: [self playhead isPlaying].
+	(self isRecording and: [playing not or: [self isArmed not]]) ifTrue: [^ self endTake].
+	(self isArmed and: [playing and: [self isRecording not]]) ifTrue: [self startTake].
+]
+
+{
 	#category : #'initialize-release',
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
 }
 SRRedawRecordFeature >> initialize [
 	super initialize.
-	status := 'rec: ready'
+	takes := OrderedCollection new.
+	status := 'rec: ready'.
+]
+
+{
+	#category : #testing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:17'
+}
+SRRedawRecordFeature >> isArmed [
+	^ armed == true
 ]
 
 {
@@ -97,6 +173,19 @@ SRRedawRecordFeature >> initialize [
 }
 SRRedawRecordFeature >> isRecording [
 	^ device notNil
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:17'
+}
+SRRedawRecordFeature >> latentLayer [
+	"The latent layer the audio input's latents reach first, which the page's armed recording would record into."
+	| layers input |
+	layers := self session layers.
+	input := layers findFirst: [:each | (each at: 'type' ifAbsent: [nil]) = 'audio-in'].
+	input = 0 ifTrue: [^ nil].
+	^ (layers allButFirst: input) detect: [:each | (each at: 'type' ifAbsent: [nil]) = 'latent'] ifNone: [nil]
 ]
 
 {
@@ -124,21 +213,24 @@ SRRedawRecordFeature >> playhead [
 
 {
 	#category : #private,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
 }
-SRRedawRecordFeature >> pollJob [
-	| encoder latents id |
-	encoder := self session encoderIfReady.
-	latents := (encoder latentsFor: job) ifNil: [^ self].
-	job := nil.
-	id := self session peer
-		addClipLatents: latents
-		dim: encoder channels
-		rate: encoder frameRate
-		t: jobT
-		y: self session yBelowClips.
-	status := 'rec: added a ', (latents size // 4 // encoder channels / encoder frameRate roundTo: 0.1) printString, 's clip at ', (jobT roundTo: 0.1) printString, 's'.
-	^ id
+SRRedawRecordFeature >> pollJobs [
+	"A take whose encoding never finishes (the library lost the job) is dropped after its deadline, so it does not hold up the next ones."
+	| encoder |
+	encoder := self session encoderIfReady ifNil: [^ self].
+	takes copy do: [:take | (take at: 4) ifNotNil: [:job |
+		[(encoder latentsFor: job)
+			ifNil: [Time millisecondClockValue > (take at: 5) ifTrue: [
+				takes remove: take.
+				status := 'rec: encoding the take at ', ((take at: 2) roundTo: 0.1) printString, 's did not finish, dropped']]
+			ifNotNil: [:latents |
+				takes remove: take.
+				self addClip: latents t: (take at: 2) y: (take at: 3) encoder: encoder]]
+			on: Error do: [:e |
+				takes remove: take ifAbsent: [].
+				lastError := e.
+				status := 'rec: ', e messageText]]].
 ]
 
 {
@@ -154,42 +246,41 @@ SRRedawRecordFeature >> prefetchEncoder [
 
 {
 	#category : #updating,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
 }
 SRRedawRecordFeature >> refresh [
-	"Every frame: capture, then encoding and adding the clip, move on without a relayout."
+	"Every frame: capture, then encoding and adding the clips, move on without a relayout."
 	label ifNil: [^ true].
-	[device ifNotNil: [self drain].
+	[self followTransport.
+	 device ifNotNil: [self drain].
 	 self prefetchEncoder.
-	 pending ifNotNil: [self submitPending].
-	 job ifNotNil: [self pollJob]]
-		on: Error do: [:e | lastError := e. status := 'rec: ', e messageText. self closeDevice. pending := job := nil].
+	 self submitPending.
+	 self pollJobs]
+		on: Error do: [:e | lastError := e. status := 'rec: ', e messageText. armed := false. self closeDevice].
 	label text: (self plain: status).
 	^ false
 ]
 
 {
 	#category : #recording,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:17'
 }
-SRRedawRecordFeature >> start [
-	"Open the microphone and start the transport (unless it plays): the take starts at the playhead."
+SRRedawRecordFeature >> startTake [
+	"The take starts at the playhead, at its input y."
 	| playhead |
-	self isRecording ifTrue: [^ self].
-	(pending notNil or: [job notNil]) ifTrue: [^ status := 'rec: still encoding the last take'].
-	SRAudioObject ensureOpenAL ifFalse: [^ status := 'rec: SqueakXR audio is off (preference Audio enabled)'].
+	SRAudioObject ensureOpenAL ifFalse: [armed := false. ^ status := 'rec: SqueakXR audio is off (preference Audio enabled)'].
 	device := OpenAL
 		alcCaptureOpenDeviceDevicename: nil
 		frequency: self class captureRate
 		format: AlDefines alFormatMono16
 		buffersize: self class captureRate * 4.
-	(device isNil or: [device isNull]) ifTrue: [device := nil. ^ status := 'rec: no microphone'].
+	(device isNil or: [device isNull]) ifTrue: [device := nil. armed := false. ^ status := 'rec: no microphone'].
 	OpenAL alcCaptureStartDevice: device.
 	recorded := WriteStream on: (ByteArray new: self class captureRate * 2 * 10).
 	playhead := self playhead.
-	(playhead notNil and: [playhead isPlaying not]) ifTrue: [playhead play].
 	startT := playhead ifNil: [0] ifNotNil: [playhead time].
-	status := 'rec: recording at ', (startT roundTo: 0.1) printString, 's'
+	startY := playhead ifNil: [self session yBelowClips + (view clipHeight / 2)] ifNotNil: [playhead inputY].
+	status := 'rec: recording at ', (startT roundTo: 0.1) printString, 's'.
 ]
 
 {
@@ -201,45 +292,30 @@ SRRedawRecordFeature >> status [
 ]
 
 {
-	#category : #recording,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
-}
-SRRedawRecordFeature >> stop [
-	"Stop the microphone and the transport; the take is encoded and added once the encoder is here."
-	| pcm |
-	self isRecording ifFalse: [^ self].
-	self drain.
-	self closeDevice.
-	self playhead ifNotNil: [:playhead | playhead isPlaying ifTrue: [playhead stop]].
-	pcm := recorded contents.
-	recorded := nil.
-	pcm isEmpty ifTrue: [^ status := 'rec: nothing recorded'].
-	pending := pcm.
-	jobT := startT.
-	status := 'rec: encoding ', (pcm size / 2 / self class captureRate roundTo: 0.1) printString, 's'
-]
-
-{
 	#category : #private,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:52'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:20'
 }
 SRRedawRecordFeature >> submitPending [
 	| encoder |
+	(takes anySatisfy: [:take | (take at: 4) isNil]) ifFalse: [^ self].
 	encoder := self session encoderIfReady ifNil: [
 		status := self session encoderLayer
 			ifNil: ['rec: looking for the encoder layer']
 			ifNotNil: ['rec: fetching the encoder from the room'].
 		^ self].
-	job := encoder submit: pending rate: self class captureRate.
-	pending := nil
+	takes do: [:take | (take at: 4) ifNil: [| seconds |
+		seconds := (take at: 1) size / 2 / self class captureRate.
+		take at: 4 put: (encoder submit: (take at: 1) rate: self class captureRate).
+		take at: 5 put: Time millisecondClockValue + (30000 + (seconds * 1000)) rounded.
+		take at: 1 put: nil]].
 ]
 
 {
-	#category : #recording,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#category : #toggle,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:17'
 }
 SRRedawRecordFeature >> toggle [
-	self isRecording ifTrue: [self stop] ifFalse: [self start]
+	self isArmed ifTrue: [self disarm] ifFalse: [self arm].
 ]
 
 {

@@ -186,19 +186,20 @@ SRRedawTransport >> size [
 
 {
 	#category : #stepping,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:18'
 }
 SRRedawTransport >> step: deltaTime [
 	"Runs in the world process: an error here must not reach a debugger."
-	[| playhead recording |
+	[| playhead recording armed |
 	 playhead := self playhead.
 	 recording := canvas notNil and: [canvas isRecording].
+	 armed := canvas notNil and: [canvas isRecordArmed].
 	 playButton label: ((playhead notNil and: [playhead isPlaying]) ifTrue: ['Stop'] ifFalse: ['Play']).
-	 recButton ifNotNil: [recButton label: (recording ifTrue: ['Stop rec'] ifFalse: ['Rec'])].
+	 recButton ifNotNil: [recButton label: (recording ifTrue: ['Stop rec'] ifFalse: [armed ifTrue: ['Armed'] ifFalse: ['Rec']])].
 	 display text: (playhead
 		ifNil: ['Redaw: no canvas']
-		ifNotNil: ['Redaw  ', (self clock: playhead time), (recording ifTrue: ['  REC'] ifFalse: [playhead isPlaying ifTrue: ['  playing'] ifFalse: ['  cue']])])]
-			on: Error do: [:e | display text: 'Redaw: ', e messageText]
+		ifNotNil: ['Redaw  ', (self clock: playhead time), (recording ifTrue: ['  REC'] ifFalse: [playhead isPlaying ifTrue: ['  playing'] ifFalse: [armed ifTrue: ['  armed'] ifFalse: ['  cue']]])])]
+			on: Error do: [:e | display text: 'Redaw: ', e messageText].
 ]
 
 {

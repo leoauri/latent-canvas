@@ -13,7 +13,15 @@ Class {
 		'lastTime',
 		'wasPlaying',
 		'label',
-		'status'
+		'status',
+		'renders',
+		'current',
+		'retired',
+		'results',
+		'renderer',
+		'rendering',
+		'chainKey',
+		'chainMissing'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -30,30 +38,46 @@ SRRedawAudioFeature >> clear [
 
 {
 	#category : #'initialize-release',
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 17:04'
 }
 SRRedawAudioFeature >> deactivate [
+	rendering := false.
 	self stopAll.
 	sounds do: [:each | each free].
 	sounds removeAll.
-	decoder ifNotNil: [decoder close. decoder := nil]
+	renders do: [:each | each free].
+	renders removeAll.
+	retired do: [:each | each free].
+	retired removeAll.
+	current removeAll.
+	decoder ifNotNil: [decoder close. decoder := nil].
 ]
 
 {
 	#category : #decoding,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 17:04'
 }
 SRRedawAudioFeature >> decodeClips [
+	"Renders arrive from the render process; each becomes the clip's sound once decoded, replacing an older render only then."
 	| clips ready |
+	self ensureRenderer.
+	[results isEmpty] whileFalse: [| result |
+		result := results next.
+		renders at: result first put: (SRRedawClipSound job: (decoder submit: result second rate: result third))].
+	renders copy keysAndValuesDo: [:key :sound |
+		sound isReady ifFalse: [sound pollWith: decoder].
+		sound isReady ifTrue: [
+			renders removeKey: key.
+			(key value = chainKey or: [(sounds includesKey: key key) not])
+				ifTrue: [
+					(sounds at: key key ifAbsent: [nil]) ifNotNil: [:old | retired add: old].
+					sounds at: key key put: sound.
+					current at: key key put: key value]
+				ifFalse: [sound free]]].
 	clips := self session clips asArray.
-	clips do: [:clip |
-		clip dataHash ifNotNil: [:hash |
-			(sounds at: (self keyFor: clip) ifAbsent: [nil])
-				ifNil: [(self session peer blobAt: hash) ifNotNil: [:bytes |
-					sounds at: (self keyFor: clip) put: (SRRedawClipSound job: (decoder submit: bytes rate: clip rate))]]
-				ifNotNil: [:sound | sound isReady ifFalse: [sound pollWith: decoder]]]].
-	ready := clips count: [:clip | (sounds at: (self keyFor: clip) ifAbsent: [nil]) ifNil: [false] ifNotNil: [:sound | sound isReady]].
-	status := 'audio: ', ready printString, '/', clips size printString, ' clips decoded',
+	ready := clips count: [:clip | (current at: (self keyFor: clip) ifAbsent: [nil]) = chainKey].
+	status := 'audio: ', ready printString, '/', clips size printString, ' clips rendered',
+		((chainMissing isNil or: [chainMissing isEmpty]) ifTrue: [''] ifFalse: [', no Smalltalk port of ', (chainMissing inject: '' into: [:all :each | all, ' ', each]), ' (passed through)']),
 		(SRAudioObject audioEnabled ifTrue: [''] ifFalse: [' (SqueakXR audio is off)']),
 		(voices isEmpty ifTrue: [''] ifFalse: [', ', voices size printString, ' playing'])
 ]
@@ -100,6 +124,16 @@ SRRedawAudioFeature >> ensureDecoder [
 ]
 
 {
+	#category : #decoding,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 17:04'
+}
+SRRedawAudioFeature >> ensureRenderer [
+	(renderer notNil and: [renderer isTerminated not]) ifTrue: [^ self].
+	rendering := true.
+	renderer := [self renderLoop] forkAt: Processor userBackgroundPriority named: 'Redaw clip renderer'.
+]
+
+{
 	#category : #playback,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
 }
@@ -129,15 +163,19 @@ SRRedawAudioFeature >> followPlayhead [
 
 {
 	#category : #initialization,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 17:04'
 }
 SRRedawAudioFeature >> initialize [
 	super initialize.
 	sounds := Dictionary new.
+	renders := Dictionary new.
+	current := Dictionary new.
+	retired := OrderedCollection new.
+	results := SharedQueue new.
 	voices := Dictionary new.
 	wasPlaying := false.
 	lastTime := 0.
-	status := 'audio: starting'
+	status := 'audio: starting'.
 ]
 
 {
@@ -173,6 +211,24 @@ SRRedawAudioFeature >> layout [
 ]
 
 {
+	#category : #decoding,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 17:04'
+}
+SRRedawAudioFeature >> nextRenderFor: aChainKey notIn: done [
+	"The clip nearest the playhead that is not rendered with this chain yet, with its latents; latents not here yet are fetched."
+	| now best bestDistance |
+	now := (view featureOf: SRRedawPlayheadFeature) ifNil: [0] ifNotNil: [:playhead | playhead time].
+	self session clips asArray do: [:clip |
+		(clip dataHash notNil and: [(done includes: (self keyFor: clip) -> aChainKey) not]) ifTrue: [| distance |
+			distance := clip t > now ifTrue: [clip t - now] ifFalse: [0 max: now - (clip t + clip duration)].
+			(best isNil or: [distance < bestDistance]) ifTrue: [
+				(self session peer blobAt: clip dataHash)
+					ifNil: [self session peer fetchBlob: clip dataHash]
+					ifNotNil: [:bytes | best := clip -> bytes. bestDistance := distance]]]].
+	^ best
+]
+
+{
 	#category : #playback,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
 }
@@ -200,6 +256,31 @@ SRRedawAudioFeature >> refresh [
 			on: Error do: [:e | lastError := e. status := 'audio: ', e messageText].
 	label text: (self plain: status).
 	^ false
+]
+
+{
+	#category : #decoding,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 17:04'
+}
+SRRedawAudioFeature >> renderLoop [
+	"A clip takes up to a second to render through the layer functions: too long for a frame."
+	| done chain |
+	done := Set new.
+	[rendering == true and: [parent notNil]] whileTrue: [
+		[| key work |
+		 key := RedawLatentChain keyFor: self session.
+		 (chain isNil or: [chain key ~= key]) ifTrue: [
+			chain := RedawLatentChain forSession: self session.
+			chainMissing := chain missing.
+			chainKey := chain key].
+		 work := self nextRenderFor: chain key notIn: done.
+		 work
+			ifNil: [(Delay forMilliseconds: 200) wait]
+			ifNotNil: [
+				results nextPut: {(self keyFor: work key) -> chain key. chain render: work value dim: work key dim rate: work key rate. work key rate}.
+				done add: (self keyFor: work key) -> chain key.
+				Processor yield]]
+			on: Error do: [:e | lastError := e. (Delay forSeconds: 1) wait]].
 ]
 
 {
@@ -238,12 +319,14 @@ SRRedawAudioFeature >> status [
 
 {
 	#category : #playback,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 17:04'
 }
 SRRedawAudioFeature >> stopAll [
-	voices isEmpty ifTrue: [^ self].
-	SRAudioObject ensureOpenAL ifTrue: [voices do: [:source | self delete: source]].
-	voices removeAll
+	voices isEmpty ifFalse: [
+		SRAudioObject ensureOpenAL ifTrue: [voices do: [:source | self delete: source]].
+		voices removeAll].
+	retired do: [:each | each free].
+	retired removeAll.
 ]
 
 {

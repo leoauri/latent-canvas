@@ -206,7 +206,7 @@ SRRedawSessionView class >> xrMenuOtherLink: aMenu [
 
 {
 	#category : #menus,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:18'
 }
 SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 	"Changes to my children wait for the next frame: menu actions run inside the input traversal."
@@ -215,7 +215,7 @@ SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 		action: [self togglePlay]
 		keepOpen: true.
 	aMenu
-		addItem: [self isRecording ifTrue: ['Stop recording'] ifFalse: ['Record']]
+		addItem: [self isRecordArmed ifTrue: ['Disarm recording'] ifFalse: ['Arm recording']]
 		action: [self toggleRecording]
 		keepOpen: true.
 	aMenu addItem: 'Next tour stop' action: [self nextTourStop] keepOpen: true.
@@ -427,6 +427,14 @@ SRRedawSessionView >> isLaidOut [
 }
 SRRedawSessionView >> isPlaying [
 	^ (self featureOf: SRRedawPlayheadFeature) ifNil: [false] ifNotNil: [:playhead | playhead isPlaying]
+]
+
+{
+	#category : #playing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:17'
+}
+SRRedawSessionView >> isRecordArmed [
+	^ (self featureOf: SRRedawRecordFeature) ifNil: [false] ifNotNil: [:recorder | recorder isArmed]
 ]
 
 {
