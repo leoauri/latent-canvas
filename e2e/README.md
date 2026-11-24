@@ -13,7 +13,9 @@ node scripts/e2e.mjs A console     # console output and page errors since the la
 node scripts/e2e.mjs down
 ```
 
-Run `node scripts/e2e.mjs` without arguments for every command. In the page,
+Run `node scripts/e2e.mjs` without arguments for every command. A rig nobody stops shuts itself down after
+`E2E_IDLE_MIN` minutes without a command (default 20, `0` = never), so a forgotten `down` doesn't keep a
+browser and dev server alive. In the page,
 `__redaw.runtime.loader.get('<path under live/>')` is a live module's namespace.
 
 Every tab's console, page errors (with stacks), crashes and failed requests also go to one central

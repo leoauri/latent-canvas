@@ -27,6 +27,10 @@
 //
 // Tabs are created on first use. The live copy is e2e/out/<run>/live, so changes the tabs commit
 // never touch the repo. E2E_PORT (default 5199) picks the server port; the control port is one below.
+//
+// A rig nobody stops would keep a dev server and a browser (every tab's page and storage) alive
+// for days: it shuts itself down after E2E_IDLE_MIN minutes (default 20, 0 = never) without a
+// command. `down` also works on a rig whose control port stopped answering (by its pid).
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
@@ -36,9 +40,10 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, 'e2e/out');
-const STATE = path.join(OUT, 'current.json');
 const PORT = Number(process.env.E2E_PORT) || 5199;
 const CONTROL = PORT - 1;
+const STATE = path.join(OUT, PORT === 5199 ? 'current.json' : `current-${PORT}.json`);
+const IDLE_MIN = process.env.E2E_IDLE_MIN != null ? Number(process.env.E2E_IDLE_MIN) : 20;
 const URL_ = `http://localhost:${PORT}/`;
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -56,7 +61,7 @@ const print = (v) => console.log(typeof v === 'string' ? v : JSON.stringify(v, n
 async function main() {
   if (cmd === 'up') return up();
   if (cmd === '__daemon') return daemon(rest[0]);
-  if (cmd === 'down') return print(await request({ op: 'down' }).catch((e) => e.message));
+  if (cmd === 'down') return print(await down());
   if (cmd === 'status') return print(await request({ op: 'status' }));
   if (cmd === 'tabs') return print(await request({ op: 'tabs' }));
   if (cmd === 'log') return print(await request({ op: 'log', args: rest }));
@@ -67,6 +72,28 @@ async function main() {
   }
   const [op, ...args] = rest;
   print(await request({ tab: cmd, op, args }));
+}
+
+async function down() {
+  try {
+    return await request({ op: 'down' });
+  } catch (e) {
+    // Control port gone or wedged: stop the daemon by pid (it closes the browser and vite).
+    const pid = JSON.parse(await fs.readFile(STATE, 'utf8').catch(() => '{}')).pid;
+    if (!pid) return e.message;
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      await fs.rm(STATE, { force: true });
+      return 'not running';
+    }
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      try { process.kill(pid, 0); } catch { return `stopped (pid ${pid})`; }
+    }
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+    return `killed (pid ${pid})`;
+  }
 }
 
 async function up() {
@@ -117,9 +144,25 @@ async function daemon(runDir) {
   }
 
   const killVite = () => {
-    try { process.kill(-vite.pid, 'SIGTERM'); } catch { vite.kill(); }
+    try { process.kill(-vite.pid, 'SIGTERM'); } catch { try { vite.kill(); } catch {} }
   };
-  const browser = await chromium.launch({ headless: true });
+  // However the daemon ends (including a failed start below), vite goes with it.
+  process.on('exit', killVite);
+  let browser = null;
+  let server = null;
+  let stopping = false;
+  const shutdown = async (why) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`rig stopping: ${why}`);
+    setTimeout(() => process.exit(0), 5000).unref(); // a hung browser.close() mustn't keep it alive
+    await browser?.close().catch(() => {});
+    server?.close();
+    if (JSON.parse(await fs.readFile(STATE, 'utf8').catch(() => '{}')).pid === process.pid) await fs.rm(STATE, { force: true });
+    process.exit(0);
+  };
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => shutdown(sig));
+  browser = await chromium.launch({ headless: true });
   const tabs = new Map(); // name -> { context, page, logs }
   let shots = 0;
   const events = fsSync.createWriteStream(path.join(runDir, 'events.jsonl'), { flags: 'a' });
@@ -208,7 +251,14 @@ async function daemon(runDir) {
     },
   };
 
-  const server = http.createServer(async (req, res) => {
+  let lastUsed = Date.now();
+  if (IDLE_MIN > 0) {
+    setInterval(() => {
+      if (Date.now() - lastUsed > IDLE_MIN * 60_000) shutdown(`idle for ${IDLE_MIN} min`);
+    }, 30_000).unref();
+  }
+  server = http.createServer(async (req, res) => {
+    lastUsed = Date.now();
     let body = '';
     for await (const c of req) body += c;
     const reply = (o) => res.end(JSON.stringify(o));
@@ -222,10 +272,7 @@ async function daemon(runDir) {
       if (op === 'tabs') return reply({ result: [...tabs].map(([n, t]) => ({ tab: n, url: t.page.url() })) });
       if (op === 'down') {
         reply({ result: 'stopped' });
-        await browser.close().catch(() => {});
-        killVite();
-        server.close();
-        return setTimeout(() => process.exit(0), 200);
+        return shutdown('down');
       }
       if (typeof name !== 'string' || !/^[\w-]+$/.test(name)) throw new Error('bad tab name');
       if (op === 'close') {
@@ -242,9 +289,6 @@ async function daemon(runDir) {
   });
   server.listen(CONTROL, '127.0.0.1');
   await fs.writeFile(STATE, JSON.stringify({ url: URL_, control: CONTROL, runDir, pid: process.pid }));
-  const stop = () => { killVite(); process.exit(0); };
-  process.on('SIGTERM', stop);
-  process.on('SIGINT', stop);
 }
 
 main().catch((e) => {
