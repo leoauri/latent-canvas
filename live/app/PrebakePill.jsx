@@ -1,5 +1,6 @@
-// The Pre-bake pill: the label starts the pre-bake agent (prebakeAgent.js), which makes pre-baking
-// work for the session as it is now; press it again when it shows "fix". The dot switches playback
+// The Pre-bake pill: the label brings up the pre-bake agent (prebakeAgent.js). Before a renderer exists
+// it sets pre-baking up for the session right away; afterwards it opens an empty pre-bake chat where
+// the user describes the problem (e.g. when it shows "fix"). The dot switches playback
 // between the bakes and the live stack, to compare them.
 import { prebakeOn, togglePrebake, bakeStatus, baking, needsFix, unwritten } from './stack/prebake.js';
 import { runPrebakeAgent, agentRunning, PREBAKE_SCOPE } from './stack/prebakeAgent.js';
@@ -23,7 +24,7 @@ export function PrebakePill() {
       <button
         style={bare}
         onClick={runPrebakeAgent}
-        title={running ? 'Open the agent working on pre-baking' : 'Ask an agent to make pre-baking work for this session (again, if it changed)'}
+        title={running ? 'Open the agent working on pre-baking' : unwritten ? 'Ask an agent to set up pre-baking for this session' : 'Open a pre-bake agent and describe what to fix'}
       >
         {label}
       </button>

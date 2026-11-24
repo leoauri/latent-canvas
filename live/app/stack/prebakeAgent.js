@@ -45,14 +45,17 @@ function request() {
   return lines.join('\n');
 }
 
-/** Opens the pre-bake chat if one is working, else starts one on the current state. */
+/**
+ * Opens the pre-bake chat if one is working. Otherwise, with no renderer yet, starts one that sets
+ * pre-baking up; once it is set up, opens an empty pre-bake chat for the user to describe the problem.
+ */
 export function runPrebakeAgent() {
   const busy = runningSessions().find((s) => s.scope.value === PREBAKE_SCOPE);
   if (busy) return openSession(busy.id);
   prebakeOn.value = true;
   const sid = newSession(PREBAKE_SCOPE, { title: 'Pre-bake' });
   openSession(sid);
-  sendMessage(getSession(sid), request());
+  if (unwritten) sendMessage(getSession(sid), request());
 }
 
 const PROMPT = `# Pre-bake
@@ -71,6 +74,7 @@ Contract of bakeRender.js:
 Running models offline: renderOffline(layerId, data, { onProgress, signal }) in app/stack/models.js runs a whole buffer through the model on a layer as fast as inference goes and waits for every unit, so nothing is missed. Encoder: context-rate mono audio in, latent frames out; decoder: latent frames in, context-rate audio out. It resolves to { data, frames, missed, ms, dim, rate, sampleRate }. Use it for model layers rather than pushing into a live voice (voice()), which runs at the clock's pace and pops late units as zeros.
 
 How to work:
+The chat starts either with a request that lists the session's state (setting pre-baking up: follow steps 1-4) or with the user describing a problem in their own words (pre-baking is already set up). In the second case, work on what they describe: read the current state first with eval_js (\`const p = modules('app/stack/prebake.js'); return { problems: p.renderProblems.value, errors: p.currentErrors.value, status: p.bakeStatus.value }\`), find the cause in the live path and bakeRender.js as in step 1, fix it, and verify as in step 3 on the clips concerned before baking them all. Don't rework parts that aren't involved.
 1. Find how this session sounds live: what plays clips (app/stack/latentPlayback.js), how layers process messages (app/stack/models.js, app/stack/layerFunc.js, runLayer callers), and anything newer that touches the sound path (list_modules; search for emit(, mixer pushes, new layer types). Compare with bakeRender.js and list the differences to yourself.
 2. If the renderer already matches, say so and only verify. Otherwise write or edit bakeRender.js and apply_changes (label "pre-bake: …").
 3. Verify in eval_js, first on a couple of clips: \`return await modules('app/stack/prebake.js').bakeAll({ limit: 2 })\` gives { problems, clips: per clip { ms, missed, outs: [{ outId, offset, seconds, peak, rms }] } or { error } } (\`ids: [...]\` picks clips). Bakes can take long (decoding runs at the model's speed, tails included): from those clips' ms, estimate the time for all of them before running bakeAll() on every clip, and tell the user if it is more than a minute or two. stopBakes() in the same module stops a bake that runs away. Every clip must bake without error and problems must be empty. Silent outputs where the live path is audible, missed > 0, or lengths that don't cover the clip and its tails are bugs: fix and repeat. If the engine is off or a model isn't loaded, ask the user to start it.
