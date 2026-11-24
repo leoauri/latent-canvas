@@ -156,7 +156,7 @@ export const tools = [
     {
       description: { type: 'string', description: 'What this run does, ~5 words (shown in the chat), e.g. "list chat modules".' },
       code: { type: 'string' },
-      timeout_ms: { type: 'integer', description: 'Default 10000. Cannot interrupt synchronous infinite loops.' },
+      timeout_ms: { type: 'integer', description: 'Default 10000. A timeout or the user\'s Stop ends the wait, not the code: pending awaits/timers keep running. Cannot interrupt synchronous infinite loops.' },
     },
     ['description', 'code'],
   ),
@@ -282,7 +282,7 @@ export async function runTool(block, ctx = {}) {
         return ok(id, `Reverted: ${r.reverted.map((e) => e.label).join(', ')}. Rebuilt: ${r.rebuilt.join(', ') || '-'}`);
       }
       case 'eval_js':
-        return evalJs(id, input);
+        return evalJs(id, input, ctx.session?.controller.value?.signal);
       case 'read_console': {
         const entries = logs.read({
           since: input.since_id ?? 0,
@@ -541,14 +541,20 @@ function listPublished() {
   return lines.join('\n');
 }
 
-async function evalJs(id, { code, timeout_ms = 10000 }) {
+// Stop (signal) and the timeout end the wait, not the code: JS can't cancel it, so pending awaits keep running.
+async function evalJs(id, { code, timeout_ms = 10000 }, signal) {
   const output = [];
   const off = logs.on((e) => output.push(`[${e.level}] ${e.text}`));
-  let timer;
+  let timer, onAbort;
   try {
     const result = await Promise.race([
       runScript(code),
       new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`timed out after ${timeout_ms}ms`)), timeout_ms))),
+      new Promise((_, reject) => {
+        onAbort = () => reject(new Error('Cancelled by the user (the code may still be running in the background).'));
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener('abort', onAbort, { once: true });
+      }),
     ]);
     const shown = result === undefined ? 'undefined' : logs.format(result);
     return ok(id, `${output.length ? 'Console:\n' + output.join('\n') + '\n\n' : ''}Result: ${clip(shown)}`);
@@ -556,6 +562,7 @@ async function evalJs(id, { code, timeout_ms = 10000 }) {
     return fail(id, `${output.length ? 'Console:\n' + output.join('\n') + '\n\n' : ''}${loader.mapUrls(err?.stack || String(err))}`);
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
     off();
   }
 }
