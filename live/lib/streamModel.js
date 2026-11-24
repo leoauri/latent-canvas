@@ -11,7 +11,7 @@ import {
   ModelConfig, ContractHandle, Pipeline, InferenceHandler, heap, layout, anira_status, ANIRA_DTYPE_F32,
   ONNXRUNTIME_WEB_ENGINE_ID,
 } from '@anira-project/anira';
-import { aniraCore } from './anira.js';
+import { aniraCore, workersStarted } from './anira.js';
 import { fixOnnxShapes } from './onnxShapes.js';
 import { createResampler } from './resample.js';
 
@@ -82,8 +82,9 @@ function sideOf(spec, which) {
  * The result's `input` / `output` say what flows on each side: { kind, channels, samples } per
  * unit. A voice's push(Float32Array(channels * samples), start) takes one input unit
  * (channel-major); its outputs carry the `start` pushed with the input unit they answer.
+ * `onStatus(text)` says what it is waiting for while it loads.
  */
-export async function createStreamModel({ files, sampleRate }) {
+export async function createStreamModel({ files, sampleRate, onStatus }) {
   const { configText, configName, meta } = await describeModel(files);
   const { anira, context } = await aniraCore();
   let shapes = null; // the config's tensor extents, written into ONNX files' symbolic dimensions
@@ -153,9 +154,9 @@ export async function createStreamModel({ files, sampleRate }) {
 
   let first;
   try {
-    // The warm-up runs on the Workers. Each Worker downloads ONNX Runtime's wasm (12.8 MB) before
-    // its loop, so on a slow link (four downloads at once) starting them takes well over 10 s.
-    await context.ready(60000);
+    // The warm-up runs on the Workers.
+    await workersStarted(context, (n, of, s) => onStatus?.(`starting inference workers: ${n} of ${of} (${s} s)`));
+    onStatus?.('warming up');
     first = prepareHandler({ budget: 'measured', warmup: 'until_stable' });
   } catch (e) {
     for (const h of handlers) h.destroy();

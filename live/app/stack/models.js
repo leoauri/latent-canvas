@@ -251,7 +251,8 @@ async function startModel(l) {
       updateStackLayer(l.id, { model: { ...ref, hashes } });
       ref.hashes = hashes; // same `added`: the runtime carries on
     }
-    const model = await createStreamModel({ files, sampleRate: audioContext().sampleRate });
+    const onStatus = (detail) => current() && setIn(runtimes, l.id, { status: 'loading', ref, detail });
+    const model = await createStreamModel({ files, sampleRate: audioContext().sampleRate, onStatus });
     if (!current()) return model.destroy();
     setIn(runtimes, l.id, { status: 'ready', ref, model });
   } catch (e) {

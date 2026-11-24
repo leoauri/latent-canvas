@@ -27,3 +27,23 @@ export function aniraCore() {
     });
   return box.value;
 }
+
+/**
+ * Resolves once every inference Worker of `context` is in its loop. No deadline: each Worker
+ * downloads ONNX Runtime's wasm (12.8 MB) before its loop, which on a slow link takes as long as
+ * it takes, and without the Workers no model runs anyway. `onProgress(started, of, seconds)` on
+ * each change and every second.
+ */
+export async function workersStarted(context, onProgress) {
+  const of = Math.max(context.numInferenceThreads(), 1);
+  const t0 = performance.now();
+  let last = '';
+  for (;;) {
+    const n = context.abi.anira_em_inference_threads_in_loop();
+    if (n >= of) return;
+    const key = `${n} ${Math.floor((performance.now() - t0) / 1000)}`;
+    if (key !== last) onProgress?.(n, of, Math.floor((performance.now() - t0) / 1000));
+    last = key;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
