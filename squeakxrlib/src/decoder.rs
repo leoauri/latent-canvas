@@ -12,7 +12,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use anyhow::{anyhow, bail, Context, Result};
 use tract_onnx::prelude::*;
 
-type Plan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+type Plan = Arc<TypedRunnableModel>;
 
 pub struct Decoder {
     plan: Plan,
@@ -88,7 +88,7 @@ impl Decoder {
             let mut inputs: TVec<TValue> = tvec![Tensor::from_shape(&self.input_shapes[0], frame)?.into()];
             inputs.extend(state.drain(..).map(TValue::from));
             let outputs = self.plan.run(inputs)?;
-            audio.extend_from_slice(outputs[0].as_slice::<f32>()?);
+            audio.extend_from_slice(outputs[0].try_as_plain_ram()?.as_slice::<f32>()?);
             let mut next = vec![Tensor::default(); self.state_pairs.len()];
             for &(i, o) in &self.state_pairs {
                 next[i - 1] = outputs[o].clone().into_tensor();
