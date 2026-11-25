@@ -16,7 +16,8 @@
 //   a peer's buggy or newer code can't feed this page values its rendering would crash on. They
 //   stay in the document; nothing is deleted for others. Malformed containers read as empty.
 // - `keepLocal(entity)`: entities not (yet) shared, e.g. a clip still recording: neither written
-//   nor removed by remote changes.
+//   nor removed by remote changes. A shared entity it holds (a clip given new vectors that aren't
+//   stored yet) keeps its local version and its place until it is written.
 // - A key missing from the document is seeded from the local value (or `seedFrom()`) when the session adopts local
 //   state (the first session on this machine), else the signal is reset to `empty()`. So a local
 //   module introducing new shared state just starts writing it; peers without that code ignore it.
@@ -284,6 +285,16 @@ function fromDoc(b, d) {
   }
   // Entities that exist only here (keepLocal) stay, after the shared ones.
   for (const e of prevList) if (b.keepLocal(e) && !seen.has(e.id)) out.push(e);
+  // Shared entities changed here that can't be written yet (keepLocal, e.g. a clip whose new
+  // vectors are still being stored) keep the local version, not the document's older one. `seen`
+  // keeps what this page last saw of them, so once they're written only this page's changes go.
+  for (const p of prevList) {
+    if (!p || !b.keepLocal(p) || !seen.has(p.id)) continue;
+    const i = out.findIndex((e) => e.id === p.id);
+    if (i === -1) out.push(p);
+    else out[i] = p;
+    if (prevSeen?.has(p.id)) seen.set(p.id, prevSeen.get(p.id));
+  }
   setSignal(b, out);
 }
 
@@ -312,8 +323,10 @@ function checkDrift(b) {
     for (const k in b.sig.peek() ?? {}) if (b.sig.peek()[k] !== undefined) mine[k] = plain(b.encode(b.sig.peek()[k]));
     theirs = b.seen;
   } else {
-    mine = (b.sig.peek() ?? []).filter((e) => e && e.id != null && !b.keepLocal(e)).map(enc);
-    theirs = [...b.seen.values()].filter((e) => !b.loading?.has(String(e.id))).map((e) => (b.local.size ? Object.fromEntries(Object.entries(e).filter(([f]) => !b.local.has(f))) : e));
+    const all = (b.sig.peek() ?? []).filter((e) => e && e.id != null);
+    mine = all.filter((e) => !b.keepLocal(e)).map(enc);
+    const held = new Set(all.filter((e) => b.keepLocal(e)).map((e) => String(e.id))); // not written yet
+    theirs = [...b.seen.values()].filter((e) => !b.loading?.has(String(e.id)) && !held.has(String(e.id))).map((e) => (b.local.size ? Object.fromEntries(Object.entries(e).filter(([f]) => !b.local.has(f))) : e));
   }
   if (sameDeep(mine, theirs)) return;
   const same = sameDeep;
@@ -441,7 +454,8 @@ function writeInto(b, s, v) {
     seen.set(id, plain(s.items[id]));
   }
   for (const id of prevSeen.keys()) if (!seen.has(id) && !held.has(id) && s.items[id]) delete s.items[id];
-  const order = [...new Set(list.map((e) => String(e.id)))]; // two peers can add the same id
+  // Held entities the document has keep their place in it.
+  const order = [...new Set(all.filter((e) => !b.keepLocal(e) || s.items[String(e.id)]).map((e) => String(e.id)))]; // two peers can add the same id
   // Ids a peer added that this page hasn't seen yet keep their place after ours.
   const unseen = [...(s.order ?? [])].filter((id) => !order.includes(id) && s.items[id] && ((!prevSeen.has(id) && !held.has(id)) || b.loading?.has(id)));
   if (!same([...(s.order ?? [])], [...order, ...unseen])) s.order = [...order, ...unseen];
