@@ -35,6 +35,29 @@ export function addUsage(...list) {
   return out;
 }
 
+/**
+ * The rate limit the endpoint reported with its last successful reply: { kind, remaining, limit, reset }
+ * (limit and reset may be null), or null when it reported none. Read from Anthropic-style
+ * anthropic-ratelimit-* headers, else OpenAI-style x-ratelimit-*-tokens. A cross-origin endpoint
+ * must expose them (Access-Control-Expose-Headers); through the dev proxy they are same-origin.
+ */
+export const rateLimit = persist('chat.rateLimit', null);
+
+export function readRateLimit(headers) {
+  for (const [prefix, kind] of [['tokens', 'tokens'], ['input-tokens', 'input tokens'], ['output-tokens', 'output tokens']]) {
+    const get = (f) => headers.get(`anthropic-ratelimit-${prefix}-${f}`);
+    if (get('remaining') != null) return { kind, remaining: Number(get('remaining')), limit: get('limit') != null ? Number(get('limit')) : null, reset: get('reset') };
+  }
+  const get = (f) => headers.get(`x-ratelimit-${f}-tokens`);
+  if (get('remaining') != null) return { kind: 'tokens', remaining: Number(get('remaining')), limit: get('limit') != null ? Number(get('limit')) : null, reset: get('reset') };
+  return null;
+}
+
+/** Records a successful reply's rate-limit headers (or their absence). */
+export function recordRateLimit(headers) {
+  rateLimit.value = readRateLimit(headers);
+}
+
 /** Normalizes a request's usage, adds it to the page total and returns it. */
 export function recordUsage(raw) {
   const u = normalizeUsage(raw);
@@ -80,6 +103,7 @@ export async function complete(messages, { signal } = {}) {
     } catch {}
     throw new APIError(res.status, detail || res.statusText);
   }
+  recordRateLimit(res.headers);
   const j = await res.json();
   recordUsage(j.usage);
   const text = j.choices?.[0]?.message?.content;

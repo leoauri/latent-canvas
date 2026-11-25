@@ -19,7 +19,7 @@ import {
 } from './store.js';
 import * as changes from '../net/changes.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
-import { pageUsage, addUsage } from './llm.js';
+import { pageUsage, addUsage, rateLimit } from './llm.js';
 import { approve, pendingBundle, showApprovalGuide, showingGuideOf } from './tools.js';
 import { requestTrial } from '../net/trials.js';
 import { dismissGuide } from '../ui/guide/guide.js';
@@ -236,15 +236,23 @@ const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${
 const usageLine = (u) =>
   `${fmtTokens(u.input + u.cacheRead + u.cacheWrite)} in (${fmtTokens(u.cacheRead)} cache read, ${fmtTokens(u.cacheWrite)} written), ${fmtTokens(u.output)} out, ${u.requests} requests`;
 
-/** Token usage of this chat (stored on its replies), with this page's total in the tooltip. */
+/**
+ * What the endpoint says is left of its token rate limit, shown only when it reports one (rate-limit
+ * headers on its last reply). The tooltip adds the limit, its reset, and this chat's and page's usage.
+ */
 function Usage({ s }) {
+  const rl = rateLimit.value;
+  if (!rl) return null;
   const u = addUsage(...s.messages.value.map((m) => m.usage));
   const page = pageUsage.value;
-  if (!u && !page) return null;
-  const inTotal = u ? u.input + u.cacheRead + u.cacheWrite : 0;
+  const lines = [
+    `Rate limit: ${rl.remaining.toLocaleString()}${rl.limit != null ? ` of ${rl.limit.toLocaleString()}` : ''} ${rl.kind} left${rl.reset ? `, resets ${isNaN(Date.parse(rl.reset)) ? `in ${rl.reset}` : new Date(rl.reset).toLocaleTimeString()}` : ''}`,
+    `This chat: ${u ? usageLine(u) : 'nothing yet'}`,
+    `This page since it loaded (all chats and background jobs): ${page ? usageLine(page) : 'nothing yet'}`,
+  ];
   return (
-    <span class="chat-usage" title={`This chat: ${u ? usageLine(u) : 'nothing yet'}\nThis page since it loaded (all chats and background jobs): ${page ? usageLine(page) : 'nothing yet'}`}>
-      {u ? ` · ${fmtTokens(inTotal)} in${inTotal ? ` (${Math.round((100 * u.cacheRead) / inTotal)}% cached)` : ''} · ${fmtTokens(u.output)} out` : ''}
+    <span class="chat-usage" title={lines.join('\n')}>
+      {` · ${fmtTokens(rl.remaining)} ${rl.kind} left`}
     </span>
   );
 }
