@@ -33,15 +33,17 @@ import './chat.css';
 // Chat windows render through the shared window host (<Windows /> in main.jsx).
 const unregisterKind = registerWindowKind('chat', { render: (win) => <ChatWindow win={win} /> });
 
-/** The chat's page-level parts: connectors to anchors and the "+" button. */
+/** The chat's page-level part: connectors to anchors. */
 export default function Chats() {
+  return <Connectors />;
+}
+
+/** "Summon" pill, last in the pill row: opens a new agent window. */
+export function SummonPill() {
   return (
-    <>
-      <Connectors />
-      <button class="chat-fab" onClick={() => openChatWindow()} title="New agent window (Shift+Space focuses the top one)">
-        +
-      </button>
-    </>
+    <button class="net-pill net-pill-summon" onClick={() => openChatWindow()} title="New agent window (Shift+Space focuses the top one)">
+      Summon
+    </button>
   );
 }
 

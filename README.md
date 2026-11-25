@@ -153,6 +153,9 @@ what runs = base             live/ on disk (git): the instrument, the same for e
 - Re-evaluation resets component state. Keep state that should survive in `persist(key, init)` from `@live/runtime`.
 - Export `dispose()` to clean up timers and listeners when a module is replaced.
 - Importing a `.css` file injects it, and the style is swapped with the module.
+- Stacking order uses the z-index tiers in `live/main.css` (`--z-canvas`, `--z-hud`, `--z-panel`, `--z-window`, …).
+  Things pinned to the timeline canvas use `--z-canvas`, so the fixed UI (hint bar, pills, layer stack,
+  windows) stays on top of them.
 - Floating windows (draggable, resizable, collapsible, persisted) are shared: register a kind with `registerWindowKind(kind, { render })` from `live/ui/FloatingWindow.jsx` at import time, export the returned function as (or call it from) `dispose()`, and open windows with `openWindow(kind, props)` from `live/ui/windows.js`. See the comment at the top of `windows.js`.
 - To point users at something new, use the guide library in `live/ui/guide/guide.js`
   (`showGuide`, `checkGuide`; the comment at its top describes steps and navigation). Mark

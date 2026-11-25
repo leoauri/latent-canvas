@@ -7,7 +7,7 @@
 .preview-frame {
   position: fixed;
   inset: 0;
-  z-index: 9000;
+  z-index: var(--z-preview);
   pointer-events: none;
   border: 4px solid var(--preview-color);
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25);
@@ -95,7 +95,7 @@
   top: 8px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 9000;
+  z-index: var(--z-preview);
   padding: 4px 10px;
   border-radius: 6px;
   background: var(--preview-color);

@@ -21,14 +21,30 @@
 .net-dot.net-connecting { background: #e0a000; }
 .net-dot.net-closed { background: var(--error); }
 .net-dot.net-idle { background: var(--muted); }
+/* The pill row spans the bottom edge, right-aligned, and scrolls sideways when the pills don't fit.
+   The left padding lets its first pills scroll out from behind the collapsed layer stack. Its empty part
+   lets clicks through to the canvas (on touch it takes swipes, so it can be scrolled). */
 .net-pills {
   position: fixed;
-  right: 80px;
+  left: 0;
+  right: 0;
   bottom: 28px;
-  z-index: 100000;
+  z-index: var(--z-hud);
   display: flex;
   gap: 6px;
   align-items: center;
+  overflow-x: auto;
+  padding: 8px 20px 8px 62px;
+  scrollbar-width: none;
+  pointer-events: none;
+}
+/* Right-aligns the pills; justify-content: flex-end would make an overflowing row unscrollable to its start. */
+.net-pills::before { content: ''; margin-left: auto; }
+.net-pills > * { flex: none; white-space: nowrap; pointer-events: auto; }
+@media (pointer: coarse) {
+  .net-pills { left: 58px; right: 8px; bottom: 20px; padding: 8px 12px; pointer-events: auto; touch-action: pan-x; -webkit-overflow-scrolling: touch; }
+  .net-pills .net-pill { padding: 8px 12px; font-size: 13px; }
+  .net-pills .net-pill:not(.net-pill-summon) { box-shadow: none; }
 }
 .net-pill {
   display: flex;
@@ -45,12 +61,13 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
 }
 .net-pill:hover, .net-pill-on { background: var(--input-bg); }
-.net-pill-split { cursor: default; max-width: none; }
-.net-pill-part { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.net-pill-split { cursor: default; max-width: none; width: max-content; } /* Safari undersizes it otherwise and it overlaps its neighbour */
+.net-pill-part { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; }
 .net-pill-sep { align-self: stretch; width: 1px; margin: -2px 4px; background: var(--border); opacity: 0.6; }
 .net-dot-pulse { animation: net-dot-pulse 1s ease-in-out infinite; }
 @keyframes net-dot-pulse { 50% { opacity: 0.35; } }
-.net-automerge-note { font-size: 12px; }
+.net-automerge-note { font-size: 12px; align-items: flex-start; }
+.net-automerge-note .net-grow { white-space: normal; overflow-wrap: anywhere; }
 .net-pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Pill group (bottom right): Assets, Changes, Session. */

@@ -80,7 +80,7 @@ export function FloatingWindow({ win, title, header, headerRows, children, class
     top: `${r.y}px`,
     width: `${r.w}px`,
     height: collapsed ? 'auto' : `${r.h}px`,
-    zIndex: `${1000 + win.z}`,
+    zIndex: `calc(var(--z-window) + ${win.z})`,
   };
   const passive = `button, select, input, textarea, a${noDrag ? `, ${noDrag}` : ''}`;
   return (

@@ -34,28 +34,30 @@
   inset: 0;
   width: 100vw;
   height: 100vh;
-  z-index: 999;
+  z-index: calc(var(--z-window) - 1); /* just under the windows */
   pointer-events: none;
   overflow: visible;
 }
 .chat-connectors line { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 4; stroke-linecap: round; }
 .chat-connectors circle { fill: none; stroke: var(--muted); stroke-width: 1.5; }
-.chat-fab {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 100000;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--chat-bg);
-  color: var(--fg);
-  font: 26px/1 system-ui, sans-serif;
-  cursor: pointer;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+.net-pill.net-pill-summon {
+  color: #f3e8ff;
+  font-weight: 600;
+  border-color: #7c3aed;
+  background:
+    radial-gradient(circle at 12% 0%, rgb(250 204 21 / 0.55), transparent 45%),
+    linear-gradient(135deg, #2e1065, #6d28d9 60%, #a855f7);
+  box-shadow: 0 0 4px rgb(168 85 247 / 0.7), -1px -1px 4px rgb(250 204 21 / 0.35);
+  animation: summon-glow 2.4s ease-in-out infinite;
 }
-.chat-fab:hover { background: var(--input-bg); }
+.net-pill.net-pill-summon:hover {
+  background:
+    radial-gradient(circle at 12% 0%, rgb(253 224 71 / 0.65), transparent 45%),
+    linear-gradient(135deg, #3b0f80, #7c3aed 60%, #c084fc);
+}
+@keyframes summon-glow {
+  50% { box-shadow: 0 0 7px rgb(192 132 252 / 0.85), -1px -1px 6px rgb(250 204 21 / 0.45); }
+}
 .chat-header-row { flex-basis: 100%; display: flex; gap: 6px; align-items: center; cursor: default; }
 .chat-model { color: var(--muted); font-size: 11px; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-usage { opacity: 0.8; }
