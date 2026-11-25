@@ -19,6 +19,7 @@ import {
 } from './store.js';
 import * as changes from '../net/changes.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
+import { pageUsage, addUsage } from './llm.js';
 import { approve, pendingBundle, showApprovalGuide, showingGuideOf } from './tools.js';
 import { requestTrial } from '../net/trials.js';
 import { dismissGuide } from '../ui/guide/guide.js';
@@ -229,6 +230,23 @@ function HeaderStatus({ s }) {
   );
 }
 
+const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k` : String(n));
+const usageLine = (u) =>
+  `${fmtTokens(u.input + u.cacheRead + u.cacheWrite)} in (${fmtTokens(u.cacheRead)} cache read, ${fmtTokens(u.cacheWrite)} written), ${fmtTokens(u.output)} out, ${u.requests} requests`;
+
+/** Token usage of this chat (stored on its replies), with this page's total in the tooltip. */
+function Usage({ s }) {
+  const u = addUsage(...s.messages.value.map((m) => m.usage));
+  const page = pageUsage.value;
+  if (!u && !page) return null;
+  const inTotal = u ? u.input + u.cacheRead + u.cacheWrite : 0;
+  return (
+    <span class="chat-usage" title={`This chat: ${u ? usageLine(u) : 'nothing yet'}\nThis page since it loaded (all chats and background jobs): ${page ? usageLine(page) : 'nothing yet'}`}>
+      {u ? ` · ${fmtTokens(inTotal)} in${inTotal ? ` (${Math.round((100 * u.cacheRead) / inTotal)}% cached)` : ''} · ${fmtTokens(u.output)} out` : ''}
+    </span>
+  );
+}
+
 // Mounted while collapsed too, so the Settings/History toggles survive collapsing.
 function HeaderRows({ win, s }) {
   const showSettings = useSignal(false);
@@ -239,7 +257,10 @@ function HeaderRows({ win, s }) {
     <>
       {!collapsed && (
         <div class="chat-header-row">
-          <span class="chat-model">{chat.model.value || env.model}</span>
+          <span class="chat-model">
+            {chat.model.value || env.model}
+            <Usage s={s} />
+          </span>
           <select
             value={chat.effort.value}
             title="reasoning effort (default: not sent)"

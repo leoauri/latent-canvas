@@ -7,7 +7,7 @@ import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
 import { whereNow, lastWhere, sessionChangeNote } from './whereabouts.js';
-import { APIError, endpoint } from './llm.js';
+import { APIError, endpoint, recordUsage, addUsage } from './llm.js';
 
 const MAX_STEPS = 60;
 export const EFFORTS = ['default', 'low', 'medium', 'high'];
@@ -56,6 +56,7 @@ export function stop(s) {
 
 async function loop(s, target, signal) {
   let jsonRetries = 0;
+  let usage = null; // requests since the last stored reply (a re-issued turn stores nothing)
   for (let step = 0; step < MAX_STEPS; step++) {
     const body = {
       model: chat.model.value || env.model,
@@ -83,6 +84,7 @@ async function loop(s, target, signal) {
       s.draft.value = null;
     }
 
+    usage = addUsage(usage, recordUsage(message.usage));
     const uses = message.content.filter((b) => b.type === 'tool_use');
     const badJson = uses.some((u) => u.input === undefined);
     if (badJson && message.stop_reason !== 'max_tokens' && jsonRetries++ < 2) {
@@ -92,7 +94,9 @@ async function loop(s, target, signal) {
     jsonRetries = 0;
     for (const u of uses) u.input ??= {};
 
-    pushMessage(s, { role: 'assistant', content: message.content });
+    // usage is display-only: toWire() never sends it.
+    pushMessage(s, { role: 'assistant', content: message.content, ...(usage && { usage }) });
+    usage = null;
 
     if (message.stop_reason === 'refusal') {
       s.error.value = `The model declined${message.refusal ? `: ${message.refusal}` : ''}.`;
