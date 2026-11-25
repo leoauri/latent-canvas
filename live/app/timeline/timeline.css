@@ -31,7 +31,8 @@
   background: color-mix(in srgb, var(--bg) 85%, transparent);
   pointer-events: none;
 }
-.timeline-drop-error {
+.timeline-drop-error,
+.timeline-drop-note {
   position: absolute;
   left: 50%;
   bottom: 36px;
@@ -44,6 +45,7 @@
   pointer-events: none;
   z-index: 10;
 }
+.timeline-drop-note { background: oklch(0.5 0.1 290); } /* work in progress, e.g. an audio drop going through the stack */
 .playhead-layer {
   position: absolute;
   inset: 0;

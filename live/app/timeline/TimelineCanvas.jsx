@@ -9,15 +9,18 @@ import { effect } from '@preact/signals';
 import { view, panBy, zoomAt, worldToScreenY, xToTime, screenToWorldY } from './view.js';
 import { clips, selection, CLIP_HEIGHT, duration, removeClips, moveClips, duplicateClips, bringAllToFront, addClip } from './clips.js';
 import { isAssetDrag, assetOf, assetKind, clipFromAsset } from '../assetDrag.js';
+import { isAudioFile, decodeAudioFile, clipFromAudio } from '../stack/audioDrop.js';
 
-// Brief message over the timeline (the HUD has no error slot).
-function showDropError(msg) {
+// Brief message over the timeline (the HUD has no error slot). A note (`ms` 0) stays until removed.
+function showDropError(msg, ms = 4000, kind = 'error') {
   const el = document.createElement('div');
-  el.className = 'timeline-drop-error';
+  el.className = `timeline-drop-${kind}`;
   el.textContent = msg;
   document.querySelector('.timeline')?.append(el);
-  setTimeout(() => el.remove(), 4000);
+  if (ms) setTimeout(() => el.remove(), ms);
+  return el;
 }
+const showDropNote = (msg) => showDropError(msg, 0, 'note');
 import { layers as masks, masked } from './layers.js';
 import { stack, activeLayer, activeLayerId, highlightedLayerId, stackLayerColor } from '../stack/stack.js';
 
@@ -352,25 +355,51 @@ export default function TimelineCanvas() {
       }
     };
 
-    // Latent assets dragged from the assets window become clips where they are dropped.
+    // Latent assets dragged from the assets window become clips where they are dropped. So do audio
+    // files from the OS, once the layer stack has carried them to a latent recording layer.
     const offStack = (e) => !e.target.closest?.('.stack');
+    const isFileDrag = (e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
     const onAssetOver = (e) => {
-      if (!isAssetDrag(e) || !offStack(e)) return;
+      if (!(isAssetDrag(e) || isFileDrag(e)) || !offStack(e)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     };
     const onAssetDrop = (e) => {
-      if (!isAssetDrag(e) || !offStack(e)) return;
+      if (!(isAssetDrag(e) || isFileDrag(e)) || !offStack(e)) return;
       e.preventDefault();
-      const a = assetOf(e.dataTransfer);
       const [px, py] = local(e);
       const v = view.value;
+      if (!isAssetDrag(e)) return dropAudioFiles([...e.dataTransfer.files], { t: xToTime(px, v), y: screenToWorldY(py, v) }, v);
+      const a = assetOf(e.dataTransfer);
       const at = { t: xToTime(px, v), y: screenToWorldY(py, v) - CLIP_HEIGHT / 2 / v.ys };
       if (assetKind(a) !== 'clip') return showDropError(`“${a?.name ?? 'file'}” is not clip data: drop models on the layer stack`);
       clipFromAsset(a.hash).then(
         (c) => (addClip({ ...c, ...at }), (selection.value = [c.id])),
         (err) => showDropError(`Clip not added: ${err.message || err}`),
       );
+    };
+    // Audio files go through the stack (stack/audioDrop.js) one after the other, each a lane lower.
+    const dropAudioFiles = async (files, at, v) => {
+      const audio = files.filter(isAudioFile);
+      if (!audio.length) return showDropError(`“${files[0]?.name ?? 'file'}” is not an audio file: drop models on the layer stack`);
+      const lane = (CLIP_HEIGHT * 1.6) / v.ys;
+      const made = [];
+      for (const [i, file] of audio.entries()) {
+        const note = showDropNote(`${file.name}: decoding…`);
+        try {
+          const data = await decodeAudioFile(file);
+          const y = at.y + i * lane;
+          const { clip } = await clipFromAudio(data, { t: at.t, y, top: y - CLIP_HEIGHT / 2 / v.ys }, (l, waiting) =>
+            (note.textContent = `${file.name}: ${waiting ? `waiting for the model on ${l.name}` : `through ${l.name}`}…`));
+          addClip(clip);
+          made.push(clip.id);
+        } catch (err) {
+          showDropError(`${file.name} not added: ${err.message || err}`);
+        } finally {
+          note.remove();
+        }
+      }
+      if (made.length) selection.value = made;
     };
 
     const listeners = [
