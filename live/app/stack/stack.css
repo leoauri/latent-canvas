@@ -2,7 +2,7 @@
   position: absolute;
   left: 8px;
   bottom: 32px;
-  z-index: 5;
+  z-index: var(--z-panel);
   font: 11px/1.3 system-ui, sans-serif;
   color: var(--fg);
   background: color-mix(in srgb, var(--bg) 92%, transparent);
@@ -135,7 +135,7 @@
 }
 .stack-ghost {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-window);
   padding: 3px 7px;
   border-radius: 5px;
   background: var(--c);

@@ -7,7 +7,7 @@
 
 .window {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-window);
   display: flex;
   flex-direction: column;
   min-height: 0;

@@ -9,6 +9,7 @@ import { effect } from '@preact/signals';
 import { view, panBy, zoomAt, worldToScreenY, xToTime, screenToWorldY } from './view.js';
 import { clips, selection, CLIP_HEIGHT, duration, removeClips, moveClips, duplicateClips, bringAllToFront, addClip } from './clips.js';
 import { isAssetDrag, assetOf, assetKind, clipFromAsset } from '../assetDrag.js';
+import { seek } from './Playhead.jsx';
 
 // Brief message over the timeline (the HUD has no error slot).
 function showDropError(msg) {
@@ -241,8 +242,21 @@ export default function TimelineCanvas() {
       gestureScale = e.scale;
     };
 
+    // Touch: one finger on empty space pans (a tap seeks), a second finger hands over to the pinch.
+    const touches = new Set();
     const onPointerDown = (e) => {
       suppressClick = false;
+      if (e.pointerType === 'touch') {
+        touches.add(e.pointerId);
+        if (touches.size > 1) return void (e.stopPropagation(), (drag = { mode: 'pinch' }));
+        if (!hit(...local(e))) {
+          e.stopPropagation();
+          selection.value = [];
+          drag = { mode: 'pan', x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, tap: true };
+          canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
       if (e.button === 1) {
         e.preventDefault();
         drag = { mode: 'pan', x: e.clientX, y: e.clientY };
@@ -282,7 +296,10 @@ export default function TimelineCanvas() {
         canvas.style.cursor = c ? 'grab' : '';
         return;
       }
+      if (drag.mode === 'pinch') return;
       if (drag.mode === 'pan') {
+        if (drag.tap && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 8) return;
+        drag.tap = false;
         panBy(drag.x - e.clientX, drag.y - e.clientY);
         drag.x = e.clientX;
         drag.y = e.clientY;
@@ -331,8 +348,11 @@ export default function TimelineCanvas() {
       if ((e.key === 'Shift' || e.key === 'Alt') && drag?.mode === 'clip' && !e.repeat) applyClipDrag(e);
     };
     const onPointerUp = (e) => {
+      touches.delete(e.pointerId);
+      if (drag?.mode === 'pinch' && touches.size) return;
       const was = drag;
       drag = null;
+      if (was?.tap && e.type === 'pointerup') seek(xToTime(local(e)[0]));
       if (was?.mode === 'lasso') schedule();
       if (was?.deselect && e.type === 'pointerup') selection.value = selection.value.filter((id) => id !== was.deselect);
       canvas.style.cursor = hoverId ? 'grab' : '';

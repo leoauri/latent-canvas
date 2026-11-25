@@ -6,7 +6,7 @@
 .guide {
   position: fixed;
   inset: 0;
-  z-index: 9500;
+  z-index: var(--z-guide);
   pointer-events: none;
 }
 

@@ -188,9 +188,57 @@ function publish(...hashes) {
   index.value = next;
 }
 
+// Stand-in for OPFS where the browser refuses it (e.g. Safari Private Browsing): blobs live in memory for this page.
+function memoryDir() {
+  const items = new Map();
+  const notFound = () => Object.assign(new Error('not found'), { name: 'NotFoundError' });
+  const fileHandle = (name) => {
+    let file = new File([], name);
+    return {
+      kind: 'file',
+      name,
+      getFile: async () => file,
+      createWritable: async () => {
+        const parts = [];
+        return {
+          write: async (d) => void parts.push(d),
+          close: async () => void (file = new File(parts, name, { lastModified: Date.now() })),
+          abort: async () => {},
+        };
+      },
+    };
+  };
+  return {
+    kind: 'directory',
+    async getDirectoryHandle(name, { create } = {}) {
+      if (!items.has(name)) {
+        if (!create) throw notFound();
+        items.set(name, memoryDir());
+      }
+      return items.get(name);
+    },
+    async getFileHandle(name, { create } = {}) {
+      if (!items.has(name)) {
+        if (!create) throw notFound();
+        items.set(name, fileHandle(name));
+      }
+      return items.get(name);
+    },
+    async removeEntry(name) {
+      items.delete(name);
+    },
+    async *entries() {
+      yield* [...items];
+    },
+  };
+}
+
 function dirs() {
   return (boot.dirs ??= (async () => {
-    const root = await navigator.storage.getDirectory();
+    const root = await navigator.storage.getDirectory().catch((err) => {
+      console.warn('blobs: no OPFS here, keeping blobs in memory', err);
+      return memoryDir();
+    });
     const base = await root.getDirectoryHandle(DIR, { create: true });
     return {
       meta: await base.getDirectoryHandle('meta', { create: true }),
@@ -202,6 +250,8 @@ function dirs() {
 async function writeFile(dir, name, data) {
   const fh = await dir.getFileHandle(name, { create: true });
   const w = await fh.createWritable();
+  // Safari writes a view's whole underlying buffer (here: the message with its header), so copy it.
+  if (ArrayBuffer.isView(data) && (data.byteOffset || data.byteLength !== data.buffer.byteLength)) data = data.slice();
   try {
     await w.write(data);
     await w.close();
@@ -279,6 +329,7 @@ async function scan() {
 export function ready() {
   return (boot.ready ??= scan().catch((err) => {
     boot.ready = null;
+    boot.dirs = null;
     console.error('blobs: reading the store failed', err);
     throw err;
   }));
