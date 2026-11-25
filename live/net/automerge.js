@@ -259,11 +259,18 @@ const hash = (str) => {
   return (h >>> 0).toString(36);
 };
 
-/** The job id for merging the base into this session's conflicting files now, or null when none conflict. */
+/**
+ * The job id for merging the base into this session's conflicting files now, or null when none conflict.
+ * What a merge stages and runs against is part of it (files set aside, base files pending), so a
+ * merge held in one situation is tried again when that changes, e.g. after a reload sets files aside.
+ */
 function baseJobId(doc) {
   const list = vfs.layerConflicts();
   if (!doc || !list.length) return null;
-  return `base:${doc}:${hash(list.map((c) => [c.path, c.baseNow ?? '', c.session ?? ''].join('\0')).join('\0'))}`;
+  const conflicts = list.map((c) => [c.path, c.baseNow ?? '', c.session ?? ''].join('\0'));
+  const aside = [...(vfs.setAside ?? [])].sort();
+  const pending = (vfs.pendingBase?.() ?? []).map((p) => [p.path, p.source ?? ''].join('\0')).sort();
+  return `base:${doc}:${hash([...conflicts, '\u0001', ...aside, '\u0001', ...pending].join('\0'))}`;
 }
 
 /** The base merge for this session's conflicts now: { id, job } (job null: not started) or null. */
