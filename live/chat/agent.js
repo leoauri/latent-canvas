@@ -7,7 +7,7 @@ import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
 import { whereNow, lastWhere, sessionChangeNote } from './whereabouts.js';
-import { APIError, endpoint, recordUsage, addUsage } from './llm.js';
+import { APIError, endpoint, recordUsage, addUsage, recordRateLimit } from './llm.js';
 
 const MAX_STEPS = 60;
 export const EFFORTS = ['default', 'low', 'medium', 'high'];
@@ -159,6 +159,7 @@ async function streamCompletion(target, body, signal, onUpdate) {
     } catch {}
     throw new APIError(res.status, detail || res.statusText);
   }
+  recordRateLimit(res.headers);
 
   let reasoning = '';
   let text = '';
