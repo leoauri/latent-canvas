@@ -1,16 +1,20 @@
-// Audio files dropped on the canvas become latent clips. The file's audio enters the layer stack at
-// the back, as a live input's would, and goes forward through the layers by the rules of the live
-// stream (models.js): an operator inside whose masks the drop point lies runs its model on it if
-// the model takes that kind (an encoder turns the audio into latents), or its layer function on
-// latents; every other layer lets it pass, except a latent layer with pass-through off, which stops
-// it. The first latent recording layer that the latents reach, with the drop point inside its
-// masks, takes them: they become a clip at the drop point, as a recording would make.
-// Unlike a recording this runs offline (models.js renderOffline): as fast as the models go, with
-// every frame, and without the transport playing or a layer armed.
+// Audio files dropped on the canvas become latent clips, recorded the way live input is. The
+// file's audio enters the layer stack at the back, as a live input's would, and goes forward by the
+// rules of the live stream (models.js, recorder.js; stack.js `records` and `passesOn`):
+// - an operator inside whose masks the drop point lies runs its model on it if the model takes that
+//   kind (an encoder turns the audio into latents), or its layer function on latents (unless
+//   bypassed); otherwise it lets it pass;
+// - an armed latent recording layer records the latents reaching it into a clip at the drop point
+//   (several armed layers each make one); a latent layer lets it go on only with pass-through on;
+// - nothing reaches an audio output: the drop is never heard.
+// Unlike live recording this runs offline (models.js renderOffline): as fast as the models go, with
+// every frame, and without the transport playing. While it runs, `pendingDrops` holds the area the
+// clip will fill (drawn by TimelineCanvas.jsx) once the file's length is known.
 import { effect } from '@preact/signals';
+import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
 import { engineOn } from '../../lib/engine.js';
-import { stack } from './stack.js';
+import { stack, records, passesOn } from './stack.js';
 import { runtimes, renderOffline } from './models.js';
 import { runLayer, tickLayer, hasTick } from './layerFunc.js';
 import { operatesAt } from '../timeline/layers.js';
@@ -91,29 +95,48 @@ function runFunc(l, s, at) {
   return { data, dim, rate: out[0].rate ?? s.rate };
 }
 
+
+/** Audio drops in progress: [{ id, name, t, y (top edge), dur (s) }], shown as placeholders. */
+export const pendingDrops = persist('audioDrop.pending', []);
+
+/** Shows the area a dropped file will fill until the returned function is called. */
+export function showPending(p) {
+  const id = crypto.randomUUID();
+  pendingDrops.value = [...pendingDrops.peek(), { ...p, id }];
+  return () => (pendingDrops.value = pendingDrops.peek().filter((q) => q.id !== id));
+}
+
 /**
- * Carries mono context-rate audio from the back of the stack forward until a latent recording layer
- * takes it as latents. `at` = { t, y, top? }: where the stream enters (the clip's start and centre
- * line, as a recorded unit's position) and the clip's top edge (default: CLIP_HEIGHT / 2 above y).
- * `onStep(layer, waiting)` names each layer that processes it (`waiting`: for
- * its model to load). Resolves to { clip, layer }: the clip (not added yet) and the latent layer
- * that took it.
+ * Carries mono context-rate audio from the back of the stack forward, recording it into every armed
+ * latent layer it reaches as latents. `at` = { t, y, top? }: where the stream enters (the clip's
+ * start and centre line, as a recorded unit's position) and the clips' top edge (default:
+ * CLIP_HEIGHT / 2 above y). `onStep(layer, waiting)` names each layer that processes it (`waiting`:
+ * for its model to load). Resolves to [{ clip, layer }]: the clips (not added yet) and the layers
+ * that recorded them; throws if none did.
  */
-export async function clipFromAudio(audio, at, onStep) {
+export async function clipsFromAudio(audio, at, onStep) {
   const sr = audioContext().sampleRate;
+  const layers = [...stack.peek()];
+  // Past the last layer that could record it, nothing more is needed (and nothing is ever heard).
+  let end = layers.findLastIndex(records) + 1;
+  if (!end) throw new Error('no latent recording layer is armed: arm one to record dropped audio');
+  const stop = layers.findIndex((l) => !passesOn(l));
+  if (stop !== -1 && stop < end - 1) end = stop + 1;
   let s = { kind: 'audio', data: audio, dim: 1, rate: sr };
-  for (const l of [...stack.peek()]) {
-    const inside = operatesAt(l.id, at.t, at.y);
+  const out = [];
+  let reachedAsAudio = null;
+  for (const l of layers.slice(0, end)) {
     if (l.type === 'latent') {
-      if (s.kind === 'latent' && inside) {
-        const length = s.data.length / s.dim;
-        if (!length) throw new Error(`no latent frames reached ${l.name}`);
-        return { layer: l, clip: { id: crypto.randomUUID(), t: at.t, y: at.top ?? at.y - CLIP_HEIGHT / 2, rate: s.rate, dim: s.dim, length, data: s.data } };
+      if (records(l)) {
+        if (s.kind !== 'latent') reachedAsAudio ??= l;
+        else if (s.data.length) {
+          const clip = { id: crypto.randomUUID(), t: at.t, y: at.top ?? at.y - CLIP_HEIGHT / 2, rate: s.rate, dim: s.dim, length: s.data.length / s.dim, data: s.data };
+          out.push({ clip, layer: l });
+        }
       }
-      if (l.passThrough === false) throw new Error(`${l.name} lets nothing through and ${s.kind === 'audio' ? 'audio' : 'latents'} reach it`);
-      continue;
+      continue; // a layer that doesn't pass it on is the last one (end)
     }
-    if (l.type !== 'operator' || !inside) continue;
+    if (l.type !== 'operator' || !operatesAt(l.id, at.t, at.y)) continue;
     if (l.model) {
       if (runtimes.peek()[l.id]?.status !== 'ready') onStep?.(l, 'waiting');
       const { model } = await readyRuntime(l);
@@ -127,14 +150,14 @@ export async function clipFromAudio(audio, at, onStep) {
       const r = await renderOffline(l.id, input);
       if (r.missed) console.warn(`audio drop: ${r.missed} units missed their inference on ${l.name}`);
       s = model.output.kind === 'latent' ? { kind: 'latent', data: r.data, dim: r.dim, rate: r.rate } : { kind: 'audio', data: r.data, dim: 1, rate: sr };
-    } else if (l.func && s.kind === 'latent') {
+    } else if (l.func && !l.bypass && s.kind === 'latent') {
       onStep?.(l);
       s = { kind: 'latent', ...runFunc(l, s, at) };
     }
   }
-  throw new Error(
-    s.kind === 'audio'
-      ? 'no encoder turns it into latents on the way to a latent recording layer: put an operator with an encoder behind one'
-      : 'no latent recording layer takes the latents here (in front of the encoder, with the drop point inside its masks)',
-  );
+  if (out.length) return out;
+  const last = layers[end - 1];
+  if (reachedAsAudio) throw new Error(`it reached ${reachedAsAudio.name} as audio: put an encoder behind it`);
+  if (!passesOn(last) && !records(last)) throw new Error(`${last.name} (pass-through off) stops it before any armed layer`);
+  throw new Error(`no latent frames reached the armed layer ${last.name}`);
 }

@@ -10,7 +10,8 @@ import { view, panBy, zoomAt, worldToScreenY, xToTime, screenToWorldY } from './
 import { clips, selection, CLIP_HEIGHT, duration, removeClips, moveClips, duplicateClips, bringAllToFront, addClip } from './clips.js';
 import { isAssetDrag, assetOf, assetKind, clipFromAsset } from '../assetDrag.js';
 import { seek } from './Playhead.jsx';
-import { isAudioFile, decodeAudioFile, clipFromAudio } from '../stack/audioDrop.js';
+import { isAudioFile, decodeAudioFile, clipsFromAudio, pendingDrops, showPending } from '../stack/audioDrop.js';
+import { audioContext } from '../../lib/audio.js';
 
 // Brief message over the timeline (the HUD has no error slot). A note (`ms` 0) stays until removed.
 function showDropError(msg, ms = 4000, kind = 'error') {
@@ -139,6 +140,22 @@ export default function TimelineCanvas() {
         ctx.strokeStyle = on ? accent : fg;
         ctx.lineWidth = on ? 2 : 1;
         ctx.strokeRect(left - 1, y - 1, right - left + 2, CLIP_HEIGHT + 2);
+        ctx.globalAlpha = 1;
+      }
+
+      // Dropped audio on its way through the stack: the area its clip will fill, dashed.
+      for (const p of pendingDrops.value) {
+        const x = (p.t - v.t0) * v.pps, y = worldToScreenY(p.y, v), pw = Math.max(2, p.dur * v.pps);
+        if (x > w || x + pw < 0 || y > h || y + CLIP_HEIGHT < 0) continue;
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = accent;
+        ctx.fillRect(x, y, pw, CLIP_HEIGHT);
+        ctx.globalAlpha = 0.8;
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = accent;
+        ctx.strokeRect(x - 0.5, y - 0.5, pw + 1, CLIP_HEIGHT + 1);
+        ctx.setLineDash([]);
         ctx.globalAlpha = 1;
       }
 
@@ -398,24 +415,32 @@ export default function TimelineCanvas() {
         (err) => showDropError(`Clip not added: ${err.message || err}`),
       );
     };
-    // Audio files go through the stack (stack/audioDrop.js) one after the other, each a lane lower.
+    // Audio files are recorded through the stack (stack/audioDrop.js), each a lane lower. Each shows
+    // the area it will fill as soon as it is decoded; they go through the stack one after the other.
     const dropAudioFiles = async (files, at, v) => {
       const audio = files.filter(isAudioFile);
       if (!audio.length) return showDropError(`“${files[0]?.name ?? 'file'}” is not an audio file: drop models on the layer stack`);
       const lane = (CLIP_HEIGHT * 1.6) / v.ys;
+      const sr = audioContext().sampleRate;
+      const drops = audio.map((file, i) => {
+        const y = at.y + i * lane, top = y - CLIP_HEIGHT / 2 / v.ys;
+        const d = { file, at: { t: at.t, y, top }, hide: () => {} };
+        d.decoded = decodeAudioFile(file).then((data) => ((d.hide = showPending({ name: file.name, t: at.t, y: top, dur: data.length / sr })), data));
+        d.decoded.catch(() => {}); // reported below, in turn
+        return d;
+      });
       const made = [];
-      for (const [i, file] of audio.entries()) {
-        const note = showDropNote(`${file.name}: decoding…`);
+      for (const d of drops) {
+        const name = d.file.name;
+        const note = showDropNote(`${name}: decoding…`);
         try {
-          const data = await decodeAudioFile(file);
-          const y = at.y + i * lane;
-          const { clip } = await clipFromAudio(data, { t: at.t, y, top: y - CLIP_HEIGHT / 2 / v.ys }, (l, waiting) =>
-            (note.textContent = `${file.name}: ${waiting ? `waiting for the model on ${l.name}` : `through ${l.name}`}…`));
-          addClip(clip);
-          made.push(clip.id);
+          const takes = await clipsFromAudio(await d.decoded, d.at, (l, waiting) =>
+            (note.textContent = `${name}: ${waiting ? `waiting for the model on ${l.name}` : `through ${l.name}`}…`));
+          for (const { clip } of takes) addClip(clip), made.push(clip.id);
         } catch (err) {
-          showDropError(`${file.name} not added: ${err.message || err}`);
+          showDropError(`${name} not recorded: ${err.message || err}`);
         } finally {
+          d.hide();
           note.remove();
         }
       }
@@ -455,7 +480,7 @@ export default function TimelineCanvas() {
 
     // Redraw whenever the view, the clips or the selection change.
     const stopEffect = effect(() => {
-      view.value, clips.value, selection.value, stack.value, masks.value, masked.value, highlightedLayerId.value, activeLayerId.value;
+      view.value, clips.value, selection.value, pendingDrops.value, stack.value, masks.value, masked.value, highlightedLayerId.value, activeLayerId.value;
       schedule();
     });
     // Theme changes (light/dark) change the CSS colours.

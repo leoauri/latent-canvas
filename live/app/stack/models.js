@@ -33,7 +33,7 @@ import { audioContext, inputs } from '../../lib/audio.js';
 import { engineOn } from '../../lib/engine.js';
 import { createStreamModel, describeModel } from '../../lib/streamModel.js';
 import { createTap, createMixer } from '../../lib/audioBlocks.js';
-import { stack, updateStackLayer, stackLayerById, LAYER_TYPES } from './stack.js';
+import { stack, updateStackLayer, stackLayerById, passesOn, LAYER_TYPES } from './stack.js';
 import { playing, inputPointAt, setOutputDelay } from '../timeline/Playhead.jsx';
 import { operatesAt } from '../timeline/layers.js';
 import { runLayer, tickLayer, hasTick } from './layerFunc.js';
@@ -125,7 +125,7 @@ export function producedKind(l) {
   // latents reaching it. Recording (armed) is separate: it records what reaches it either way.
   if (l.type === 'latent') {
     if (playing.value) return 'latent';
-    if (l.passThrough === false) return null;
+    if (!passesOn(l)) return null;
     const src = producerBehind(l);
     return src && producedKind(src) === 'latent' ? 'latent' : null;
   }
@@ -139,7 +139,7 @@ export function producerBehind(l) {
   for (let i = stack.value.indexOf(l) - 1; i >= 0; i--) {
     const s = stack.value[i];
     if (producedKind(s)) return s;
-    if (s.type === 'latent' && s.passThrough === false) return null;
+    if (!passesOn(s)) return null;
   }
   return null;
 }
@@ -501,7 +501,7 @@ function consumerOf(l, src, kind) {
   if (l.type === 'latent') {
     // Pass-through: the latents reaching it go on to the layers in front, beside its own clips
     // (latentPlayback.js). Recording subscribes by itself (recorder.js).
-    if (kind !== 'latent' || l.passThrough === false) return null;
+    if (kind !== 'latent' || !passesOn(l)) return null;
     return { handler: (msg) => emit(l.id, msg) };
   }
   return null;

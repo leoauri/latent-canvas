@@ -115,6 +115,13 @@ export function layerIo(l, model) {
 /** The model's name from its *.meta.json (`model`), else the name stored when it was dropped. */
 export const modelName = (l, model) => (typeof model?.meta?.model === 'string' && model.meta.model.trim()) || l.model?.name || '';
 
+// The rules a latent recording layer follows, for live streams (models.js, recorder.js) and audio
+// drops (audioDrop.js) alike.
+/** Whether layer `l` records the latents reaching it: a latent layer, while armed. */
+export const records = (l) => l.type === 'latent' && !!l.armed;
+/** Whether what reaches layer `l` goes on to the layers in front: everywhere but a latent layer with pass-through off. */
+export const passesOn = (l) => !(l.type === 'latent' && l.passThrough === false);
+
 /** Latent layers let the latents reaching them through (to the layers in front) unless this is off. */
 export function togglePassThrough(id) {
   const l = stackLayerById(id);

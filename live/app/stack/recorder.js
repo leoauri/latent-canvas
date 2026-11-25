@@ -7,7 +7,7 @@
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
-import { stack, stackLayerById } from './stack.js';
+import { stack, stackLayerById, records } from './stack.js';
 import { subscribe, producerBehind, producedKind } from './models.js';
 import { playing, time, holdInput, nudgeInput } from '../timeline/Playhead.jsx';
 import { clips, addClip, updateClip, removeClip, CLIP_HEIGHT, duration } from '../timeline/clips.js';
@@ -110,7 +110,7 @@ const stopEffect = effect(() => {
   const recs = recordings.peek();
   const want = new Map();
   for (const l of stack.value) {
-    if (l.type !== 'latent' || !l.armed || !on) continue;
+    if (!records(l) || !on) continue;
     const src = latentSourceOf(l);
     if (src) want.set(l.id, src.id);
   }
