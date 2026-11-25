@@ -559,12 +559,18 @@ function CatchUp({ trial }) {
 
 const MERGE_OVERLAY = 'base-merge';
 
-/** Files where the base changed under this session's own version and they conflict. */
+/**
+ * Files where the base changed under this session's own version and they conflict, and the base's
+ * files that don't run yet (vfs.pendingBase: they failed to load, e.g. needing a conflicting file's
+ * new version).
+ */
 function BaseConflicts() {
   vfsVersion.value;
   const list = vfs.layerConflicts();
+  const pending = (vfs.pendingBase?.() ?? []).filter((p) => !list.some((c) => c.path === p.path));
+  const aside = vfs.setAside ?? new Set();
   const [msg, setMsg] = useState(null);
-  if (!list.length) return null;
+  if (!list.length && !pending.length) return null;
   const bj = automerge.baseJob.value; // auto-merge's merge of these conflicts
   const autoBusy = bj?.job?.state === 'reviewing' || bj?.job?.state === 'waiting';
   const act = async (fn) => {
@@ -580,23 +586,28 @@ function BaseConflicts() {
     act(async () => {
       const start = await findStartAgentTask();
       if (!start) throw new Error('the chat has no startAgentTask()');
-      const { overlayId, conflicts } = vfs.stageLayerMerge(MERGE_OVERLAY);
-      await start({ title: 'Merge the base into this session', overlayId, prompt: changes.baseMergeBrief(conflicts) });
+      const { overlayId, conflicts, pending = [] } = vfs.stageLayerMerge(MERGE_OVERLAY);
+      await start({ title: 'Merge the base into this session', overlayId, prompt: changes.baseMergeBrief(conflicts, pending) });
       setMsg({ text: 'Handed to an agent in the chat.' });
     });
   return (
     <section class="net-conflicts">
       <label class="net-label">Out of sync with the base</label>
-      <p class="net-hint">
-        The base (live/ on disk) changed under this session's own version of {list.length === 1 ? 'this file' : 'these files'}, and the changes overlap. This
-        session's version keeps running until you choose.
-      </p>
+      {list.length > 0 && (
+        <p class="net-hint">
+          The base (live/ on disk) changed under this session's own version of {list.length === 1 ? 'this file' : 'these files'}, and the changes overlap. This
+          session's version keeps running until you choose{list.some((c) => aside.has(c.path)) ? ', except where it is set aside' : ''}.
+        </p>
+      )}
       <ul class="net-list net-change-list">
         {list.map((c) => (
           <li key={c.path} class="net-change">
             <div class="net-row">
               <span class="net-mono net-grow">{c.path}</span>
             </div>
+            {aside.has(c.path) && (
+              <p class="net-hint">Set aside: this session's version, made from an older base, kept the new base from loading, so the base's version runs for now. The session's is kept.</p>
+            )}
             <details class="net-codefold">
               <summary>What changed in the base</summary>
               <pre class="net-code">{c.baseNow == null ? '(deleted)' : vfs.lineDiff(c.base ?? '', c.baseNow) || '(no difference)'}</pre>
@@ -616,7 +627,26 @@ function BaseConflicts() {
           </li>
         ))}
       </ul>
-      {bj?.job ? (
+      {pending.length > 0 && (
+        <>
+          <p class="net-hint">
+            Not running yet: the base's new {pending.length === 1 ? 'version of this file' : 'versions of these files'} failed to load, so the old{' '}
+            {pending.length === 1 ? 'one runs' : 'ones run'}. {list.length ? 'They may need the files above: merging those brings them in too.' : 'They are tried again with every change on disk.'}
+          </p>
+          <ul class="net-list">
+            {pending.map((p) => (
+              <li key={p.path} class="net-mono">{p.path}</li>
+            ))}
+          </ul>
+          {vfs.pendingError && (
+            <details class="net-codefold">
+              <summary>Why</summary>
+              <pre class="net-code">{vfs.pendingError}</pre>
+            </details>
+          )}
+        </>
+      )}
+      {!list.length ? null : bj?.job ? (
         <AutoMergeNote c={bj} />
       ) : (
         automerge.autoMergeOn.value && (
@@ -625,11 +655,13 @@ function BaseConflicts() {
           </div>
         )
       )}
-      <div class="net-row net-actions">
-        <button class="net-small net-approve" disabled={!!vfs.trial || autoBusy} onClick={merge} title="An agent merges the base change into this session's version">
-          Merge with an agent
-        </button>
-      </div>
+      {list.length > 0 && (
+        <div class="net-row net-actions">
+          <button class="net-small net-approve" disabled={!!vfs.trial || autoBusy} onClick={merge} title="An agent merges the base change into this session's version">
+            Merge with an agent
+          </button>
+        </div>
+      )}
       {msg?.error && <p class="net-error">{msg.error}</p>}
       {msg?.text && <p class="net-ok">{msg.text}</p>}
     </section>
@@ -794,7 +826,7 @@ function Bubble({ onOpen }) {
 export function ChangesPill() {
   vfsVersion.value;
   const open = !!findWindow('changes');
-  const conflicts = vfs.layerConflicts().length;
+  const conflicts = vfs.layerConflicts().length + (vfs.pendingBase?.().filter((p) => !vfs.setAside?.has(p.path)).length ?? 0);
   const n = unseen.value.length + conflicts;
   const openWin = () => {
     bubble.value = [];

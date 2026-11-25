@@ -646,14 +646,19 @@ export function adaptationBrief(id, conflicts = []) {
  * The brief for an agent merging the base (live/ on disk) into this session's own version of `files`,
  * staged with conflict markers by vfs.stageLayerMerge (the Changes window and auto-merge).
  */
-export const baseMergeBrief = (files) =>
+export const baseMergeBrief = (files, pending = []) =>
   [
     `The base code (the live/ folder on disk, shared by all sessions) changed under this session's own version of ${files.join(', ')}, and the changes overlap.`,
+    pending.length
+      ? `Also staged, as the base has them: ${pending.join(', ')}. These are complete on disk but don't run yet, because they need the new base of the files above (e.g. a new export): they land with your apply_changes, all at once. The base is not partial; don't hold the merge back for them. Edit them only where your merge needs it.`
+      : '',
     `Merge by intent, not by line. First work out what each side is for: what problem each of the session's edits solved, and what the base change does and why (its comments say; principles stated at the top of a file hold for the whole file). Then write the file as the base would be if it had been written knowing the session's purposes.`,
     `Keep a session edit only where its purpose still holds on the new base. One that worked around something the base has since fixed or redesigned is dropped, not carried over, and one that goes against the base's stated principles is not kept as it is. When you can't tell whether a session edit is still needed, or the two purposes conflict, ask the user before applying: name the edit and what it was for.`,
     `They are staged in your overlay with conflict markers: <<<<<<< session (this session's version) / ||||||| base (what both started from) / ======= / >>>>>>> new base. Some files may have no markers when one side deleted the file: decide from the intent. In eval_js, the staged files are overlay.read(path); vfs.read(path) does not show them.`,
     `Edit the markers out, then apply_changes. Applying this overlay marks the conflicts resolved. session_code shows how this session's files differ from the base.`,
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 
 export function dispose() {
   offDoc();

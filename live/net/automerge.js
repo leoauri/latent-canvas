@@ -278,7 +278,7 @@ async function runBase(id) {
   const doc = session.currentDoc.peek();
   let state = 'failed', note = null, c = { id, name: 'the base', author: null };
   try {
-    const { overlayId, conflicts: paths } = vfs.stageLayerMerge(BASE_OVERLAY);
+    const { overlayId, conflicts: paths, pending = [] } = vfs.stageLayerMerge(BASE_OVERLAY);
     baseStaged = new Map(paths.map((p) => [p, vfs.readBase(p)]));
     c = { ...c, name: `the base into ${paths.join(', ')}` };
     setJob(id, { state: 'reviewing', doc, note: null, name: c.name, author: c.author });
@@ -286,7 +286,7 @@ async function runBase(id) {
     const sid = newSession(BASE_SCOPE, { overlayId, title: `Auto-merge ${c.name}` });
     setJob(id, { sessionId: sid });
     const s = getSession(sid);
-    await sendMessage(s, changes.baseMergeBrief(paths));
+    await sendMessage(s, changes.baseMergeBrief(paths, pending));
     note = lastText(s);
     const left = vfs.layerConflicts().map((x) => x.path);
     if (session.currentDoc.peek() === doc && !paths.some((p) => left.includes(p))) state = 'merged';

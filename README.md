@@ -138,6 +138,12 @@ what runs = base             live/ on disk (git): the instrument, the same for e
    agent merge them (it gets the file with conflict markers in an overlay; applying it resolves them).
    With Auto-merge on, that agent runs in the background once the base holds still, and applies
    when you pause; what it can't decide stays in the Changes window with its reason.
+   A burst of disk writes (a checkout, a merge) arrives as one batch and is applied at once. Base
+   files that fail to load (e.g. they need a new export of a file the session conflicts on) keep
+   their old version running, are listed in the Changes window, tried again with every later disk
+   change, and land with the base merge. If the page can't boot because the session's conflicting
+   files don't fit the new base, they are set aside: the base's version runs until you merge them,
+   and the session's versions stay in its layer.
 6. Opening another session swaps its layer in; a new or joined session starts from the base. To
    move a feature from a session into the base, have an agent read the layer
    (`curl -sH 'x-redaw: 1' localhost:5173/__live/db/redaw-layers/layers/<doc url>`) and write it to

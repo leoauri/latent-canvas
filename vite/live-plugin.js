@@ -12,7 +12,8 @@
 //                                             non-string keys; ?full: binary data in full)
 //   GET    /__live/ls[/<key>]     -> the open page's localStorage (read-only, relayed the same way;
 //                                    both answer with header x-redaw-page: the tab that answered)
-//   ws event "live:change"        { path, mtime, source | null }  (disk edits from your editor)
+//   ws event "live:changes"       [{ path, mtime, source | null }]  (disk edits: your editor, git; a burst
+//                                  of writes, such as a checkout, comes as one batch)
 //   ws     /__live/signal          WebRTC signaling relay for multiplayer rooms (vite/signal.js),
 //                                  also under `vite preview`
 //
@@ -245,26 +246,34 @@ export default function livePlugin({ dir = 'live' } = {}) {
 
       // Push disk edits (e.g. from your editor) to the page.
       server.watcher.add(root);
-      const notify = async (abs, deleted) => {
-        if (!abs.startsWith(root + path.sep) || !TEXT_EXT.test(abs)) return;
-        let payload = { path: toRel(abs), mtime: Date.now(), source: null };
-        if (!deleted) {
-          try {
-            const [source, stat] = await Promise.all([fs.readFile(abs, 'utf8'), fs.stat(abs)]);
-            payload = { path: toRel(abs), mtime: Math.floor(stat.mtimeMs), source };
-          } catch { return; }
+      const read = async (abs) => {
+        try {
+          const [source, stat] = await Promise.all([fs.readFile(abs, 'utf8'), fs.stat(abs)]);
+          return { path: toRel(abs), mtime: Math.floor(stat.mtimeMs), source };
+        } catch {
+          return fs.access(abs).then(() => null, () => ({ path: toRel(abs), mtime: Date.now(), source: null }));
         }
-        server.ws.send({ type: 'custom', event: 'live:change', data: payload });
       };
-      // Debounce per file and read on the trailing edge: rapid successive writes (an agent
-      // commit followed by an editor save) can coalesce into one watcher event.
-      const timers = new Map();
+      // Collect writes until QUIET_MS pass without one (at most MAX_WAIT_MS), then read the files
+      // and send them as one batch: a checkout or merge lands at once, so files that need each
+      // other's new versions are applied together (vfs.external), and successive writes to one file
+      // coalesce. A single editor save goes out after QUIET_MS.
+      const QUIET_MS = 150, MAX_WAIT_MS = 2000;
+      const dirty = new Set();
+      let timer = null, first = 0;
+      const flush = async () => {
+        timer = null;
+        const list = [...dirty];
+        dirty.clear();
+        const batch = (await Promise.all(list.map(read))).filter(Boolean);
+        if (batch.length) server.ws.send({ type: 'custom', event: 'live:changes', data: batch });
+      };
       const schedule = (abs) => {
-        clearTimeout(timers.get(abs));
-        timers.set(abs, setTimeout(() => {
-          timers.delete(abs);
-          fs.access(abs).then(() => notify(abs, false), () => notify(abs, true));
-        }, 120));
+        if (!abs.startsWith(root + path.sep) || !TEXT_EXT.test(abs)) return;
+        if (!dirty.size) first = Date.now();
+        dirty.add(abs);
+        clearTimeout(timer);
+        timer = setTimeout(flush, Math.max(0, Math.min(QUIET_MS, first + MAX_WAIT_MS - Date.now())));
       };
       server.watcher.on('add', schedule);
       server.watcher.on('change', schedule);

@@ -12,7 +12,11 @@
 //               first session opens) nothing can be committed: the page never writes the base.
 //   committed   what runs: the base with the open session's layer on top. A disk edit to a file
 //               the layer changed is three-way merged under it; on conflict the session's version
-//               keeps running (and is reported).
+//               keeps running (and is reported). Disk edits arrive in batches (a checkout or
+//               merge at once) and are applied in one transaction. Base files whose new version
+//               failed to load (pendingBase(): e.g. they need a new export of a conflicted file)
+//               keep their old version running and are tried again with every later disk edit,
+//               and staged with a base merge.
 //   overlays    named edit buffers over the committed base, one level deep (no nesting). Each
 //               file in an overlay remembers the committed source it was edited from (`base`).
 //               Reads through an overlay see its edits; nothing runs until it is applied
@@ -121,6 +125,8 @@ export class VFS {
     this.trialState = null; // { overlayId, stage, changes, snapshot, startedAt }
     this.queue = Promise.resolve();
     this._ownWrites = new Map(); // path -> recent [{ source, mtime }] this page wrote to disk
+    this.pendingError = null; // why the base's pending files (pendingBase()) failed to load, last time
+    this.setAside = new Set(); // the session's conflicting files whose base version runs for now (_setAsideStale)
     this.version = 0;
     this.hash = hashSource;
     this.merge3 = merge3;
@@ -250,6 +256,27 @@ export class VFS {
       .map(([path, e]) => ({ path, base: e.base, baseNow: this.readBase(path), session: e.source }));
   }
 
+  /**
+   * Base files whose current version doesn't run: they (or the session's clean merge onto them)
+   * failed to load when they arrived from disk, e.g. because they need a new export of a file that
+   * conflicts with the session's version. The old version keeps running. Conflicting files are not
+   * listed (layerConflicts), unless set aside (their base version should run).
+   * -> [{ path, source (what should run), running }]
+   */
+  pendingBase() {
+    const out = [];
+    for (const path of new Set([...this.base.keys(), ...this.committed.keys(), ...this.layer.keys()])) {
+      const e = this.layer.get(path);
+      const baseSrc = this.readBase(path);
+      const conflict = e && e.base !== baseSrc;
+      if (conflict && !this.setAside.has(path)) continue;
+      const want = e && !conflict ? e.source : baseSrc;
+      const running = this.committed.get(path)?.source ?? null;
+      if (running !== want) out.push({ path, source: want, running });
+    }
+    return out;
+  }
+
   /** Resolve a conflict by taking the base's version (the session's own version of the file is dropped). */
   layerUseBase(path) {
     path = normalizePath(path);
@@ -257,7 +284,12 @@ export class VFS {
       if (this.trialState) return this._busy();
       if (!this.layer.has(path)) return { ok: true, changed: [] };
       this.layer.delete(path);
-      return this._transact(new Map([[path, this.readBase(path)]]), { origin: 'base-merge', label: `use the base's ${path}`, observeMs: 300 });
+      this.setAside.delete(path);
+      // With the base's pending files: some may have waited for this one.
+      const changes = new Map(this.pendingBase().map((p) => [p.path, p.source]));
+      const r = await this._transact(changes, { origin: 'base-merge', label: `use the base's ${path}`, observeMs: 300 });
+      if (r.phase === 'committed') this.pendingError = null;
+      return r;
     });
   }
 
@@ -269,6 +301,20 @@ export class VFS {
       if (!e) return { ok: true };
       this.layer.set(path, { source: e.source, base: this.readBase(path) });
       if (e.source === this.readBase(path)) this.layer.delete(path);
+      // Set aside (the base's version runs): bring the session's back, or leave it set aside if it fails.
+      if ((this.committed.get(path)?.source ?? null) !== (e.source ?? null)) {
+        if (this.trialState) return this.layer.set(path, e), this._busy();
+        const r = await this._transact(new Map([[path, e.source]]), { origin: 'base-merge', label: `keep this session's ${path}`, observeMs: 300 });
+        if (r.phase !== 'committed') {
+          this.layer.set(path, e);
+          await this._saveLayer();
+          this._changed();
+          return r;
+        }
+        this.setAside.delete(path);
+        return r;
+      }
+      this.setAside.delete(path);
       await this._saveLayer();
       this._changed();
       return { ok: true };
@@ -278,22 +324,31 @@ export class VFS {
   /**
    * Stage the conflicting files in overlay `id` for an agent to merge: each holds the merge of the
    * new base into the session's version, with conflict markers (<<<<<<< session / ||||||| base /
-   * ======= / >>>>>>> new base). Applying that overlay resolves the conflicts. -> { overlayId, conflicts }
+   * ======= / >>>>>>> new base). The base's pending files (pendingBase) are staged too, as they
+   * should run, so the whole new base lands at once. Applying that overlay resolves the conflicts.
+   * -> { overlayId, conflicts, pending } (paths)
    */
   stageLayerMerge(id = 'base-merge') {
     if (this.overlayMap.has(id)) this.overlayMap.delete(id);
     const conflicts = this.layerConflicts();
+    const pending = this.pendingBase().filter((p) => !conflicts.some((c) => c.path === p.path));
     // The new base, made from the base the session's version started from, merged onto what runs (the session's version).
-    this.createOverlay({ id, label: 'merge the base into this session', origin: 'base-merge', files: conflicts.map((c) => ({ path: c.path, source: c.baseNow, base: c.base })) });
+    const files = [
+      ...conflicts.map((c) => ({ path: c.path, source: c.baseNow, base: c.base })),
+      ...pending.map((p) => ({ path: p.path, source: p.source, base: p.running })),
+    ];
+    this.createOverlay({ id, label: 'merge the base into this session', origin: 'base-merge', files });
     const ov = this._ov(id);
     for (const c of conflicts) {
       const r = this._mergeFile(c.path, ov.files.get(c.path), 'new base', c.session, 'session');
-      if (r.conflict) ov.files.set(c.path, { source: r.conflict.merged, base: c.session, conflicted: hasConflictMarkers(r.conflict.merged) || undefined });
-      else ov.files.set(c.path, { source: r.same ? c.session : r.change, base: c.session });
+      // Made from what runs: the session's version, or the base's while the session's is set aside.
+      const running = this._committedOrNull(c.path);
+      if (r.conflict) ov.files.set(c.path, { source: r.conflict.merged, base: running, conflicted: hasConflictMarkers(r.conflict.merged) || undefined });
+      else ov.files.set(c.path, { source: r.same ? c.session : r.change, base: running });
     }
     for (const f of ov.files.values()) if (f.conflicted === undefined) delete f.conflicted;
     this._touch(ov);
-    return { overlayId: id, conflicts: conflicts.map((c) => c.path) };
+    return { overlayId: id, conflicts: conflicts.map((c) => c.path), pending: pending.map((p) => p.path) };
   }
 
   /** How the open session's version of a file differs from the base: a line diff (base -> session), '' if it doesn't. */
@@ -353,7 +408,7 @@ export class VFS {
     if (!e) return { source: baseSrc };
     if (e.base === baseSrc) return { source: e.source };
     const r = this._mergeFile(path, e, 'session', baseSrc, 'base');
-    if (r.conflict) return { source: e.source, conflict: true };
+    if (r.conflict) return { source: this.setAside.has(path) ? baseSrc : e.source, conflict: true };
     const merged = r.same ? baseSrc : r.change;
     if (merged === baseSrc) this.layer.delete(path);
     else this.layer.set(path, { source: merged, base: baseSrc });
@@ -386,36 +441,77 @@ export class VFS {
       await this._saveLayer();
       await this._loadLayer(id);
       await set('layer', id, metaStore).catch(() => {});
-      const next = this._compose();
+      this.setAside.clear();
+      let next = this._compose();
       await this._saveLayer();
-      const changes = new Map();
-      for (const path of new Set([...this.committed.keys(), ...next.keys()])) {
-        const a = this.committed.get(path)?.source ?? null;
-        const b = next.get(path)?.source ?? null;
-        if (a !== b) changes.set(path, b);
-      }
-      let result = { ok: true, changed: [] };
-      if (changes.size) {
+      const swapTo = async (next) => {
+        const changes = new Map();
+        for (const path of new Set([...this.committed.keys(), ...next.keys()])) {
+          const a = this.committed.get(path)?.source ?? null;
+          const b = next.get(path)?.source ?? null;
+          if (a !== b) changes.set(path, b);
+        }
+        if (!changes.size) return { ok: true, changed: [] };
         const s = await this._swapIn(changes, { observeMs: 0, rollbackOnError: false });
-        if (s.ok) {
-          this.loader.finalize(s.stage);
-          result = { ok: true, changed: s.changed, rebuilt: s.stage.rebuilt };
-        } else {
-          record('error', [`live: the code of this session failed to load:\n${formatErrors(s.errors)}`], 'vfs');
-          result = s;
+        if (!s.ok) return s;
+        this.loader.finalize(s.stage);
+        return { ok: true, changed: s.changed, rebuilt: s.stage.rebuilt };
+      };
+      let result = await swapTo(next);
+      // The session's files made from an older base may not load with the new one: set them aside.
+      const stale = !result.ok && this._setAsideStale();
+      if (stale) {
+        const retry = await swapTo((next = this._compose()));
+        if (retry.ok) (result = retry), this._noteSetAside(stale);
+        else {
+          this.setAside.clear();
+          next = this._compose();
         }
       }
+      if (!result.ok) record('error', [`live: the code of this session failed to load:\n${formatErrors(result.errors)}`], 'vfs');
       this.committed = next;
       this._changed();
       return result;
     });
   }
 
-  /** Load every module reachable from the entry. Returns the stage result. */
+  /**
+   * Set aside the open session's files that conflict with the base (made from an older one): the
+   * base's version of them runs instead, until the conflict is resolved or another session opens.
+   * Their layer entries stay as they are. Returns the newly set-aside paths, or null.
+   */
+  _setAsideStale() {
+    const stale = this.layerConflicts().map((c) => c.path).filter((p) => !this.setAside.has(p));
+    if (!stale.length) return null;
+    for (const p of stale) this.setAside.add(p);
+    return stale;
+  }
+
+  _noteSetAside(stale) {
+    record('warn', [`live: this session's own ${stale.join(', ')}, made from an older base, kept the new base from loading. Set aside: the base's version runs for now, and the session's stays in its layer. Merge them in the Changes window.`], 'vfs');
+  }
+
+  /**
+   * Load every module reachable from the entry. Returns the stage result. If it fails while the
+   * session has files made from an older base, it tries again with those set aside (_setAsideStale).
+   */
   async boot() {
     return this._serial(async () => {
       if (this.trialState) await this._discardTrial();
-      const stage = await this.loader.stage(this.committedSources(), []);
+      let stage = await this.loader.stage(this.committedSources(), []);
+      if (!stage.ok) {
+        const stale = this._setAsideStale();
+        if (stale) {
+          this.committed = this._compose();
+          const retry = await this.loader.stage(this.committedSources(), []);
+          if (retry.ok) (stage = retry), this._noteSetAside(stale);
+          else {
+            for (const p of stale) this.setAside.delete(p);
+            this.committed = this._compose();
+          }
+          this._changed();
+        }
+      }
       if (stage.ok) {
         this.loader.activate(stage);
         this.loader.finalize(stage);
@@ -636,7 +732,10 @@ export class VFS {
   _dropNoop(ov, path) {
     const c = ov.files.get(path);
     const committed = this._committedOrNull(path);
-    if (c && c.source === committed && c.base === committed) ov.files.delete(path);
+    if (!c || c.source !== committed || c.base !== committed) return;
+    // A base merge that keeps what runs still resolves the conflict when applied (_plan).
+    if (ov.origin === 'base-merge' && this.layerConflicts().some((x) => x.path === path)) return;
+    ov.files.delete(path);
   }
 
   _discard(id, paths) {
@@ -714,6 +813,10 @@ export class VFS {
       else if (!r.same) {
         changes.set(path, r.change);
         if (r.merged) merged.push(path);
+      } else if (ov.origin === 'base-merge' && this.layerConflicts().some((c) => c.path === path)) {
+        // Merged to what runs already (the session's version, or the base's while it is set aside):
+        // committing it as it is still resolves the conflict.
+        changes.set(path, this._committedOrNull(path));
       }
     }
     return { changes, merged, conflicts, unresolved };
@@ -1004,45 +1107,72 @@ export class VFS {
   }
 
   /**
-   * A change that arrived on disk (your editor, or an agent outside the browser): it changes the
-   * base. If the open session's layer has its own version of the file, the change is merged under
-   * it. Applied without rollback; ends a running trial.
+   * Changes that arrived on disk (your editor, an agent outside the browser, git), [{ path, source,
+   * mtime }] (one item: one file): they change the base. Where the open session's layer has its own
+   * version of a file, the change is merged under it. Applied in one transaction, so files that need
+   * each other's new versions land together, with the base's pending files (pendingBase) from
+   * earlier batches. Without rollback; ends a running trial.
    */
-  external({ path, source, mtime }) {
+  external(batch) {
+    const list = Array.isArray(batch) ? batch : [batch];
     return this._serial(async () => {
-      const b = this.base.get(path);
-      if (source == null && !b) return;
-      if (b && b.source === source) {
-        b.diskMtime = mtime;
-        b.mtime = Math.max(b.mtime, mtime);
-        await set(path, b, fileStore).catch(() => {});
-        return;
+      const touched = [];
+      for (const { path, source, mtime } of list) {
+        const b = this.base.get(path);
+        if (source == null && !b) continue;
+        if (b && b.source === source) {
+          b.diskMtime = mtime;
+          b.mtime = Math.max(b.mtime, mtime);
+          await set(path, b, fileStore).catch(() => {});
+          continue;
+        }
+        // The watcher reads a file a moment after a write, so the echo of one of our own earlier
+        // writes can arrive after a newer commit of the same file: same source and mtime -> ignore.
+        if (this._ownWrites.get(path)?.some((w) => w.source === source && w.mtime === mtime)) continue;
+        if (source == null) {
+          this.base.delete(path);
+          await set(path, { deleted: true, mtime, source: '' }, fileStore).catch(() => {});
+        } else {
+          const f = { source, mtime, diskMtime: mtime };
+          this.base.set(path, f);
+          await set(path, f, fileStore).catch(() => {});
+        }
+        touched.push(path);
       }
-      // The watcher reads a file ~120 ms after a write, so the echo of one of our own earlier
-      // writes can arrive after a newer commit of the same file: same source and mtime -> ignore.
-      if (this._ownWrites.get(path)?.some((w) => w.source === source && w.mtime === mtime)) return;
-      if (source == null) {
-        this.base.delete(path);
-        await set(path, { deleted: true, mtime, source: '' }, fileStore).catch(() => {});
-      } else {
-        const f = { source, mtime, diskMtime: mtime };
-        this.base.set(path, f);
-        await set(path, f, fileStore).catch(() => {});
-      }
-      const r = this._composeFile(path);
+      if (!touched.length) return;
+      const conflicts = touched.filter((path) => this._composeFile(path).conflict);
       await this._saveLayer();
-      if (r.conflict)
-        record('warn', [`live: ${path} changed on disk, conflicting with this session's own version, which keeps running. Resolve it in the Changes window.`], 'vfs');
-      if ((this.committed.get(path)?.source ?? null) === (r.source ?? null)) return this._changed();
+      if (conflicts.length)
+        record('warn', [`live: ${conflicts.join(', ')} changed on disk, conflicting with this session's own version, which keeps running. Resolve it in the Changes window.`], 'vfs');
+      let changes = new Map(this.pendingBase().map((p) => [p.path, p.source]));
+      if (!changes.size) return this._changed();
       if (this.trialState) await this._discardTrial();
-      const result = await this._transact(new Map([[path, r.source ?? null]]), {
-        origin: 'editor',
-        fromDisk: true,
-        rollbackOnError: false,
-        observeMs: 0,
-        mtime,
-      });
-      if (!result.ok) record('error', [`live: ${path} changed on disk and failed:\n${formatErrors(result.errors)}`], 'vfs');
+      // All at once; when files fail to load, the rest goes in without them (a file broken
+      // mid-edit doesn't hold back the others). Those stay pending, tried again with the next batch.
+      const failures = [];
+      for (;;) {
+        const result = await this._transact(changes, {
+          origin: 'editor',
+          fromDisk: true,
+          rollbackOnError: false,
+          observeMs: 0,
+          mtime: Math.max(...list.map((x) => x.mtime ?? 0)),
+        });
+        if (result.phase === 'committed') {
+          if (!result.ok) record('error', [`live: ${[...changes.keys()].join(', ')} changed on disk and failed:\n${formatErrors(result.errors)}`], 'vfs');
+          break;
+        }
+        failures.push(...result.errors);
+        const rest = new Map([...changes].filter(([p]) => !result.errors.some((e) => e.path === p)));
+        if (!rest.size || rest.size === changes.size) break;
+        changes = rest;
+      }
+      const pending = this.pendingBase().map((p) => p.path);
+      this.pendingError = pending.length ? formatErrors(failures) : null;
+      if (pending.length) {
+        record('error', [`live: ${pending.join(', ')} changed on disk and failed to load; their old versions keep running until they do:\n${this.pendingError}`], 'vfs');
+        this._changed();
+      }
     });
   }
 
@@ -1109,6 +1239,7 @@ export class VFS {
       if (source == null) this.committed.delete(path);
       else this.committed.set(path, { source });
       if (fromDisk) continue; // external() already updated the base (and the layer)
+      this.setAside.delete(path); // what runs now is what was committed
       // The open session's own code: kept in its layer, never written to the base or disk
       // (_transact and _keep refuse to commit without a layer).
       const baseSrc = this.base.get(path)?.source ?? null;
@@ -1123,6 +1254,7 @@ export class VFS {
       this.history.push(entry);
       if (this.history.length > HISTORY_LIMIT) this.history.splice(0, this.history.length - HISTORY_LIMIT);
     }
+    if (this.pendingError && !this.pendingBase().length) this.pendingError = null;
     await this._saveLayer();
     this._changed();
     return { warnings, entry };
