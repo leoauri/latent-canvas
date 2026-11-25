@@ -16,6 +16,8 @@ export const cue = persist('playhead.cue', 0);
 /** Current playback position, seconds (equals cue when stopped). */
 export const time = persist('playhead.time', 0);
 export const playing = persist('playhead.playing', false);
+/** Counts seeks, including ones to where the cue already is: playback restarts on every one. */
+export const seeks = persist('playhead.seeks', 0);
 const unbindCue = db.sync(cue, 'playhead.cue', {
   hydrate: (t) => {
     if (!playing.value) time.value = t;
@@ -118,6 +120,7 @@ export function seek(t) {
   batch(() => {
     cue.value = t;
     time.value = t;
+    seeks.value++;
   });
 }
 

@@ -57,7 +57,7 @@ export const tools = [
       check: {
         type: 'string',
         description:
-          'Optional async JS body run after the swap (same scope as eval_js: modules(path), vfs, loader, vendor, runtime, document). Throw to fail the transaction, e.g. `if (!document.querySelector(".counter")) throw new Error("counter not rendered")`.',
+          'Optional async JS body run after the swap (same scope as eval_js: modules(path), vfs, loader, vendor, runtime, document). Throw to fail the transaction, e.g. `if (!document.querySelector(".counter")) throw new Error("counter not rendered")`. The change is committed only after the check passes, so vfs.read(path) still gives the code from before it: check the running modules and the page, not the source.',
       },
       include_console_errors: {
         type: 'boolean',
@@ -107,7 +107,7 @@ export const tools = [
   ),
   custom(
     'history_undo',
-    'Undo one document-history action (default: the most recent one not already undone). Values someone changed since are left alone and reported as skipped. Writes a new action; nothing is rewound.',
+    'Undo one document-history action (default: the most recent one not already undone). The most recent one is often not the one meant (yours or the user\'s later edits come after it): to undo a particular action, find it with history_list and pass its id. Values someone changed since are left alone and reported as skipped. Writes a new action; nothing is rewound.',
     { id: { type: 'string' } },
   ),
   custom(
