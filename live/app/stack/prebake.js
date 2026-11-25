@@ -62,9 +62,11 @@ const stopSessionWatch = effect(() => (currentDoc.value, stopBakes(), forget()))
 
 const ids = persist('prebake.dataIds', () => ({ map: new WeakMap(), n: 0 })).value;
 const dataId = (d) => (ids.map.has(d) || ids.map.set(d, ++ids.n), ids.map.get(d));
+// Bypassing a layer always makes the bakes stale, whether or not the renderer's own key covers it.
+const bypassed = () => stack.value.filter((l) => l.bypass).map((l) => l.id).join(',');
 function contextKey() {
   try {
-    return `${RENDERER}|${renderer.contextKey()}`;
+    return `${RENDERER}|${bypassed()}|${renderer.contextKey()}`;
   } catch (e) {
     return `${RENDERER}|contextKey failed: ${e?.message || e}`;
   }

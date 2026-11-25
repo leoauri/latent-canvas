@@ -22,6 +22,7 @@ import { handle } from '../../net/session.js';
  * @property {import('./models.js').ModelRef} [model]  operator: the model it runs (app/stack/models.js)
  * @property {boolean} [armed]  latent: records the latent stream reaching it while playing (app/stack/recorder.js)
  * @property {boolean} [passThrough]  latent: false stops the latents reaching it going on to the layers in front (default on)
+ * @property {boolean} [bypass]  layer-function operator: lets everything reaching it pass unchanged (live and in bakes)
  * Masks (app/timeline/layers.js, field layerId) limit where a layer operates.
  */
 
@@ -118,6 +119,12 @@ export const modelName = (l, model) => (typeof model?.meta?.model === 'string' &
 export function togglePassThrough(id) {
   const l = stackLayerById(id);
   if (l?.type === 'latent') updateStackLayer(id, { passThrough: l.passThrough === false ? undefined : false });
+}
+
+/** Layer-function operators let everything pass unchanged while bypassed. */
+export function toggleBypass(id) {
+  const l = stackLayerById(id);
+  if (l) updateStackLayer(id, { bypass: !l.bypass || undefined });
 }
 
 export function toggleArm(id) {

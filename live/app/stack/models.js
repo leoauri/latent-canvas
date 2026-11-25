@@ -403,6 +403,7 @@ function consumerOf(l, src, kind) {
     //   start, rate, dim, t?, y? } places the frame due (spread it into a frame you return:
     //   { kind: 'latent', ...ctx.at, data }). It returns the frames to send on; returning none
     //   ends the ring-out, and then the voice's `end` goes on. New frames of the voice stop it.
+    // While the layer is bypassed everything passes on unchanged and a ring-out ends.
     const state = {};
     const seen = new Map(); // voice -> its last frame in, while transform has it and no end yet
     const ringing = new Map(); // voice -> { at, end, until }: the frame due next after its end
@@ -422,7 +423,7 @@ function consumerOf(l, src, kind) {
         while (ringing.get(voice) === r && now >= r.at.start) {
           let out = [];
           if (r.at.start > r.until) report(`${voice} rang out for over ${RING_MAX_S} s: ended`, ' tick');
-          else
+          else if (!layer().bypass)
             try {
               out = [tickLayer(layer(), { voice, at: r.at, state, sampleRate: sr, clip: clipOf(voice) }) ?? []].flat();
             } catch (e) {
@@ -447,14 +448,14 @@ function consumerOf(l, src, kind) {
         }
         if (msg.kind === 'end') {
           const last = seen.get(msg.voice);
-          if (!last || !hasTick(layer())) return forget(msg.voice), emit(l.id, msg);
+          if (!last || layer().bypass || !hasTick(layer())) return forget(msg.voice), emit(l.id, msg);
           seen.delete(msg.voice);
           const y = msg.y ?? last.y;
           const at = { voice: msg.voice, start: msg.start, rate: last.rate, dim: last.dim, ...(msg.t !== undefined && { t: msg.t }), ...(y !== undefined && { y }) };
           ringing.set(msg.voice, { at, end: msg, until: msg.start + RING_MAX_S * sr });
           return;
         }
-        if (msg.kind !== 'latent' || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) return emit(l.id, msg);
+        if (msg.kind !== 'latent' || layer().bypass || (msg.t !== undefined && !operatesAt(l.id, msg.t, msg.y))) return emit(l.id, msg);
         ringing.delete(msg.voice); // its input is back: the ring-out stops
         seen.set(msg.voice, msg);
         let out;

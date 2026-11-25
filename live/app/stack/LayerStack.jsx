@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import {
   stack, LAYER_TYPES, typeColor, stackLayerColor, insertLayer, moveLayer, removeStackLayer,
-  activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, togglePassThrough, stackLayerById,
+  activeLayer, activeLayerId, highlightedLayerId, layerIo, toggleArm, togglePassThrough, toggleBypass, stackLayerById,
 } from './stack.js';
 import { readDrop, attachModel, runtimes } from './models.js';
 import { recordings } from './recorder.js';
@@ -187,6 +187,16 @@ export default function LayerStack() {
           >
             ◩
           </button>
+          {l.type === 'operator' && l.func && !l.model && (
+            <button
+              class={`stack-thru stack-bypass${!l.bypass ? ' stack-thru-on' : ''}`}
+              title={l.bypass ? 'Bypassed: everything passes unchanged. Click to activate' : 'Active. Click to bypass'}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => toggleBypass(l.id)}
+            >
+              ⏻
+            </button>
+          )}
           {l.type === 'latent' && (
             <>
               <button

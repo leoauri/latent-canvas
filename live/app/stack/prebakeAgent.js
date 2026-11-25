@@ -21,6 +21,7 @@ function layerLine(l) {
   if (l.func) bits.push('layer function');
   if (l.model) bits.push(`model${rt?.model ? ` (${rt.model.input.kind} in)` : ''}, ${rt?.status ?? 'not loaded'}`);
   if (l.passThrough === false) bits.push('no pass-through');
+  if (l.bypass) bits.push('bypassed');
   return `- ${l.name} (${l.id}): ${bits.join(', ')}`;
 }
 
@@ -66,7 +67,7 @@ Files:
 - app/stack/prebake.js: the scaffold (scheduling, cache, playback, diagnostics). Leave it alone unless the contract itself can't express what the session needs.
 
 Contract of bakeRender.js:
-- contextKey() -> string: all session state besides the clip that a clip's sound depends on (layers, functions, parameters, masks, …). A bake whose key changed is stale and re-baked; state missing from the key means outdated bakes play silently wrong.
+- contextKey() -> string: all session state besides the clip that a clip's sound depends on (layers, functions, parameters, bypass, masks, …). A bake whose key changed is stale and re-baked; state missing from the key means outdated bakes play silently wrong.
 - problems() -> [string]: what in the current session this renderer can't render, checked cheaply without rendering. The user sees these, and they ask for this chat again; return [] only when everything is covered.
 - renderClip(clip, { signal }) -> Promise<{ outs: [{ outId: audio-out layer id, offset: seconds from clip.t, data: Float32Array at audioContext().sampleRate }], missed }>. Throw with a clear message when something can't be rendered. \`signal\` aborts when pre-bake is switched off, the session changes or the scaffold is replaced: pass it to every renderOffline call (and check it between long steps) so an abandoned bake stops using the models.
 - Changing bakeRender.js re-bakes everything automatically.
@@ -75,7 +76,7 @@ Running models offline: renderOffline(layerId, data, { onProgress, signal }) in 
 
 How to work:
 The chat starts either with a request that lists the session's state (setting pre-baking up: follow steps 1-4) or with the user describing a problem in their own words (pre-baking is already set up). In the second case, work on what they describe: read the current state first with eval_js (\`const p = modules('app/stack/prebake.js'); return { problems: p.renderProblems.value, errors: p.currentErrors.value, status: p.bakeStatus.value }\`), find the cause in the live path and bakeRender.js as in step 1, fix it, and verify as in step 3 on the clips concerned before baking them all. Don't rework parts that aren't involved.
-1. Find how this session sounds live: what plays clips (app/stack/latentPlayback.js), how layers process messages (app/stack/models.js, app/stack/layerFunc.js, runLayer callers), and anything newer that touches the sound path (list_modules; search for emit(, mixer pushes, new layer types). Compare with bakeRender.js and list the differences to yourself.
+1. Find how this session sounds live: what plays clips (app/stack/latentPlayback.js), how layers process messages (app/stack/models.js, app/stack/layerFunc.js, runLayer callers; a bypassed layer passes everything on unchanged), and anything newer that touches the sound path (list_modules; search for emit(, mixer pushes, new layer types). Compare with bakeRender.js and list the differences to yourself.
 2. If the renderer already matches, say so and only verify. Otherwise write or edit bakeRender.js and apply_changes (label "pre-bake: …").
 3. Verify in eval_js, first on a couple of clips: \`return await modules('app/stack/prebake.js').bakeAll({ limit: 2 })\` gives { problems, clips: per clip { ms, missed, outs: [{ outId, offset, seconds, peak, rms }] } or { error } } (\`ids: [...]\` picks clips). Bakes can take long (decoding runs at the model's speed, tails included): from those clips' ms, estimate the time for all of them before running bakeAll() on every clip, and tell the user if it is more than a minute or two. stopBakes() in the same module stops a bake that runs away. Every clip must bake without error and problems must be empty. Silent outputs where the live path is audible, missed > 0, or lengths that don't cover the clip and its tails are bugs: fix and repeat. If the engine is off or a model isn't loaded, ask the user to start it.
 4. Finish by telling the user in two or three lines what the renderer covers now and that the dot on the Pre-bake pill switches between bakes and live, so they can listen for differences.
