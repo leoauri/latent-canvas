@@ -27,7 +27,8 @@ Class {
 		'appliedLift',
 		'canvasSpace',
 		'floorPortal',
-		'windows'
+		'windows',
+		'latentPanel'
 	],
 	#classVars : [
 		'InviteLink'
@@ -316,11 +317,12 @@ SRRedawSessionView >> clipHeight [
 
 {
 	#category : #opening,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 17:01'
 }
 SRRedawSessionView >> close [
 	"Leaves the session too, unless another canvas shows it."
 	transport ifNotNil: [transport remove. transport := nil].
+	latentPanel ifNotNil: [latentPanel remove. latentPanel := nil].
 	self windows do: [:each | each detachMarker. each remove].
 	features copy do: [:each | self disable: each class].
 	(self class allInstances anySatisfy: [:each | each ~~ self and: [each session == session and: [each world notNil]]])
@@ -518,15 +520,14 @@ SRRedawSessionView >> isWindowOpen [
 
 {
 	#category : #controls,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 17:01'
 }
 SRRedawSessionView >> latentPanel [
 	"Made on first use and kept in my world, like my transport."
-	^ (self world children detect: [:each | (each isKindOf: SRRedawLatentPanel) and: [each canvas == self]] ifNone: [nil])
-		ifNil: [| panel |
-			panel := SRRedawLatentPanel for: self.
-			self world addChild: panel.
-			panel]
+	(latentPanel isNil or: [latentPanel world isNil]) ifTrue: [
+		latentPanel := SRRedawLatentPanel for: self.
+		self world addChild: latentPanel].
+	^ latentPanel
 ]
 
 {
