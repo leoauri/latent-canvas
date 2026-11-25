@@ -16,7 +16,7 @@ import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
 import { stack } from './stack.js';
 import { emit } from './models.js';
-import { playing, time, cue } from '../timeline/Playhead.jsx';
+import { playing, time, cue, seeks } from '../timeline/Playhead.jsx';
 import { clips, CLIP_HEIGHT, duration, sampleAt } from '../timeline/clips.js';
 import { operatesAt } from '../timeline/layers.js';
 import { isBaked } from './prebake.js';
@@ -31,7 +31,7 @@ function begin(id) {
   const ctx = audioContext();
   ctx.resume(); // Space is a user gesture: a context nothing has started yet can start here
   const sr = ctx.sampleRate;
-  const run = { start: Math.round(ctx.currentTime * sr), t0: time.peek(), cue: cue.peek(), at: time.peek(), last: new Map(), timer: 0, voices: new Set(), sounding: new Set() };
+  const run = { start: Math.round(ctx.currentTime * sr), t0: time.peek(), cue: cue.peek(), seek: seeks.peek(), at: time.peek(), last: new Map(), timer: 0, voices: new Set(), sounding: new Set() };
   // sounding: voices that have had frames sent and no `end` yet.
   const frameAt = (ts) => run.start + Math.round((ts - run.t0) * sr);
   run.timer = setInterval(() => {
@@ -85,9 +85,9 @@ function end(id) {
 // A run per latent layer while playing; a seek restarts it.
 const stopEffect = effect(() => {
   playing.value;
-  const c = cue.value;
+  const c = cue.value, n = seeks.value;
   const want = new Set(playing.value ? stack.value.filter((l) => l.type === 'latent').map((l) => l.id) : []);
-  for (const [id, run] of [...runs]) if (!want.has(id) || run.cue !== c) end(id);
+  for (const [id, run] of [...runs]) if (!want.has(id) || run.cue !== c || run.seek !== n) end(id);
   for (const id of want) if (!runs.has(id)) begin(id);
 });
 
