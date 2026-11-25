@@ -4,8 +4,9 @@
 // - an operator inside whose masks the drop point lies runs its model on it if the model takes that
 //   kind (an encoder turns the audio into latents), or its layer function on latents (unless
 //   bypassed); otherwise it lets it pass;
-// - an armed latent recording layer records the latents reaching it into a clip at the drop point
-//   (several armed layers each make one); a latent layer lets it go on only with pass-through on;
+// - an armed latent recording layer records the latents reaching it into a clip of its own at the
+//   drop point (several armed layers each make one, a lane apart in stack order); a latent layer
+//   lets it go on only with pass-through on;
 // - nothing reaches an audio output: the drop is never heard.
 // Unlike live recording this runs offline (models.js renderOffline): as fast as the models go, with
 // every frame, and without the transport playing. While it runs, `pendingDrops` holds the area the
@@ -18,7 +19,7 @@ import { stack, records, passesOn } from './stack.js';
 import { runtimes, renderOffline } from './models.js';
 import { runLayer, tickLayer, hasTick } from './layerFunc.js';
 import { operatesAt } from '../timeline/layers.js';
-import { CLIP_HEIGHT } from '../timeline/clips.js';
+import { CLIP_HEIGHT, LANE } from '../timeline/clips.js';
 
 const AUDIO_FILE_RE = /\.(wav|wave|mp3|ogg|oga|opus|flac|m4a|aac|aif|aiff|caf|webm)$/i;
 const RING_MAX_S = 60; // as models.js: a layer function's ring-out is ended after this long
@@ -95,8 +96,13 @@ function runFunc(l, s, at) {
   return { data, dim, rate: out[0].rate ?? s.rate };
 }
 
+/** The armed latent layers a drop can reach (none past a layer that stops it), back to front. */
+export function recordersFor(layers = stack.peek()) {
+  const stop = layers.findIndex((l) => !passesOn(l));
+  return (stop === -1 ? layers : layers.slice(0, stop + 1)).filter(records);
+}
 
-/** Audio drops in progress: [{ id, name, t, y (top edge), dur (s) }], shown as placeholders. */
+/** Audio drops in progress: [{ id, name, t, y (top edge), dur (s), lanes, lane (step, world y) }], shown as placeholders. */
 export const pendingDrops = persist('audioDrop.pending', []);
 
 /** Shows the area a dropped file will fill until the returned function is called. */
@@ -108,33 +114,37 @@ export function showPending(p) {
 
 /**
  * Carries mono context-rate audio from the back of the stack forward, recording it into every armed
- * latent layer it reaches as latents. `at` = { t, y, top? }: where the stream enters (the clip's
- * start and centre line, as a recorded unit's position) and the clips' top edge (default:
- * CLIP_HEIGHT / 2 above y). `onStep(layer, waiting)` names each layer that processes it (`waiting`:
- * for its model to load). Resolves to [{ clip, layer }]: the clips (not added yet) and the layers
- * that recorded them; throws if none did.
+ * latent layer it reaches as latents, into a clip owned by that layer. `at` = { t, y, top?, lane? }:
+ * where the stream enters (the clips' start and centre line, as a recorded unit's position), the
+ * first clip's top edge (default: CLIP_HEIGHT / 2 above y), and the step between the clips of
+ * several recording layers (default LANE), which go a lane apart in stack order, as in live
+ * recording. `onStep(layer, waiting)` names each layer that processes it (`waiting`: for its model
+ * to load). Resolves to [{ clip, layer }]: the clips (not added yet) and the layers that recorded
+ * them; throws if none did.
  */
 export async function clipsFromAudio(audio, at, onStep) {
   const sr = audioContext().sampleRate;
   const layers = [...stack.peek()];
-  // Past the last layer that could record it, nothing more is needed (and nothing is ever heard).
-  let end = layers.findLastIndex(records) + 1;
-  if (!end) throw new Error('no latent recording layer is armed: arm one to record dropped audio');
-  const stop = layers.findIndex((l) => !passesOn(l));
-  if (stop !== -1 && stop < end - 1) end = stop + 1;
+  const recorders = recordersFor(layers);
+  if (!recorders.length) {
+    const stop = layers.find((l) => !passesOn(l));
+    throw new Error(stop && layers.some(records) ? `${stop.name} (pass-through off) stops it before any armed layer` : 'no latent recording layer is armed: arm one to record dropped audio');
+  }
+  // Past the last layer that can record it, nothing more is needed (and nothing is ever heard).
+  const end = layers.indexOf(recorders.at(-1)) + 1;
+  const top = at.top ?? at.y - CLIP_HEIGHT / 2;
   let s = { kind: 'audio', data: audio, dim: 1, rate: sr };
   const out = [];
   let reachedAsAudio = null;
   for (const l of layers.slice(0, end)) {
     if (l.type === 'latent') {
-      if (records(l)) {
-        if (s.kind !== 'latent') reachedAsAudio ??= l;
-        else if (s.data.length) {
-          const clip = { id: crypto.randomUUID(), t: at.t, y: at.top ?? at.y - CLIP_HEIGHT / 2, rate: s.rate, dim: s.dim, length: s.data.length / s.dim, data: s.data };
-          out.push({ clip, layer: l });
-        }
+      if (!records(l)) continue;
+      if (s.kind !== 'latent') reachedAsAudio ??= l;
+      else if (s.data.length) {
+        const y = top + recorders.indexOf(l) * (at.lane ?? LANE);
+        out.push({ layer: l, clip: { id: crypto.randomUUID(), t: at.t, y, rate: s.rate, dim: s.dim, length: s.data.length / s.dim, data: s.data, layer: l.id } });
       }
-      continue; // a layer that doesn't pass it on is the last one (end)
+      continue;
     }
     if (l.type !== 'operator' || !operatesAt(l.id, at.t, at.y)) continue;
     if (l.model) {
@@ -156,8 +166,6 @@ export async function clipsFromAudio(audio, at, onStep) {
     }
   }
   if (out.length) return out;
-  const last = layers[end - 1];
   if (reachedAsAudio) throw new Error(`it reached ${reachedAsAudio.name} as audio: put an encoder behind it`);
-  if (!passesOn(last) && !records(last)) throw new Error(`${last.name} (pass-through off) stops it before any armed layer`);
-  throw new Error(`no latent frames reached the armed layer ${last.name}`);
+  throw new Error(`no latent frames reached the armed layer ${recorders.at(-1).name}`);
 }

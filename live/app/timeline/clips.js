@@ -6,6 +6,8 @@ import { shared } from '../../net/shared.js';
 import * as blobs from '../../net/blobs.js';
 
 export const CLIP_HEIGHT = 10; // px, independent of zoom
+/** Vertical step between clips laid out in lanes (successive takes, parallel recordings), world y. */
+export const LANE = CLIP_HEIGHT + 6;
 
 /**
  * @typedef {object} Clip
@@ -16,6 +18,8 @@ export const CLIP_HEIGHT = 10; // px, independent of zoom
  * @property {number} dim     latent dimensionality
  * @property {number} length  number of samples
  * @property {Float32Array} data  length * dim values, sample-major: data[i * dim + d]
+ * @property {string} [layer]  the latent layer that recorded it, which plays it (app/stack/latentPlayback.js);
+ *   clips without one (from before, dropped assets) or whose layer is gone play by playsClip's fallback
  * @property {boolean} [recording]  still being recorded (app/stack/recorder.js): not saved yet
  */
 
@@ -71,7 +75,8 @@ const unbind = [
       c.rate > 0 && Number.isFinite(c.rate) &&
       Number.isInteger(c.dim) && c.dim > 0 && c.dim <= 4096 &&
       Number.isInteger(c.length) && c.length >= 0 &&
-      typeof c.dataHash === 'string',
+      typeof c.dataHash === 'string' &&
+      (c.layer === undefined || typeof c.layer === 'string'),
     encode: ({ data, recording, ...m }) => ({ ...m, dataHash: hashes.value.get(data) }),
     decode: ({ dataHash, ...m }, prev) => {
       if (!dataHash) return null;

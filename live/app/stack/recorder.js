@@ -10,11 +10,10 @@ import { audioContext } from '../../lib/audio.js';
 import { stack, stackLayerById, records } from './stack.js';
 import { subscribe, producerBehind, producedKind } from './models.js';
 import { playing, time, holdInput, nudgeInput } from '../timeline/Playhead.jsx';
-import { clips, addClip, updateClip, removeClip, CLIP_HEIGHT, duration } from '../timeline/clips.js';
+import { clips, addClip, updateClip, removeClip, CLIP_HEIGHT, LANE, duration } from '../timeline/clips.js';
 import { masksOf } from '../timeline/layers.js';
 
 const UPDATE_EVERY = 4; // frames between redraws of a growing clip
-const LANE_GAP = 6; // px between stacked takes
 
 /**
  * @typedef {object} Take  one voice of the stream, recorded into one clip
@@ -49,12 +48,16 @@ function laneFor(l, t0) {
   const m = masksOf(l.id).find((r) => r.h < 1e6);
   if (m) return m.y + Math.max(0, (m.h - CLIP_HEIGHT) / 2);
   const overlapping = clips.value.filter((c) => c.t + duration(c) > t0);
-  return overlapping.length ? Math.max(...overlapping.map((c) => c.y)) + CLIP_HEIGHT + LANE_GAP : 0;
+  return overlapping.length ? Math.max(...overlapping.map((c) => c.y)) + LANE : 0;
 }
 
-function begin(l, sourceId) {
+/**
+ * `lane`: this layer's place among the layers recording at once (0 = backmost). They record the
+ * same input, so each one's clips go a lane lower than those of the layer behind it.
+ */
+function begin(l, sourceId, lane) {
   const ctx = audioContext();
-  const rec = { sourceId, startFrame: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), takes: new Map(), n: 0, missed: 0 };
+  const rec = { sourceId, lane, startFrame: Math.round(ctx.currentTime * ctx.sampleRate), t0: time.peek(), takes: new Map(), n: 0, missed: 0 };
   rec.unsub = subscribe(sourceId, ({ kind, data: frame, missed, start, rate, dim, voice, t, y }) => {
     if (kind !== 'latent' || start < rec.startFrame) return; // a flush; or audio from before the recording started
     let take = rec.takes.get(voice);
@@ -64,7 +67,8 @@ function begin(l, sourceId) {
         id: take.clipId,
         t: t ?? rec.t0 + (start - rec.startFrame) / ctx.sampleRate,
         // The trace goes where the stream is: a unit's y is a clip's centre line.
-        y: y !== undefined ? y - CLIP_HEIGHT / 2 : laneFor(stackLayerById(l.id) ?? l, rec.t0),
+        y: (y !== undefined ? y - CLIP_HEIGHT / 2 : laneFor(stackLayerById(l.id) ?? l, rec.t0)) + lane * LANE,
+        layer: l.id, // it plays from this layer (latentPlayback.js)
         rate,
         dim,
         length: 0,
@@ -92,7 +96,7 @@ function end(id) {
   const rec = recordings.peek()[id];
   if (!rec) return;
   rec.unsub();
-  if ([...rec.takes.values()].some((take) => take.n)) tookClip = true;
+  if ([...rec.takes.values()].some((take) => take.n)) tookLanes = Math.max(tookLanes, (rec.lane ?? 0) + 1);
   const next = { ...recordings.peek() };
   delete next[id];
   recordings.value = next;
@@ -115,16 +119,16 @@ const stopEffect = effect(() => {
     if (src) want.set(l.id, src.id);
   }
   for (const id of Object.keys(recs)) if (want.get(id) !== recs[id].sourceId) end(id);
-  for (const [id, src] of want) if (!recordings.peek()[id]) begin(stackLayerById(id), src);
+  [...want].forEach(([id, src], lane) => !recordings.peek()[id] && begin(stackLayerById(id), src, lane));
 });
 
 // While a recording runs, the live input's world position stays put (Playhead.jsx). When it ends
-// having made a clip, the input dot moves a lane down, so the next take goes below it.
-let tookClip = false;
+// having made clips, the input dot moves below the lanes they took, so the next take goes below them.
+let tookLanes = 0;
 const stopHold = effect(() => {
   const on = Object.keys(recordings.value).length > 0;
   holdInput(on);
-  if (!on && tookClip) (tookClip = false), nudgeInput(CLIP_HEIGHT + LANE_GAP);
+  if (!on && tookLanes) nudgeInput(tookLanes * LANE), (tookLanes = 0);
 });
 
 export function dispose() {

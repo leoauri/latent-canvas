@@ -7,10 +7,10 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { effect } from '@preact/signals';
 import { view, panBy, zoomAt, worldToScreenY, xToTime, screenToWorldY } from './view.js';
-import { clips, selection, CLIP_HEIGHT, duration, removeClips, moveClips, duplicateClips, bringAllToFront, addClip } from './clips.js';
+import { clips, selection, CLIP_HEIGHT, LANE, duration, removeClips, moveClips, duplicateClips, bringAllToFront, addClip } from './clips.js';
 import { isAssetDrag, assetOf, assetKind, clipFromAsset } from '../assetDrag.js';
 import { seek } from './Playhead.jsx';
-import { isAudioFile, decodeAudioFile, clipsFromAudio, pendingDrops, showPending } from '../stack/audioDrop.js';
+import { isAudioFile, decodeAudioFile, clipsFromAudio, recordersFor, pendingDrops, showPending } from '../stack/audioDrop.js';
 import { audioContext } from '../../lib/audio.js';
 
 // Brief message over the timeline (the HUD has no error slot). A note (`ms` 0) stays until removed.
@@ -143,21 +143,23 @@ export default function TimelineCanvas() {
         ctx.globalAlpha = 1;
       }
 
-      // Dropped audio on its way through the stack: the area its clip will fill, dashed.
-      for (const p of pendingDrops.value) {
-        const x = (p.t - v.t0) * v.pps, y = worldToScreenY(p.y, v), pw = Math.max(2, p.dur * v.pps);
-        if (x > w || x + pw < 0 || y > h || y + CLIP_HEIGHT < 0) continue;
-        ctx.globalAlpha = 0.12;
-        ctx.fillStyle = accent;
-        ctx.fillRect(x, y, pw, CLIP_HEIGHT);
-        ctx.globalAlpha = 0.8;
-        ctx.setLineDash([4, 3]);
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = accent;
-        ctx.strokeRect(x - 0.5, y - 0.5, pw + 1, CLIP_HEIGHT + 1);
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 1;
-      }
+      // Dropped audio on its way through the stack: the areas its clips will fill (a lane per armed
+      // layer it can reach), dashed.
+      for (const p of pendingDrops.value)
+        for (let k = 0; k < (p.lanes ?? 1); k++) {
+          const x = (p.t - v.t0) * v.pps, y = worldToScreenY(p.y + k * (p.lane ?? 0), v), pw = Math.max(2, p.dur * v.pps);
+          if (x > w || x + pw < 0 || y > h || y + CLIP_HEIGHT < 0) continue;
+          ctx.globalAlpha = 0.12;
+          ctx.fillStyle = accent;
+          ctx.fillRect(x, y, pw, CLIP_HEIGHT);
+          ctx.globalAlpha = 0.8;
+          ctx.setLineDash([4, 3]);
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = accent;
+          ctx.strokeRect(x - 0.5, y - 0.5, pw + 1, CLIP_HEIGHT + 1);
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        }
 
       // The lasso being drawn.
       if (drag?.mode === 'lasso' && drag.poly.length > 1) {
@@ -415,17 +417,18 @@ export default function TimelineCanvas() {
         (err) => showDropError(`Clip not added: ${err.message || err}`),
       );
     };
-    // Audio files are recorded through the stack (stack/audioDrop.js), each a lane lower. Each shows
-    // the area it will fill as soon as it is decoded; they go through the stack one after the other.
+    // Audio files are recorded through the stack (stack/audioDrop.js): each armed layer it reaches
+    // records a clip, a lane apart, and each file goes below the lanes of the one before. Each shows
+    // the areas it will fill as soon as it is decoded; they go through the stack one after the other.
     const dropAudioFiles = async (files, at, v) => {
       const audio = files.filter(isAudioFile);
       if (!audio.length) return showDropError(`“${files[0]?.name ?? 'file'}” is not an audio file: drop models on the layer stack`);
-      const lane = (CLIP_HEIGHT * 1.6) / v.ys;
+      const lane = LANE / v.ys, lanes = Math.max(1, recordersFor().length);
       const sr = audioContext().sampleRate;
       const drops = audio.map((file, i) => {
-        const y = at.y + i * lane, top = y - CLIP_HEIGHT / 2 / v.ys;
-        const d = { file, at: { t: at.t, y, top }, hide: () => {} };
-        d.decoded = decodeAudioFile(file).then((data) => ((d.hide = showPending({ name: file.name, t: at.t, y: top, dur: data.length / sr })), data));
+        const y = at.y + i * lanes * lane, top = y - CLIP_HEIGHT / 2 / v.ys;
+        const d = { file, at: { t: at.t, y, top, lane }, hide: () => {} };
+        d.decoded = decodeAudioFile(file).then((data) => ((d.hide = showPending({ name: file.name, t: at.t, y: top, dur: data.length / sr, lanes, lane })), data));
         d.decoded.catch(() => {}); // reported below, in turn
         return d;
       });
