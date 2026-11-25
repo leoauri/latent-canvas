@@ -136,6 +136,8 @@ what runs = base             live/ on disk (git): the instrument, the same for e
    under it. On conflict the session's version keeps running, and the Changes window (badge on its
    pill) lists the file with both diffs: use the base's version, keep the session's, or have an
    agent merge them (it gets the file with conflict markers in an overlay; applying it resolves them).
+   With Auto-merge on, that agent runs in the background once the base holds still, and applies
+   when you pause; what it can't decide stays in the Changes window with its reason.
 6. Opening another session swaps its layer in; a new or joined session starts from the base. To
    move a feature from a session into the base, have an agent read the layer
    (`curl -sH 'x-redaw: 1' localhost:5173/__live/db/redaw-layers/layers/<doc url>`) and write it to

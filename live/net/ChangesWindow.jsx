@@ -7,7 +7,7 @@
 // chat's agent proposed (propose_bundle); there is no manual publishing here.
 // Above all that: files where the base (live/ on disk) changed under this session's own version
 // and the two conflict (vfs layers), to resolve by taking the base, keeping the session's version,
-// or having an agent merge them.
+// or having an agent merge them (with auto-merge on, automerge.js does that in the background).
 // At the bottom, folded: changes the base already has (redundant.js), yours and peers'.
 // The pill is split: "Changes" opens the window, "Auto-merge" (with its lamp) switches automerge.js on and off.
 import { useState, useEffect } from 'preact/hooks';
@@ -559,21 +559,14 @@ function CatchUp({ trial }) {
 
 const MERGE_OVERLAY = 'base-merge';
 
-const mergeBrief = (files) =>
-  [
-    `The base code (the live/ folder on disk, shared by all sessions) changed under this session's own version of ${files.join(', ')}, and the changes overlap.`,
-    `Merge by intent, not by line. First work out what each side is for: what problem each of the session's edits solved, and what the base change does and why (its comments say; principles stated at the top of a file hold for the whole file). Then write the file as the base would be if it had been written knowing the session's purposes.`,
-    `Keep a session edit only where its purpose still holds on the new base. One that worked around something the base has since fixed or redesigned is dropped, not carried over, and one that goes against the base's stated principles is not kept as it is. When you can't tell whether a session edit is still needed, or the two purposes conflict, ask the user before applying: name the edit and what it was for.`,
-    `They are staged in your overlay with conflict markers: <<<<<<< session (this session's version) / ||||||| base (what both started from) / ======= / >>>>>>> new base. Some files may have no markers when one side deleted the file: decide from the intent. In eval_js, the staged files are overlay.read(path); vfs.read(path) does not show them.`,
-    `Edit the markers out, then apply_changes. Applying this overlay marks the conflicts resolved. session_code shows how this session's files differ from the base.`,
-  ].join('\n');
-
 /** Files where the base changed under this session's own version and they conflict. */
 function BaseConflicts() {
   vfsVersion.value;
   const list = vfs.layerConflicts();
   const [msg, setMsg] = useState(null);
   if (!list.length) return null;
+  const bj = automerge.baseJob.value; // auto-merge's merge of these conflicts
+  const autoBusy = bj?.job?.state === 'reviewing' || bj?.job?.state === 'waiting';
   const act = async (fn) => {
     setMsg(null);
     try {
@@ -588,7 +581,7 @@ function BaseConflicts() {
       const start = await findStartAgentTask();
       if (!start) throw new Error('the chat has no startAgentTask()');
       const { overlayId, conflicts } = vfs.stageLayerMerge(MERGE_OVERLAY);
-      await start({ title: 'Merge the base into this session', overlayId, prompt: mergeBrief(conflicts) });
+      await start({ title: 'Merge the base into this session', overlayId, prompt: changes.baseMergeBrief(conflicts) });
       setMsg({ text: 'Handed to an agent in the chat.' });
     });
   return (
@@ -623,8 +616,17 @@ function BaseConflicts() {
           </li>
         ))}
       </ul>
+      {bj?.job ? (
+        <AutoMergeNote c={bj} />
+      ) : (
+        automerge.autoMergeOn.value && (
+          <div class="net-row net-automerge-note">
+            <span class="net-grow net-muted">Auto-merge: an agent merges them once the base holds still</span>
+          </div>
+        )
+      )}
       <div class="net-row net-actions">
-        <button class="net-small net-approve" disabled={!!vfs.trial} onClick={merge} title="An agent merges the base change into this session's version">
+        <button class="net-small net-approve" disabled={!!vfs.trial || autoBusy} onClick={merge} title="An agent merges the base change into this session's version">
           Merge with an agent
         </button>
       </div>
@@ -770,8 +772,12 @@ function Bubble({ onOpen }) {
         <div key={c.id} class="net-bubble-line">
           {c.outcome ? (
             <>
-              {c.outcome === 'merged' ? 'Merged' : c.outcome === 'held' ? 'Held back' : 'Could not merge'} <strong>“{c.name}”</strong> by{' '}
-              <span class="net-bubble-who">{c.author}</span>
+              {c.outcome === 'merged' ? 'Merged' : c.outcome === 'held' ? 'Held back' : 'Could not merge'} <strong>“{c.name}”</strong>
+              {c.author && (
+                <>
+                  {' '}by <span class="net-bubble-who">{c.author}</span>
+                </>
+              )}
             </>
           ) : (
             <>
@@ -797,10 +803,10 @@ export function ChangesPill() {
   const am = automerge.autoMergeOn.value;
   const cur = automerge.current.value;
   const amTitle = !am
-    ? 'Auto-merge off: click to have an agent review and merge peers\' changes in the background'
+    ? 'Auto-merge off: click to have an agent review and merge peers\' changes (and base changes that conflict with this session\'s code) in the background'
     : cur
-      ? `Auto-merge on: ${cur.job.state === 'waiting' ? `“${cur.change.name}” applies when you pause` : `reviewing “${cur.change.name}” by ${cur.change.author}`}. Click to turn off`
-      : 'Auto-merge on: peers\' changes are reviewed by an agent and merged when you pause. Click to turn off';
+      ? `Auto-merge on: ${cur.job.state === 'waiting' ? `“${cur.change.name}” applies when you pause` : `reviewing “${cur.change.name}”${cur.change.author ? ` by ${cur.change.author}` : ''}`}. Click to turn off`
+      : 'Auto-merge on: peers\' changes and base changes that conflict with this session\'s code are merged by an agent when you pause. Click to turn off';
   return (
     <span class="net-bubble-anchor">
     <Bubble onOpen={openWin} />
