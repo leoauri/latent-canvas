@@ -247,7 +247,7 @@ async function run() {
     for (let i = 0; i < 6; i++) {
       // A fresh layer and clip everyone has, then one peer removes them while the others edit them.
       const ids = await evalIn(tabs[0], `() => { const S = __redaw.runtime.loader.get('app/stack/stack.js'); const C = __redaw.runtime.loader.get('app/timeline/clips.js');
-        const l = S.insertLayer('operator'); const c = { id: crypto.randomUUID(), t: 1, y: 0, rate: 4, dim: 4, length: 4, data: new Float32Array(16) }; C.addClip(c); return { layerId: l.id, clipId: c.id }; }`);
+        const l = S.insertLayer('operator'); const c = { id: crypto.randomUUID(), t: 1, y: 0, rate: 4, dim: 4, length: 4, data: new Float32Array(16), layer: S.stack.value.find((x) => x.type === 'latent').id }; C.addClip(c); return { layerId: l.id, clipId: c.id }; }`);
       const ready = await waitAll(`(() => { const S = __redaw.runtime.loader.get('app/stack/stack.js'); const C = __redaw.runtime.loader.get('app/timeline/clips.js'); return !!S.stackLayerById(${JSON.stringify(ids.layerId)}) && C.clips.value.some((c) => c.id === ${JSON.stringify(ids.clipId)}); })()`, 15000);
       const remover = tabs[i % PEERS];
       await all((t) => S(t, `race(${JSON.stringify({ ...ids, role: t === remover ? 'remove' : 'edit' })})`));

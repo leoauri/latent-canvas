@@ -268,7 +268,10 @@
       const l = pick(m.stack().stack.value);
       l && m.masks().clearMask(l.id);
     },
-    'clip.add': () => m.clips().clips.value.length < 30 && m.clips().addClip(newClip()),
+    'clip.add': () => {
+      const owner = pick(m.stack().stack.value.filter((l) => l.type === 'latent')); // every clip is on a latent layer
+      if (owner && m.clips().clips.value.length < 30) m.clips().addClip({ ...newClip(), layer: owner.id });
+    },
     'clip.remove': () => {
       const c = pick(m.clips().clips.value);
       c && m.clips().removeClip(c.id);

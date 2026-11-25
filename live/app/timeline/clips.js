@@ -18,8 +18,9 @@ export const LANE = CLIP_HEIGHT + 6;
  * @property {number} dim     latent dimensionality
  * @property {number} length  number of samples
  * @property {Float32Array} data  length * dim values, sample-major: data[i * dim + d]
- * @property {string} [layer]  the latent layer that recorded it, which plays it (app/stack/latentPlayback.js);
- *   clips without one (from before, dropped assets) or whose layer is gone play by playsClip's fallback
+ * @property {string} [layer]  the latent recording layer it is on, which plays it (app/stack/latentPlayback.js).
+ *   Every clip has one: one without (older peers' code) or whose layer is gone is adopted by the
+ *   backmost latent layer (app/stack/stack.js)
  * @property {boolean} [recording]  still being recorded (app/stack/recorder.js): not saved yet
  */
 
@@ -105,8 +106,20 @@ export function dispose() {
 export const duration = (c) => c.length / c.rate;
 export const sampleAt = (c, i) => c.data.subarray(i * c.dim, (i + 1) * c.dim);
 
+// Every clip is on a latent recording layer, which whoever adds it names. app/stack/stack.js checks
+// the name (clipLayer) and adopts clips that still end up without a layer (older peers' code).
+let resolveLayer = (layer) => {
+  if (typeof layer !== 'string') throw new Error("addClip needs { layer }: a latent layer id, or 'selected'");
+  return layer;
+};
+export const setLayerResolver = (fn) => void (resolveLayer = fn);
+
+/**
+ * Adds a clip on the latent layer `clip.layer`: a latent layer's id, or 'selected' for the
+ * selected layer (which must be a latent one). Throws, naming the latent layers, otherwise.
+ */
 export function addClip(clip) {
-  clips.value = [...clips.value, clip];
+  clips.value = [...clips.value, { ...clip, layer: resolveLayer(clip.layer) }];
 }
 export function updateClip(id, patch) {
   clips.value = clips.value.map((c) => (c.id === id ? { ...c, ...patch } : c));

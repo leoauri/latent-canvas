@@ -161,6 +161,7 @@ what runs = base             live/ on disk (git): the instrument, the same for e
   (`showGuide`, `checkGuide`; the comment at its top describes steps and navigation). Mark
   view-only controls (tabs, disclosures) `data-inert` so a guide may click them to navigate.
 - State that everyone in a session should see goes through `shared(key, signal, opts)` from `live/net/shared.js` instead of `db.sync`; name user-level changes with `act(label, fn)` so they show up as one undoable action. See Multiplayer.
+- Every clip is on a latent recording layer (`clip.layer`) and plays only from it, into the layers in front of it. Code that creates clips names the layer: `addClip({ …, layer })` in `live/app/timeline/clips.js` takes a latent layer's id or `'selected'`, and throws otherwise. Deleting a latent layer deletes its clips (one undoable action). Clips that still end up without a layer (peers on older code, old documents) are adopted by the backmost latent layer.
 
 ## Multiplayer
 

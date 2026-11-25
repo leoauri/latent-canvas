@@ -24,7 +24,7 @@ function showDropError(msg, ms = 4000, kind = 'error') {
 }
 const showDropNote = (msg) => showDropError(msg, 0, 'note');
 import { layers as masks, masked } from './layers.js';
-import { stack, activeLayer, activeLayerId, highlightedLayerId, stackLayerColor } from '../stack/stack.js';
+import { stack, activeLayer, activeLayerId, highlightedLayerId, stackLayerColor, dropOwner } from '../stack/stack.js';
 
 const HIT_PAD = 3; // px of slack around the 10px lines
 
@@ -413,7 +413,8 @@ export default function TimelineCanvas() {
       const at = { t: xToTime(px, v), y: screenToWorldY(py, v) - CLIP_HEIGHT / 2 / v.ys };
       if (assetKind(a) !== 'clip') return showDropError(`“${a?.name ?? 'file'}” is not clip data: drop models on the layer stack`);
       clipFromAsset(a.hash).then(
-        (c) => (addClip({ ...c, ...at }), (selection.value = [c.id])),
+        // On the selected layer if it is a latent one, else the backmost latent layer.
+        (c) => (addClip({ ...c, ...at, layer: dropOwner().id }), (selection.value = [c.id])),
         (err) => showDropError(`Clip not added: ${err.message || err}`),
       );
     };

@@ -21,7 +21,7 @@ Use fresh tab names (e.g. `P1`, `P2`) so profiles start empty. Allow ~1 s for ch
 
 ## Clips (shared with vectors in the blob store)
 
-13. In P1 add a clip: `() => { const d = new Float32Array(64*200); for (let i=0;i<d.length;i++) d[i]=Math.sin(i); __redaw.runtime.loader.get('app/timeline/clips.js').addClip({ id: 'c1', t: 1, y: 20, rate: 20, dim: 64, length: 200, data: d }) }`.
+13. In P1 add a clip: `() => { const d = new Float32Array(64*200); for (let i=0;i<d.length;i++) d[i]=Math.sin(i); __redaw.runtime.loader.get('app/timeline/clips.js').addClip({ id: 'c1', t: 1, y: 20, rate: 20, dim: 64, length: 200, data: d, layer: __redaw.runtime.loader.get('app/stack/stack.js').stack.value.find((l) => l.type === 'latent').id }) }`.
     In P2 wait until clip c1 exists with `data.length === 12800` and `data[5]` equal to P1's `Math.fround(Math.sin(5))`.
 14. In P2 move it inside an action: `L('net/shared.js').act('move clip', () => L('app/timeline/clips.js').updateClip('c1', { t: 4 }))`. P1 sees `t === 4`.
 15. The document holds `dataHash` (sha256-…) for c1 and no vector data: check

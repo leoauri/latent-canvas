@@ -4,10 +4,9 @@
 // reaches it, with `rate` set to the clip's: consumers resample as they need (a model holds them,
 // models.js holdResample). A clip entered mid-sample (at the start, or after a seek) sends that
 // sample at once.
-// A clip plays from the latent layer that recorded it (clip.layer), inside that layer's masks (a
-// layer without masks plays all its clips), so its stream reaches only the layers in front of its
-// own. A clip without a layer (from before clips had one, a dropped asset), or whose layer is gone,
-// plays from the backmost latent layer whose masks cover it: the one the canvas draws clips at
+// Every clip is on a latent layer (clip.layer: the one that recorded it, or that it was dropped or
+// adopted onto, app/stack/stack.js) and plays from that layer only, inside its masks (a layer
+// without masks plays all its clips), so its stream reaches only the layers in front of it
 // (playsClip). Every clip playing is a voice of the stream, identified by the clip's id: the layers in front process each on its
 // own (a decoder decodes them in parallel) and an audio output sums them. Where there is no clip,
 // nothing is sent.
@@ -17,7 +16,7 @@
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
-import { stack, stackLayerById } from './stack.js';
+import { stack } from './stack.js';
 import { emit } from './models.js';
 import { playing, time, cue, seeks } from '../timeline/Playhead.jsx';
 import { clips, CLIP_HEIGHT, duration, sampleAt } from '../timeline/clips.js';
@@ -27,15 +26,8 @@ import { isBaked } from './prebake.js';
 const TICK_MS = 5;
 const MAX_LAG = 0.5; // seconds behind after a stall: skip ahead instead of catching up
 
-/** The latent layer clip `c` plays from as its own: the one that recorded it, while it is in the stack. */
-export const ownerOf = (c) => (typeof c.layer === 'string' && stackLayerById(c.layer)?.type === 'latent' ? c.layer : null);
-
-/** Whether latent layer `id` plays clip `c` at time `t`, world y `y` (the clip's centre line). */
-export function playsClip(id, c, t, y) {
-  const owner = ownerOf(c);
-  if (owner) return owner === id && operatesAt(id, t, y);
-  return stack.peek().find((l) => l.type === 'latent' && operatesAt(l.id, t, y))?.id === id;
-}
+/** Whether latent layer `id` plays clip `c` at time `t`, world y `y` (the clip's centre line): its own clips, inside its masks. */
+export const playsClip = (id, c, t, y) => c.layer === id && operatesAt(id, t, y);
 
 /** layer id -> { start, t0, at, last, timer, voices, sounding } */
 const runs = persist('latentPlayback.runs', () => new Map()).value;
