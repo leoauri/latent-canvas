@@ -38,11 +38,43 @@ SRRedawLatentStyle >> applyTo: aShader stats: aStats [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> colourMode [
+	^ colourMode
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> colourMode: aValue [
+	colourMode := aValue.
+]
+
+{
 	#category : #choices,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:31'
 }
 SRRedawLatentStyle >> colourModes [
 	^ #('page colour' 'vector' 'page colour by size' 'one dimension')
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> count [
+	^ count
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> count: aValue [
+	count := aValue.
 ]
 
 {
@@ -95,11 +127,51 @@ SRRedawLatentStyle >> cyclePlace [
 
 {
 	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> dim [
+	^ dim
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> dim: anInteger [
+	dim := (anInteger max: 0) min: dims - 1.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> dims [
+	^ dims
+]
+
+{
+	#category : #accessing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:31'
 }
 SRRedawLatentStyle >> dims: anInteger [
 	dims := anInteger.
 	dim := dim min: anInteger - 1.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> gain [
+	^ gain
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> gain: aValue [
+	gain := aValue.
 ]
 
 {
@@ -111,11 +183,51 @@ SRRedawLatentStyle >> gap [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> gap: aValue [
+	gap := aValue.
+]
+
+{
 	#category : #choices,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:31'
 }
 SRRedawLatentStyle >> gaps [
 	^ #(0 0.15 0.4)
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> grid [
+	^ grid
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> grid: aValue [
+	grid := aValue.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> heightMode [
+	^ heightMode
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> heightMode: aValue [
+	heightMode := aValue.
 ]
 
 {
@@ -127,11 +239,43 @@ SRRedawLatentStyle >> heightModes [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> heightScale [
+	^ heightScale
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> heightScale: aValue [
+	heightScale := aValue.
+]
+
+{
 	#category : #controls,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:31'
 }
 SRRedawLatentStyle >> higher [
 	heightScale := heightScale * 1.5 min: 2m.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> highlight [
+	^ highlight
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> highlight: aValue [
+	highlight := aValue.
 ]
 
 {
@@ -211,6 +355,38 @@ SRRedawLatentStyle >> nextDim [
 }
 SRRedawLatentStyle >> nextDims [
 	self stepDim: 8.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> ordered [
+	^ ordered
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> ordered: aValue [
+	ordered := aValue.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> place [
+	^ place
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:24'
+}
+SRRedawLatentStyle >> place: aValue [
+	place := aValue.
 ]
 
 {

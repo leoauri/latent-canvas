@@ -3,7 +3,9 @@ Class {
 	#superclass : #SRObject,
 	#instVars : [
 		'canvas',
-		'display'
+		'display',
+		'widgets',
+		'drag'
 	],
 	#category : #'Redaw-XR'
 }
@@ -14,26 +16,6 @@ Class {
 }
 SRRedawLatentPanel class >> for: aSessionView [
 	^ self new setCanvas: aSessionView
-]
-
-{
-	#category : #building,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
-}
-SRRedawLatentPanel >> addButton: aString at: x y: y do: aBlock [
-	"The button passes the trigger on to me, I find the button under the hit point."
-	| button |
-	button := SRActionSign new
-		size: 9cm @ 4.5cm @ 1.5cm;
-		label: aString;
-		slabColor: (Color r: 0.15 g: 0.35 b: 0.6);
-		action: aBlock;
-		grabTarget: self;
-		cursorMode: SRCursorMode pass;
-		translation: x @ y @ (self size z / 2 + 0.75cm);
-		yourself.
-	self addChild: button.
-	^ button
 ]
 
 {
@@ -48,20 +30,22 @@ SRRedawLatentPanel >> addCustomMenuItemsTo: aMenu [
 	#category : #accessing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
 }
-SRRedawLatentPanel >> buttonRows [
-	^ #(
-		#(#('Colour' #cycleColour) #('Height' #cycleHeight) #('Dims on' #cyclePlace) #('Gap' #cycleGap))
-		#(#('Count' #cycleCount) #('Order' #toggleOrder) #('Grid' #toggleGrid) #('Mark dim' #toggleHighlight))
-		#(#('Dim -' #previousDim) #('Dim +' #nextDim) #('Dim -8' #previousDims) #('Dim +8' #nextDims))
-		#(#('Gain -' #lessGain) #('Gain +' #moreGain) #('Lower' #lower) #('Higher' #higher)))
+SRRedawLatentPanel >> canvas [
+	^ canvas
 ]
 
 {
-	#category : #accessing,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+	#category : #building,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
 }
-SRRedawLatentPanel >> canvas [
-	^ canvas
+SRRedawLatentPanel >> choose: aSelector among: labelsAndValues [
+	"One segment per value, lit while the style has it."
+	^ SRRedawSegmentedControl
+		width: self contentWidth
+		options: (labelsAndValues collect: [:each | {
+			each key.
+			[self style notNil and: [(self style perform: aSelector) = each value]].
+			[self style ifNotNil: [:style | style perform: aSelector asMutator with: each value]]}])
 ]
 
 {
@@ -77,34 +61,69 @@ SRRedawLatentPanel >> collisionGeometry [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> contentWidth [
+	^ self size x - 4cm
+]
+
+{
+	#category : #events,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> facePointOn: aRay [
+	"Where aRay meets the plane of my front face, global; nil if it runs along it or away from it."
+	| toLocal origin direction t |
+	toLocal := self globalTransform inverseTransformation.
+	origin := toLocal localPointToGlobal: aRay origin.
+	direction := toLocal localDirToGlobal: aRay forward.
+	direction z abs < 1.0e-9 ifTrue: [^ nil].
+	t := self size z / 2 - origin z / direction z.
+	t < 0 ifTrue: [^ nil].
+	^ self globalTransform localPointToGlobal: origin + (direction * t)
+]
+
+{
+	#category : #events,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> followDrag [
+	"Runs every frame while the trigger is held: the slider follows where the ray meets my face."
+	| hand |
+	drag ifNil: [^ self].
+	hand := drag value.
+	hand trigger isPressed ifFalse: [^ drag := nil].
+	(self facePointOn: hand cursor redawRay) ifNotNil: [:point | drag key trackAt: point].
+]
+
+{
 	#category : #'initialize-release',
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:36'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
 }
 SRRedawLatentPanel >> initialize [
-	"SRTextField draws one line: a field per line."
+	| top front |
 	super initialize.
 	self name: 'Latent view'.
+	top := self size y / 2.
+	front := self size z / 2.
 	self addChild: (SRCube new
 		drawWires: false;
 		color: (Color gray: 0.18);
 		ignoreCollision: true;
 		scale: self size;
 		yourself).
-	display := (1 to: 4) collect: [:i |
-		self addChild: (SRTextField new
-			text: '';
-			color: Color white;
-			scale: 1.2cm asVector3;
-			rotation: SRTextField uprightRotation;
-			position: (self size x / -2 + 1.5cm) @ (self size y / 2 - (i * 1.6cm)) @ (self size z / 2 + 1mm);
-			yourself)].
-	self buttonRows doWithIndex: [:row :y |
-		row doWithIndex: [:spec :x |
-			self
-				addButton: spec first
-				at: x - 2.5 * 9.8cm
-				y: 7cm - (y - 1 * 5.5cm)
-				do: [self style ifNotNil: [:style | style perform: spec second]]]].
+	display := self addChild: (self textField: 'Latent view' scale: 1.4cm color: Color white).
+	display position: (self contentWidth / -2) @ (top - 1.2cm) @ (front + 1mm).
+	widgets := OrderedCollection new.
+	self rows doWithIndex: [:row :i | | y |
+		y := top - 4cm - (i - 1 * self rowHeight).
+		(self addChild: (self textField: row key scale: 0.9cm color: (Color gray: 0.75)))
+			position: (self contentWidth / -2) @ y @ (front + 1mm).
+		widgets add: (self addChild: (row value
+			grabTarget: self;
+			translation: 0 @ (y - 1.4cm - (row value height / 2)) @ (front + 6mm);
+			yourself))].
 ]
 
 {
@@ -117,13 +136,14 @@ SRRedawLatentPanel >> isApp [
 
 {
 	#category : #events,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
 }
 SRRedawLatentPanel >> onButtonPress: anEvent [
 	anEvent button == #trigger ifFalse: [^ self].
-	(self children
-		detect: [:each | (each isKindOf: SRActionSign) and: [each redawContains: anEvent point]]
-		ifNone: [nil]) ifNotNil: [:button | button redawPress]
+	widgets do: [:each |
+		(each pressAt: anEvent point) ifNotNil: [:result |
+			result == #drag ifTrue: [self startDrag: each hand: anEvent hand].
+			^ self]].
 ]
 
 {
@@ -139,6 +159,36 @@ SRRedawLatentPanel >> placeAt: aPosition facing: aCamera [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> rowHeight [
+	^ 6cm
+]
+
+{
+	#category : #building,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> rows [
+	"A one-line description and the control below it."
+	| cm |
+	^ {
+		'Colour of each column' -> (self choose: #colourMode among: {'page' -> 0. 'vector' -> 1. 'page by size' -> 2. 'one dim' -> 3}).
+		'Height of each column (stacked: fixed)' -> (self choose: #heightMode among: {'flat' -> 0. 'length' -> 1. 'movement' -> 2. 'dim size' -> 3. 'dim signed' -> 4}).
+		'Where the values of a frame go' -> (self choose: #place among: {'top' -> 0. 'sides' -> 1. 'top + sides' -> 2. 'stacked' -> 3}).
+		'How many dimensions are drawn' -> (self choose: #count among: (#(128 64 32 16 8 4) collect: [:each | each printString -> each])).
+		'Which dimensions come first' -> (self choose: #ordered among: {'by index' -> false. 'by variance' -> true}).
+		'Help to find one dimension' -> (self toggles: {'grid lines' -> #grid. 'mark the dimension' -> #highlight}).
+		'The dimension shown, or marked' -> (self slide: #dim from: 0 to: [self style ifNil: [127] ifNotNil: [:style | style dims - 1]] print: [:value | 'dim ', value printString]) beInteger.
+		'Contrast of the values (gain)' -> (self slide: #gain from: 0.05 to: 50 print: [:value | value printShowingDecimalPlaces: 2]) beLogarithmic.
+		'Height of the columns' -> (self slide: #heightScale from: 5mm to: 2m print: [:value |
+			cm := value * 100.
+			(cm < 10 ifTrue: [cm printShowingDecimalPlaces: 1] ifFalse: [cm rounded printString]), ' cm']) beLogarithmic.
+		'Gap between frames' -> (self slide: #gap from: 0 to: 0.6 print: [:value | (value * 100) rounded printString, ' %'])}
+]
+
+{
 	#category : #'initialize-release',
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
 }
@@ -148,22 +198,47 @@ SRRedawLatentPanel >> setCanvas: aSessionView [
 
 {
 	#category : #accessing,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
 }
 SRRedawLatentPanel >> size [
-	^ 42cm @ 34cm @ 3cm
+	^ 50cm @ (10 * self rowHeight + 5cm) @ 3cm
+]
+
+{
+	#category : #building,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> slide: aSelector from: min to: max print: aBlock [
+	^ SRRedawSlider
+		width: self contentWidth
+		from: min
+		to: max
+		get: [self style ifNil: [min] ifNotNil: [:style | style perform: aSelector]]
+		set: [:value | self style ifNotNil: [:style | style perform: aSelector asMutator with: value]]
+		print: aBlock
+]
+
+{
+	#category : #events,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> startDrag: aSlider hand: aHand [
+	((aHand isKindOf: SRHand) and: [aHand cursor respondsTo: #redawRay]) ifFalse: [^ self].
+	drag := aSlider -> aHand.
 ]
 
 {
 	#category : #stepping,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:36'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
 }
 SRRedawLatentPanel >> step: deltaTime [
 	"Runs in the world process: an error here must not reach a debugger."
-	[| lines |
-	 lines := self style ifNil: [#('No clips feature' '' '' '')] ifNotNil: [:style | style summaryLines].
-	 display with: lines do: [:field :line | line = field text ifFalse: [field text: line]]]
-		on: Error do: [:e | display first text: 'Latent view: ', e messageText].
+	[self followDrag.
+	 widgets do: [:each | each refresh].
+	 display text: (self style ifNil: ['Latent view: no clips feature'] ifNotNil: ['Latent view'])]
+		on: Error do: [:e |
+			drag := nil.
+			display text: 'Latent view: ', e messageText].
 ]
 
 {
@@ -172,6 +247,32 @@ SRRedawLatentPanel >> step: deltaTime [
 }
 SRRedawLatentPanel >> style [
 	^ canvas ifNotNil: [(canvas featureOf: SRRedawClipsFeature) ifNotNil: [:feature | feature style]]
+]
+
+{
+	#category : #'initialize-release',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> textField: aString scale: aNumber color: aColor [
+	^ SRTextField new
+		text: aString;
+		color: aColor;
+		scale: aNumber asVector3;
+		rotation: SRTextField uprightRotation;
+		yourself
+]
+
+{
+	#category : #building,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:25'
+}
+SRRedawLatentPanel >> toggles: labelsAndSelectors [
+	^ SRRedawSegmentedControl
+		width: self contentWidth
+		options: (labelsAndSelectors collect: [:each | {
+			each key.
+			[self style notNil and: [self style perform: each value]].
+			[self style ifNotNil: [:style | style perform: each value asMutator with: (style perform: each value) not]]}])
 ]
 
 {
