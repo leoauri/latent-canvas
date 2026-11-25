@@ -28,7 +28,13 @@ export const isAudioFile = (f) => !!f && (f.type?.startsWith('audio/') || AUDIO_
 
 /** A file's audio as mono at the audio context's rate (channels averaged). */
 export async function decodeAudioFile(file) {
-  const buf = await audioContext().decodeAudioData(await file.arrayBuffer());
+  let buf;
+  try {
+    buf = await audioContext().decodeAudioData(await file.arrayBuffer());
+  } catch (e) {
+    const ext = (file.name?.match(/\.(\w+)$/)?.[1] ?? file.type ?? 'this format').toLowerCase();
+    throw new Error(`this browser can't decode ${ext} (${e?.message || e}); try wav or mp3`);
+  }
   const out = new Float32Array(buf.length);
   for (let c = 0; c < buf.numberOfChannels; c++) {
     const ch = buf.getChannelData(c);

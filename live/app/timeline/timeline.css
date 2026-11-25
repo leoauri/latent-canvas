@@ -39,8 +39,9 @@
 .timeline-drop-note {
   position: absolute;
   left: 50%;
-  bottom: 36px;
+  bottom: 84px; /* above the pill row */
   transform: translateX(-50%);
+  max-width: min(640px, 90%);
   padding: 4px 10px;
   border-radius: 4px;
   font: 12px/1.4 system-ui, sans-serif;
@@ -49,6 +50,7 @@
   pointer-events: none;
   z-index: var(--z-hud);
 }
+.timeline-drop-error { pointer-events: auto; cursor: pointer; } /* click dismisses */
 .timeline-drop-note { background: oklch(0.5 0.1 290); } /* work in progress, e.g. an audio drop going through the stack */
 .playhead-layer {
   position: absolute;

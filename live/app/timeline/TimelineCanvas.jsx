@@ -13,11 +13,17 @@ import { seek } from './Playhead.jsx';
 import { isAudioFile, decodeAudioFile, clipsFromAudio, recordersFor, pendingDrops, showPending } from '../stack/audioDrop.js';
 import { audioContext } from '../../lib/audio.js';
 
-// Brief message over the timeline (the HUD has no error slot). A note (`ms` 0) stays until removed.
-function showDropError(msg, ms = 4000, kind = 'error') {
+// Message over the timeline, above the pill row (the HUD has no error slot). A note (`ms` 0) stays
+// until removed. Errors also go to the console (the app log agents read), and a click dismisses them.
+function showDropError(msg, ms = 10000, kind = 'error') {
   const el = document.createElement('div');
   el.className = `timeline-drop-${kind}`;
   el.textContent = msg;
+  if (kind === 'error') {
+    console.warn(`timeline drop: ${msg}`);
+    el.title = 'Click to dismiss';
+    el.onclick = () => el.remove();
+  }
   document.querySelector('.timeline')?.append(el);
   if (ms) setTimeout(() => el.remove(), ms);
   return el;
