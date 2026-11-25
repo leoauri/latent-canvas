@@ -60,6 +60,14 @@ SRRedawTransport >> addCustomMenuItemsTo: aMenu [
 ]
 
 {
+	#category : #'initialize-release',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+}
+SRRedawTransport >> addLatentButton [
+	^ self addButton: 'Latents' at: 0 y: -7cm do: [canvas ifNotNil: [canvas openLatentPanelBeside: self]]
+]
+
+{
 	#category : #accessing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
 }
@@ -90,8 +98,8 @@ SRRedawTransport >> collisionGeometry [
 ]
 
 {
-	#category : #initialization,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#category : #'initialize-release',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
 }
 SRRedawTransport >> initialize [
 	super initialize.
@@ -114,7 +122,8 @@ SRRedawTransport >> initialize [
 	self addButton: 'Tour >' at: 0 do: [canvas ifNotNil: [canvas nextTourStop]].
 	self addButton: 'Canvas' at: 9.5cm do: [canvas ifNotNil: [canvas layOnFloor]].
 	recButton := self addButton: 'Rec' at: -9.5cm y: -7cm do: [canvas ifNotNil: [canvas toggleRecording]].
-	recButton slabColor: (Color r: 0.6 g: 0.12 b: 0.12)
+	recButton slabColor: (Color r: 0.6 g: 0.12 b: 0.12).
+	self addLatentButton.
 ]
 
 {

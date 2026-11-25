@@ -21,7 +21,8 @@ Class {
 		'renderer',
 		'rendering',
 		'chainKey',
-		'chainMissing'
+		'chainMissing',
+		'alContext'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -134,6 +135,21 @@ SRRedawAudioFeature >> ensureRenderer [
 ]
 
 {
+	#category : #audio,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 12:33'
+}
+SRRedawAudioFeature >> followContext [
+	"SRAudioObject rebuilds the OpenAL context when audio is switched off and on, and buffers and sources die with the old one. Forget them without AL calls, which would raise alInvalidName, and render again."
+	| context |
+	context := SRAudioObject alContext.
+	context ifNil: [^ self].
+	alContext ifNil: [^ alContext := context].
+	context == alContext ifTrue: [^ self].
+	alContext := context.
+	self forgetAudio.
+]
+
+{
 	#category : #playback,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
 }
@@ -159,6 +175,20 @@ SRRedawAudioFeature >> followPlayhead [
 				ifTrue: [self start: clip sound: sound at: now - clip t]].
 	wasPlaying := true.
 	lastTime := now
+]
+
+{
+	#category : #audio,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 12:33'
+}
+SRRedawAudioFeature >> forgetAudio [
+	"The renderer remembers what it rendered: stop it, #ensureRenderer starts a fresh one once it has ended."
+	rendering := false.
+	voices removeAll.
+	retired removeAll.
+	sounds removeAll.
+	current removeAll.
+	status := 'audio: new OpenAL context, rendering again'.
 ]
 
 {
@@ -245,12 +275,14 @@ SRRedawAudioFeature >> reapFinished [
 
 {
 	#category : #updating,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 12:33'
 }
 SRRedawAudioFeature >> refresh [
 	"Every frame: decoding and playback move on without a relayout."
 	label ifNil: [^ true].
 	[self ensureDecoder ifTrue: [
+		SRAudioObject ensureOpenAL.
+		self followContext.
 		self decodeClips.
 		self followPlayhead]]
 			on: Error do: [:e | lastError := e. status := 'audio: ', e messageText].

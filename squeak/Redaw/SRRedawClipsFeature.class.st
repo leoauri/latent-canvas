@@ -7,9 +7,12 @@ Class {
 	#instVars : [
 		'placed',
 		'signature',
-		'segments',
 		'projection',
-		'batch'
+		'batch',
+		'strips',
+		'stats',
+		'style',
+		'field'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -24,6 +27,15 @@ SRRedawClipsFeature >> colorFor: aRedawClip [
 ]
 
 {
+	#category : #latents,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+}
+SRRedawClipsFeature >> deactivate [
+	self releaseStripsExcept: #().
+	strips := nil.
+]
+
+{
 	#category : #'page layout',
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:22'
 }
@@ -32,6 +44,15 @@ SRRedawClipsFeature >> footprintOf: aRedawClip [
 	(aRedawClip t isNil or: [aRedawClip y isNil]) ifTrue: [^ nil].
 	^ (view pagePointAt: aRedawClip t y: aRedawClip y)
 		extent: (aRedawClip duration * view pixelsPerSecond max: 1) @ view clipHeight
+]
+
+{
+	#category : #latents,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+}
+SRRedawClipsFeature >> framesPerStrip [
+	"Mesh indices are 16 bit: at 20 vertices a frame, a mesh holds 3276 frames."
+	^ 3000
 ]
 
 {
@@ -44,38 +65,35 @@ SRRedawClipsFeature >> invalidate [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 18:26'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
 }
 SRRedawClipsFeature >> layout [
-	"A clip is a dark plate with one box per segment on it: colour as on the page, height from the vector length, depth from the movement."
-	| m h all rmsRef motionRef |
+	"A clip is a dark plate with a column per latent frame on it; one SRRedawLatentField draws all columns."
+	| m h used |
 	placed ifNil: [^ self].
 	m := view metersPerPixel.
 	h := view blockHeight.
 	self addChild: (batch := SRRedawBoxBatch new opaque: true; yourself).
-	all := placed inject: OrderedCollection new into: [:acc :a | (self segmentsOf: a key) ifNotNil: [:segs | acc addAll: segs]. acc].
-	rmsRef := all inject: 0.001 into: [:max :seg | max max: (seg at: 2)].
-	motionRef := all inject: 0.001 into: [:max :seg | max max: (seg at: 3)].
-	placed do: [:a | | clip r p segs t |
-		clip := a key.
-		r := a value.
+	self statsOf: (placed collect: [:each | each key]).
+	(stats notNil and: [(SRShader hasCachedShader: #redawLatent) not and: [SRShader canTranspile]])
+		ifTrue: [SRShader transpileShaderNamed: #redawLatent].
+	field := SRRedawLatentField new style: self style; stats: stats; yourself.
+	self addChild: field.
+	used := Set new.
+	placed do: [:each | | clip r p depth list left |
+		clip := each key.
+		r := each value.
 		p := view localPointFor: r center.
-		segs := self segmentsOf: clip.
-		batch at: p x @ p y @ 1mm extent: (r width * m) @ (r height * m) @ 2mm color: ((self colorFor: clip) mixed: 0.25 with: Color black).
-		segs
-			ifNil: [batch at: p x @ p y @ (h / 2) extent: (r width * m) @ (r height * m) @ h color: (self colorFor: clip)]
+		depth := r height * m.
+		batch at: p x @ p y @ 1mm extent: (r width * m) @ depth @ 2mm color: ((self colorFor: clip) mixed: 0.25 with: Color black).
+		list := self stripsOf: clip depth: depth.
+		list
+			ifNil: [batch at: p x @ p y @ (h / 2) extent: (r width * m) @ depth @ h color: (self colorFor: clip)]
 			ifNotNil: [
-				t := 0.
-				segs do: [:seg | | dur x z depth |
-					dur := (seg at: 4) / clip rate.
-					x := (view localPointFor: (r left + (t + (dur / 2) * view pixelsPerSecond)) @ r center y) x.
-					z := h * (0.3 + (3 * (seg at: 2) / rmsRef)).
-					depth := r height * m * (0.5 + (2 * (seg at: 3) / motionRef)).
-					batch
-						at: x @ p y @ (z / 2 + 2mm)
-						extent: (dur * view pixelsPerSecond * m * 0.85) @ depth @ z
-						color: (seg at: 1).
-					t := t + dur]]]
+				used add: (self stripKeyOf: clip depth: depth).
+				left := (view localPointFor: r left @ r center y) x.
+				list do: [:strip | field add: strip at: left + strip offset @ p y @ 2mm]]].
+	self releaseStripsExcept: used.
 ]
 
 {
@@ -115,44 +133,67 @@ SRRedawClipsFeature >> refresh [
 
 {
 	#category : #latents,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 18:26'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
 }
-SRRedawClipsFeature >> segmentSeconds [
-	^ 0.5
+SRRedawClipsFeature >> releaseStripsExcept: usedKeys [
+	strips ifNil: [^ self].
+	(strips keys reject: [:each | usedKeys includes: each]) do: [:each |
+		(strips removeKey: each) do: [:strip | strip unload]]
 ]
 
 {
 	#category : #latents,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 18:26'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
 }
-SRRedawClipsFeature >> segmentsOf: aClip [
-	"Per segment: the page's colour averaged over its frames, the mean vector length (small vectors sound quieter), and how far the latent moves from frame to frame. Clips sharing latents and rate share them."
-	| frames key per p result |
+SRRedawClipsFeature >> statsOf: clips [
+	| arrays |
+	arrays := Dictionary new.
+	clips do: [:each | (each frames notNil and: [each frames notEmpty]) ifTrue: [
+		arrays at: {each dataHash. each rate} put: each frames]].
+	arrays isEmpty ifTrue: [^ stats := nil].
+	(stats notNil and: [stats key = arrays keys asSet]) ifTrue: [^ stats].
+	stats := SRRedawLatentStats of: arrays values.
+	stats key: arrays keys asSet.
+	self style dims: stats dims.
+	^ stats
+]
+
+{
+	#category : #latents,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+}
+SRRedawClipsFeature >> stripKeyOf: aClip depth: aDepth [
+	^ {aClip dataHash. aClip rate. aDepth}
+]
+
+{
+	#category : #latents,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+}
+SRRedawClipsFeature >> stripsOf: aClip depth: aDepth [
+	"Clips sharing latents and rate share their strips."
+	| frames |
 	frames := aClip frames ifNil: [^ nil].
 	frames isEmpty ifTrue: [^ nil].
-	key := {aClip dataHash. aClip rate}.
-	segments ifNil: [segments := Dictionary new].
-	(segments at: key ifAbsent: [nil]) ifNotNil: [:cached | ^ cached].
-	per := (aClip rate * self segmentSeconds) rounded max: 1.
-	p := self projectionFor: frames first size.
-	result := OrderedCollection new.
-	1 to: frames size by: per do: [:start | | stop rgb rms motion |
-		stop := start + per - 1 min: frames size.
-		rgb := Array new: 3 withAll: 0.
-		rms := motion := 0.
-		start to: stop do: [:i | | f |
-			f := frames at: i.
-			1 to: 3 do: [:k | rgb at: k put: (rgb at: k) + (128 + (112 * ((p at: k) dot: f) tanh) / 255)].
-			rms := rms + ((f dot: f) / f size) sqrt.
-			i > 1 ifTrue: [ | delta |
-				delta := f - (frames at: i - 1).
-				motion := motion + ((delta dot: delta) / f size) sqrt]].
-		result add: {
-			Color r: (rgb at: 1) / (stop - start + 1) g: (rgb at: 2) / (stop - start + 1) b: (rgb at: 3) / (stop - start + 1).
-			rms / (stop - start + 1).
-			motion / (stop - start + 1).
-			stop - start + 1}].
-	^ segments at: key put: result asArray
+	strips ifNil: [strips := Dictionary new].
+	^ strips at: (self stripKeyOf: aClip depth: aDepth) ifAbsentPut: [| width |
+		width := view pixelsPerSecond * view metersPerPixel / aClip rate.
+		(1 to: frames size by: self framesPerStrip) asArray collect: [:start |
+			SRRedawLatentStrip
+				frames: frames
+				from: start
+				count: (self framesPerStrip min: frames size - start + 1)
+				frameWidth: width
+				depth: aDepth
+				projection: (self projectionFor: frames first size)]]
+]
+
+{
+	#category : #latents,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+}
+SRRedawClipsFeature >> style [
+	^ style ifNil: [style := SRRedawLatentStyle new]
 ]
 
 {

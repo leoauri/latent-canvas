@@ -206,7 +206,7 @@ SRRedawSessionView class >> xrMenuOtherLink: aMenu [
 
 {
 	#category : #menus,
-	#'squeak_changestamp' : 'jl-MCPServer 11/24/2026 15:18'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
 }
 SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 	"Changes to my children wait for the next frame: menu actions run inside the input traversal."
@@ -220,6 +220,7 @@ SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 		keepOpen: true.
 	aMenu addItem: 'Next tour stop' action: [self nextTourStop] keepOpen: true.
 	aMenu addItem: 'Controls' action: [self openTransportBeside: aMenu] keepOpen: false.
+	aMenu addItem: 'Latent view' action: [self openLatentPanelBeside: aMenu] keepOpen: false.
 	aMenu addItem: 'Lay canvas here' action: [self layOnFloor] keepOpen: false.
 	aMenu addSubmenuItemFor: #show filledBy: [:sub | self addFeatureItemsTo: sub].
 	aMenu addItem: 'Close' action: [self world ifNotNil: [:w | w addDeferredFrameMessage: [self close]]] keepOpen: false
@@ -446,6 +447,19 @@ SRRedawSessionView >> isRecording [
 ]
 
 {
+	#category : #controls,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+}
+SRRedawSessionView >> latentPanel [
+	"Made on first use and kept in my world, like my transport."
+	^ (self world children detect: [:each | (each isKindOf: SRRedawLatentPanel) and: [each canvas == self]] ifNone: [nil])
+		ifNil: [| panel |
+			panel := SRRedawLatentPanel for: self.
+			self world addChild: panel.
+			panel]
+]
+
+{
 	#category : #opening,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
 }
@@ -539,6 +553,17 @@ SRRedawSessionView >> nextTourStop [
 SRRedawSessionView >> openInFront [
 	self openInWorld.
 	self layOnFloor
+]
+
+{
+	#category : #controls,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+}
+SRRedawSessionView >> openLatentPanelBeside: anObject [
+	"Read the place now: a menu action runs before the menu closes."
+	^ self latentPanel
+		placeAt: anObject globalTranslation + (anObject right * 50cm) facing: self world camera;
+		yourself
 ]
 
 {
