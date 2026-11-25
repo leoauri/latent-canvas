@@ -66,7 +66,8 @@ Files:
 - app/stack/prebake.js: the scaffold (scheduling, cache, playback, diagnostics). Leave it alone unless the contract itself can't express what the session needs.
 
 Contract of bakeRender.js:
-- contextKey() -> string: all session state besides the clip that a clip's sound depends on (layers, functions, parameters, masks, …). A bake whose key changed is stale and re-baked; state missing from the key means outdated bakes play silently wrong.
+- contextKey() -> string: all session state besides the clip that a clip's sound depends on (layers, functions, parameters, masks, …), except what clipKey covers. A bake whose key changed is stale and re-baked; state missing from the key means outdated bakes play silently wrong.
+- clipKey(clip) -> string (optional): state only some clips depend on, e.g. the mask rectangles a clip's voice (and its tails) can cross. Keep such state out of contextKey and put it here, so editing a mask re-bakes the clips under it instead of every clip. State that reaches everywhere (a layer masked or unmasked as a whole) stays in contextKey.
 - problems() -> [string]: what in the current session this renderer can't render, checked cheaply without rendering. The user sees these, and they ask for this chat again; return [] only when everything is covered.
 - renderClip(clip, { signal }) -> Promise<{ outs: [{ outId: audio-out layer id, offset: seconds from clip.t, data: Float32Array at audioContext().sampleRate }], missed }>. Throw with a clear message when something can't be rendered. \`signal\` aborts when pre-bake is switched off, the session changes or the scaffold is replaced: pass it to every renderOffline call (and check it between long steps) so an abandoned bake stops using the models.
 - Changing bakeRender.js re-bakes everything automatically.

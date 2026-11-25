@@ -16,7 +16,7 @@ import { engineOn } from '../../lib/engine.js';
 import { stack } from './stack.js';
 import { runtimes, mixerOf } from './models.js';
 import { clips } from '../timeline/clips.js';
-import { playing, time, cue } from '../timeline/Playhead.jsx';
+import { playing, time, cue, seeks } from '../timeline/Playhead.jsx';
 import { currentDoc } from '../../net/session.js';
 import * as renderer from './bakeRender.js';
 
@@ -69,7 +69,16 @@ function contextKey() {
     return `${RENDERER}|contextKey failed: ${e?.message || e}`;
   }
 }
-const clipKey = (c, ck) => `${c.t}|${c.y}|${c.rate}|${c.dim}|${c.length}|${dataId(c.data)}|${ck}`;
+// The renderer's optional clipKey(c): session state that only some clips depend on (the mask
+// rectangles a clip's voice crosses), so editing it re-bakes those clips instead of all of them.
+function rendererClipKey(c) {
+  try {
+    return renderer.clipKey?.(c) ?? '';
+  } catch (e) {
+    return `clipKey failed: ${e?.message || e}`;
+  }
+}
+const clipKey = (c, ck) => `${c.t}|${c.y}|${c.rate}|${c.dim}|${c.length}|${dataId(c.data)}|${ck}|${rendererClipKey(c)}`;
 const bakeable = (c) => !c.recording && !!c.data;
 
 /** clip id -> 'baked' | 'stale' | 'baking' | 'failed' | 'none' */
@@ -199,7 +208,7 @@ const play = persist('prebake.play', () => ({ run: null })).value;
 function begin() {
   const ctx = audioContext();
   const sr = ctx.sampleRate;
-  const run = { start: Math.round(ctx.currentTime * sr), t0: time.peek(), cue: cue.peek(), sent: new Map(), outs: new Set(), timer: 0 };
+  const run = { start: Math.round(ctx.currentTime * sr), t0: time.peek(), cue: cue.peek(), seek: seeks.peek(), sent: new Map(), outs: new Set(), timer: 0 };
   run.timer = setInterval(() => {
     const now = run.t0 + (ctx.currentTime * sr - run.start) / sr;
     const bk = bakes.peek();
@@ -232,8 +241,8 @@ end();
 const stopOnOff = effect(() => void (prebakeOn.value || stopBakes('pre-bake switched off')));
 const stopEffect = effect(() => {
   const want = playing.value && prebakeOn.value;
-  const c = cue.value;
-  if (play.run && (!want || play.run.cue !== c)) end();
+  const c = cue.value, n = seeks.value;
+  if (play.run && (!want || play.run.cue !== c || play.run.seek !== n)) end();
   if (want && !play.run) begin();
 });
 
