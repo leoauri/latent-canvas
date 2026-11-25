@@ -38,6 +38,14 @@ SRRedawLatentStrip >> frameWidth [
 
 {
 	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:54'
+}
+SRRedawLatentStrip >> length [
+	^ frameCount * frameWidth
+]
+
+{
+	#category : #accessing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
 }
 SRRedawLatentStrip >> mesh [

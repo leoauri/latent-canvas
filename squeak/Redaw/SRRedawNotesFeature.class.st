@@ -54,16 +54,18 @@ SRRedawNotesFeature >> fontPixels [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:39'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawNotesFeature >> layout [
 	| tourLevel chatLevel |
 	tourLevel := view levelOfAnnotation: #tour.
 	chatLevel := view levelOfAnnotation: #chat.
-	(tour ifNil: [#()]) do: [:each | self place: each color: Color white pin: (Color r: 1 g: 0.85 b: 0.2) level: tourLevel].
-	(chat ifNil: [#()]) do: [:each | | c |
-		c := self colorForAuthor: (each at: 'author' ifAbsent: ['?']).
-		self place: each color: c pin: c level: chatLevel]
+	(view isShown: #tour) ifTrue: [
+		(tour ifNil: [#()]) do: [:each | self place: each color: Color white pin: (Color r: 1 g: 0.85 b: 0.2) level: tourLevel]].
+	(view isShown: #chat) ifTrue: [
+		(chat ifNil: [#()]) do: [:each | | c |
+			c := self colorForAuthor: (each at: 'author' ifAbsent: ['?']).
+			self place: each color: c pin: c level: chatLevel]]
 ]
 
 {

@@ -15,6 +15,16 @@ Class {
 }
 
 {
+	#category : #formatting,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawTransport class >> clock: seconds [
+	| s |
+	s := seconds abs.
+	^ (seconds < 0 ifTrue: ['-'] ifFalse: ['']), (s // 60) printString, ':', ((s \\ 60) floor printPaddedWith: $0 to: 2), '.', (s \\ 1 * 10) floor printString
+]
+
+{
 	#category : #'instance creation',
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
 }
@@ -68,6 +78,14 @@ SRRedawTransport >> addLatentButton [
 ]
 
 {
+	#category : #'initialize-release',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawTransport >> addWindowButton [
+	^ self addButton: 'New map' at: 9.5cm y: -7cm do: [canvas ifNotNil: [canvas newWindow]]
+]
+
+{
 	#category : #accessing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
 }
@@ -77,12 +95,10 @@ SRRedawTransport >> canvas [
 
 {
 	#category : #stepping,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:58'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
 }
 SRRedawTransport >> clock: seconds [
-	| s |
-	s := seconds abs.
-	^ (seconds < 0 ifTrue: ['-'] ifFalse: ['']), (s // 60) printString, ':', ((s \\ 60) floor printPaddedWith: $0 to: 2), '.', (s \\ 1 * 10) floor printString
+	^ self class clock: seconds
 ]
 
 {
@@ -99,7 +115,7 @@ SRRedawTransport >> collisionGeometry [
 
 {
 	#category : #'initialize-release',
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:17'
 }
 SRRedawTransport >> initialize [
 	super initialize.
@@ -124,6 +140,7 @@ SRRedawTransport >> initialize [
 	recButton := self addButton: 'Rec' at: -9.5cm y: -7cm do: [canvas ifNotNil: [canvas toggleRecording]].
 	recButton slabColor: (Color r: 0.6 g: 0.12 b: 0.12).
 	self addLatentButton.
+	self addWindowButton.
 ]
 
 {

@@ -65,12 +65,13 @@ SRRedawClipsFeature >> invalidate [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawClipsFeature >> layout [
-	"A clip is a dark plate with a column per latent frame on it; one SRRedawLatentField draws all columns."
+	"A clip is a dark plate with a column per latent frame on it; one SRRedawLatentField draws all columns. With the latent layer switched off on the crosscut, nothing; its strips stay cached."
 	| m h used |
 	placed ifNil: [^ self].
+	view showsLatentClips ifFalse: [^ self].
 	m := view metersPerPixel.
 	h := view blockHeight.
 	self addChild: (batch := SRRedawBoxBatch new opaque: true; yourself).

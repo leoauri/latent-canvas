@@ -54,6 +54,14 @@ SRRedawCodeChangesFeature >> initialize [
 ]
 
 {
+	#category : #layout,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawCodeChangesFeature >> isOnCanvas [
+	^ false
+]
+
+{
 	#category : #updating,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:03'
 }

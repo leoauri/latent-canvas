@@ -105,6 +105,15 @@ SRRedawFeature >> invalidate [
 ]
 
 {
+	#category : #layout,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawFeature >> isOnCanvas [
+	"Drawn in the canvas space, so wherever the canvas is shown; the panes are placed in the world instead."
+	^ true
+]
+
+{
 	#category : #text,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:23'
 }

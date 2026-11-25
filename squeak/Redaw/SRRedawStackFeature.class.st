@@ -18,7 +18,10 @@ Class {
 		'cut',
 		'cutGlass',
 		'cutGlow',
-		'cutKey'
+		'cutKey',
+		'hidden',
+		'flat',
+		'controls'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -53,6 +56,36 @@ SRRedawStackFeature >> add: aBatch page: aRectangle z: z thickness: t color: aCo
 ]
 
 {
+	#category : #crosscut,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> addControl: aString size: anExtent at: aPoint do: aBlock [
+	"Standing on the near edge with the labels, facing them: aPoint is x along time from the crosscut and height. The button passes the trigger on to me."
+	^ cut addChild: (SRActionSign new
+		size: anExtent x @ anExtent y @ 1cm;
+		label: aString;
+		slabColor: (Color r: 0.15 g: 0.35 b: 0.6);
+		action: aBlock;
+		cursorMode: SRCursorMode pass;
+		rotation: (Quaternion angle: 90 axis: Vector3 right);
+		translation: aPoint x @ (view canvasExtent y / -2 - 10cm) @ aPoint y;
+		yourself)
+]
+
+{
+	#category : #crosscut,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> addControlsAt: z [
+	controls at: #play put: (self addControl: 'Play' size: 9cm @ 4.5cm at: 8.5cm @ z do: [view togglePlay]).
+	controls at: #rec put: ((self addControl: 'Rec' size: 9cm @ 4.5cm at: 18.5cm @ z do: [view toggleRecording])
+		slabColor: (Color r: 0.6 g: 0.12 b: 0.12);
+		yourself).
+	controls at: #flat put: (self addControl: (self isFlat ifTrue: ['Spread'] ifFalse: ['Flatten']) size: 9cm @ 4.5cm at: 28.5cm @ z do: [self toggleFlat]).
+	self addControl: 'All on' size: 9cm @ 4.5cm at: 38.5cm @ z do: [self showAll].
+]
+
+{
 	#category : #layout,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
 }
@@ -66,6 +99,16 @@ SRRedawStackFeature >> addEdgesTo: aBatch z: z color: aColor [
 	aBatch at: 0 @ (d / -2) @ z extent: w @ t @ t color: aColor.
 	aBatch at: (w / 2) @ 0 @ z extent: t @ d @ t color: aColor.
 	aBatch at: (w / -2) @ 0 @ z extent: t @ d @ t color: aColor
+]
+
+{
+	#category : #crosscut,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> addToggleFor: aKey shown: aBoolean at: z color: aColor [
+	^ (self addControl: (aBoolean ifTrue: ['on'] ifFalse: ['off']) size: 7cm @ 4cm at: -5cm @ (z + 2.5cm) do: [self toggleLayer: aKey])
+		slabColor: (aBoolean ifTrue: [aColor mixed: 0.45 with: Color black] ifFalse: [Color gray: 0.25]);
+		yourself
 ]
 
 {
@@ -86,47 +129,57 @@ SRRedawStackFeature >> bottomLevel [
 
 {
 	#category : #crosscut,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> buildCut [
-	"Moved along time by followPlayhead; its contents are rebuilt only when what crosses it changes."
+	"Moved along time by followPlayhead; its contents are rebuilt only when what crosses it changes. Its buttons switch what is drawn, flatten the stack, play and record."
+	| rows |
 	self addChild: (cut := SRObject new).
+	cut cursorMode: SRCursorMode ignore.
 	cut addChild: (cutGlass := SRRedawBoxBatch new).
 	cut addChild: (cutGlow := SRRedawBoxBatch new additive: true; yourself).
-	layers doWithIndex: [:layer :i |
-		self label: (layer at: 'name' ifAbsent: ['?']) sub: (self subtitleOf: layer) at: (self levelAt: i) color: (self colorOf: layer)].
-	self label: 'tour' sub: 'the example tour' at: (self levelOfAnnotation: #tour) color: (Color r: 1 g: 0.85 b: 0.2).
-	self label: 'notes' sub: 'chat notes on the timeline' at: (self levelOfAnnotation: #chat) color: Color white.
+	controls := Dictionary new.
+	rows := self rows.
+	rows doWithIndex: [:row :i | | z shown |
+		z := self rowAt: i.
+		shown := self isShown: row first.
+		self
+			label: (row at: 2)
+			sub: (row at: 3)
+			at: z
+			color: (shown ifTrue: [row at: 4] ifFalse: [(row at: 4) mixed: 0.3 with: (Color gray: 0.4)]).
+		self addToggleFor: row first shown: shown at: z color: (row at: 4)].
+	self addControlsAt: (self rowAt: rows size) + 15cm.
 	cutKey := nil
 ]
 
 {
 	#category : #crosscut,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> buildCutGlassAt: seconds [
 	"Where each layer's sheet meets the crosscut: across the whole depth, or only inside the masks this moment passes through."
-	| d bounds |
+	| d |
 	d := view canvasExtent y.
-	bounds := view canvasBounds.
 	cutGlass clear.
 	cutGlass at: 0 @ 0 @ (self bottomLevel + self topLevel / 2) extent: 4mm @ d @ (self topLevel - self bottomLevel + 10cm) color: (Color white alpha: 0.05).
 	layers doWithIndex: [:layer :i | | c z |
-		c := (self colorOf: layer) alpha: 0.7.
-		z := i = self latentIndex ifTrue: [5mm] ifFalse: [self levelAt: i].
-		(self isMasked: layer)
-			ifFalse: [cutGlass at: 0 @ 0 @ z extent: 1cm @ d @ 1cm color: c]
-			ifTrue: [(self masksOf: layer) do: [:m |
-				(seconds between: (m at: 't') and: (m at: 't') + (m at: 'dur')) ifTrue: [
-					(self pageRectOf: m) ifNotNil: [:r | | a b |
-						a := view localPointFor: r origin.
-						b := view localPointFor: r corner.
-						cutGlass at: 0 @ (a y + b y / 2) @ z extent: 1cm @ (a y - b y) abs @ 1cm color: c]]]]]
+		(self isShownAt: i) ifTrue: [
+			c := (self colorOf: layer) alpha: 0.7.
+			z := i = self latentIndex ifTrue: [5mm] ifFalse: [self levelAt: i].
+			(self isMasked: layer)
+				ifFalse: [cutGlass at: 0 @ 0 @ z extent: 1cm @ d @ 1cm color: c]
+				ifTrue: [(self masksOf: layer) do: [:m |
+					(seconds between: (m at: 't') and: (m at: 't') + (m at: 'dur')) ifTrue: [
+						(self pageRectOf: m) ifNotNil: [:r | | a b |
+							a := view localPointFor: r origin.
+							b := view localPointFor: r corner.
+							cutGlass at: 0 @ (a y + b y / 2) @ z extent: 1cm @ (a y - b y) abs @ 1cm color: c]]]]]]
 ]
 
 {
 	#category : #crosscut,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> buildCutGlowAt: seconds clips: activeClips [
 	"The signal of each clip under the playhead, rising from the canvas; the output node pulses with its loudness."
@@ -141,7 +194,7 @@ SRRedawStackFeature >> buildCutGlowAt: seconds clips: activeClips [
 		cutGlow at: 0 @ y @ (h + top / 2) extent: 8mm @ 8mm @ (top - h) color: (Color white alpha: 0.6).
 		cutGlow at: 0 @ y @ (h + top / 2) extent: 4cm @ 4cm @ (top - h) color: (Color white alpha: 0.1).
 		layers doWithIndex: [:layer :i |
-			(i > self latentIndex and: [self operates: layer at: seconds y: pageY]) ifTrue: [ | s c |
+			(i > self latentIndex and: [(self isShownAt: i) and: [self operates: layer at: seconds y: pageY]]) ifTrue: [ | s c |
 				c := self colorOf: layer.
 				s := i = self outputIndex
 					ifTrue: [5cm + (30cm * ((self soundOf: clip) ifNil: [0] ifNotNil: [:sound | sound amplitudeAt: seconds - clip t]))]
@@ -152,7 +205,7 @@ SRRedawStackFeature >> buildCutGlowAt: seconds clips: activeClips [
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> buildFlow [
 	"A faint line from every clip up to the output, with a node on each layer that operates on it."
@@ -164,35 +217,37 @@ SRRedawStackFeature >> buildFlow [
 		p := view localPointFor: page.
 		flow at: p x @ p y @ (h + top / 2) extent: 5mm @ 5mm @ (top - h) color: (Color white alpha: 0.12).
 		layers doWithIndex: [:layer :i |
-			(i > self latentIndex and: [self operates: layer at: page x / view pixelsPerSecond y: page y])
+			(i > self latentIndex and: [(self isShownAt: i) and: [self operates: layer at: page x / view pixelsPerSecond y: page y]])
 				ifTrue: [flow at: p x @ p y @ (self levelAt: i) extent: 3cm @ 3cm @ 6mm color: ((self colorOf: layer) alpha: 0.45)]]]
 ]
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 18:21'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> buildSheets [
 	| extent |
 	extent := view canvasExtent.
 	layers doWithIndex: [:layer :i | | z c |
-		c := self colorOf: layer.
-		z := i = self latentIndex ifTrue: [5mm] ifFalse: [self levelAt: i].
-		i = self latentIndex ifFalse: [
-			sheets at: 0 @ 0 @ z extent: extent x @ extent y @ 3mm color: (c alpha: ((self isMasked: layer) ifTrue: [0.03] ifFalse: [0.02]))].
-		(self isMasked: layer) ifTrue: [
-			(self masksOf: layer) do: [:m | (self pageRectOf: m) ifNotNil: [:r |
-				self add: sheets page: r z: z thickness: 8mm color: (c alpha: 0.3)]]].
-		self addEdgesTo: sheets z: z color: (c alpha: 0.6)].
+		(self isShownAt: i) ifTrue: [
+			c := self colorOf: layer.
+			z := i = self latentIndex ifTrue: [5mm] ifFalse: [self levelAt: i].
+			i = self latentIndex ifFalse: [
+				sheets at: 0 @ 0 @ z extent: extent x @ extent y @ 3mm color: (c alpha: ((self isMasked: layer) ifTrue: [0.03] ifFalse: [0.02]))].
+			(self isMasked: layer) ifTrue: [
+				(self masksOf: layer) do: [:m | (self pageRectOf: m) ifNotNil: [:r |
+					self add: sheets page: r z: z thickness: 8mm color: (c alpha: 0.3)]]].
+			self addEdgesTo: sheets z: z color: (c alpha: 0.6)]].
 	#(#tour #chat) do: [:kind | | z |
-		z := self levelOfAnnotation: kind.
-		sheets at: 0 @ 0 @ z extent: extent x @ extent y @ 2mm color: (Color white alpha: 0.02).
-		self addEdgesTo: sheets z: z color: ((kind == #tour ifTrue: [Color r: 1 g: 0.85 b: 0.2] ifFalse: [Color white]) alpha: 0.45)]
+		(self isShown: kind) ifTrue: [
+			z := self levelOfAnnotation: kind.
+			sheets at: 0 @ 0 @ z extent: extent x @ extent y @ 2mm color: (Color white alpha: 0.02).
+			self addEdgesTo: sheets z: z color: ((kind == #tour ifTrue: [Color r: 1 g: 0.85 b: 0.2] ifFalse: [Color white]) alpha: 0.45)]]
 ]
 
 {
 	#category : #waveform,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> buildWave [
 	"The output sheet shows what each clip sounds like, standing up from it: its envelope, two bins per bar."
@@ -200,6 +255,7 @@ SRRedawStackFeature >> buildWave [
 	wave ifNil: [^ self].
 	waveKey := self waveKey.
 	wave clear.
+	(self isShownAt: self outputIndex) ifFalse: [^ self].
 	level := self levelAt: self outputIndex.
 	bin := SRRedawClipSound envelopeSeconds.
 	m := view metersPerPixel.
@@ -218,21 +274,22 @@ SRRedawStackFeature >> buildWave [
 
 {
 	#category : #levels,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> canvasLift [
+	self isFlat ifTrue: [^ 2cm].
 	self latentIndex > 1 ifFalse: [^ 0].
 	^ self latentIndex - 1 * self spacing + 10cm
 ]
 
 {
 	#category : #layout,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> clear [
 	super clear.
 	sheets := flow := wave := cut := cutGlass := cutGlow := nil.
-	waveKey := cutKey := nil
+	waveKey := cutKey := controls := nil
 ]
 
 {
@@ -282,8 +339,17 @@ SRRedawStackFeature >> followPlayhead [
 ]
 
 {
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> hiddenKeys [
+	"Layers not drawn, by id, and #tour / #chat. Kept here, not in the document: as the page's own view settings, they are per machine."
+	^ hidden ifNil: [hidden := Set new]
+]
+
+{
 	#category : #initialization,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> initialize [
 	super initialize.
@@ -292,6 +358,16 @@ SRRedawStackFeature >> initialize [
 	maskIndex := Dictionary new.
 	masked := Set new.
 	clips := #().
+	hidden := Set new.
+	flat := false.
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> isFlat [
+	^ flat == true
 ]
 
 {
@@ -300,6 +376,30 @@ SRRedawStackFeature >> initialize [
 }
 SRRedawStackFeature >> isMasked: aLayer [
 	^ masked includes: (aLayer at: 'id' ifAbsent: [nil])
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> isShown: aKey [
+	^ (self hiddenKeys includes: aKey) not
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> isShownAt: anIndex [
+	^ self isShown: (self keyOf: (layers at: anIndex))
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> keyOf: aLayer [
+	^ aLayer at: 'id' ifAbsent: [aLayer at: 'name' ifAbsent: ['?']]
 ]
 
 {
@@ -376,6 +476,18 @@ SRRedawStackFeature >> masksOf: aLayer [
 ]
 
 {
+	#category : #crosscut,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> onButtonPress: anEvent [
+	anEvent button == #trigger ifFalse: [^ self].
+	cut ifNil: [^ self].
+	(cut children
+		detect: [:each | (each isKindOf: SRActionSign) and: [each redawContains: anEvent point]]
+		ifNone: [nil]) ifNotNil: [:button | button redawPress]
+]
+
+{
 	#category : #'reading layers',
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
 }
@@ -413,15 +525,68 @@ SRRedawStackFeature >> pageRectOf: aMask [
 
 {
 	#category : #updating,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> refresh [
 	"The crosscut follows the playhead every frame; waveforms appear as the clips get decoded."
 	| changed |
 	changed := super refresh.
 	[self waveKey = waveKey ifFalse: [self buildWave]] on: Error do: [:e | lastError := e].
-	[self followPlayhead] on: Error do: [:e | lastError := e].
+	[self followPlayhead. self showControls] on: Error do: [:e | lastError := e].
 	^ changed
+]
+
+{
+	#category : #crosscut,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> rowAt: anIndex [
+	"Where the crosscut labels row anIndex (layers, then tour and chat): beside its sheet, or, flattened, in rows above the canvas."
+	self isFlat ifTrue: [^ 4cm + (anIndex - 1 * 7cm)].
+	anIndex <= layers size ifTrue: [^ self levelAt: anIndex].
+	^ self levelOfAnnotation: (anIndex = (layers size + 1) ifTrue: [#tour] ifFalse: [#chat])
+]
+
+{
+	#category : #crosscut,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> rows [
+	"Key, name, subtitle and colour of every row the crosscut labels."
+	^ (layers collect: [:layer | {self keyOf: layer. layer at: 'name' ifAbsent: ['?']. self subtitleOf: layer. self colorOf: layer}]),
+		{{#tour. 'tour'. 'the example tour'. Color r: 1 g: 0.85 b: 0.2}.
+		 {#chat. 'notes'. 'chat notes on the timeline'. Color white}}
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> showAll [
+	hidden := Set new.
+	self visibilityChanged.
+]
+
+{
+	#category : #crosscut,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> showControls [
+	"Play and Rec say what pressing them does now."
+	| play rec |
+	controls ifNil: [^ self].
+	play := view isPlaying ifTrue: ['Stop'] ifFalse: ['Play'].
+	rec := view isRecording ifTrue: ['Stop rec'] ifFalse: [view isRecordArmed ifTrue: ['Armed'] ifFalse: ['Rec']].
+	(controls at: #play ifAbsent: [nil]) ifNotNil: [:button | button label = play ifFalse: [button label: play]].
+	(controls at: #rec ifAbsent: [nil]) ifNotNil: [:button | button label = rec ifFalse: [button label: rec]].
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> showsLatentLayer [
+	^ layers isEmpty or: [self isShownAt: self latentIndex]
 ]
 
 {
@@ -436,10 +601,10 @@ SRRedawStackFeature >> soundOf: aClip [
 
 {
 	#category : #levels,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 17:40'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
 }
 SRRedawStackFeature >> spacing [
-	^ 15cm
+	^ self isFlat ifTrue: [4mm] ifFalse: [15cm]
 ]
 
 {
@@ -460,6 +625,26 @@ SRRedawStackFeature >> subtitleOf: aLayer [
 		s nextPutAll: 'function'.
 		((aLayer at: 'paramValues' ifAbsent: [nil]) ifNil: [#()] ifNotNil: [:values | values associations]) do: [:a |
 			s space; nextPutAll: a key; nextPut: $=; nextPutAll: (a value isNumber ifTrue: [(a value printShowingMaxDecimalPlaces: 2)] ifFalse: [a value printString])]]), where
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> toggleFlat [
+	flat := self isFlat not.
+	self visibilityChanged.
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> toggleLayer: aKey [
+	(self hiddenKeys includes: aKey)
+		ifTrue: [self hiddenKeys remove: aKey]
+		ifFalse: [self hiddenKeys add: aKey].
+	self visibilityChanged.
 ]
 
 {
@@ -496,6 +681,19 @@ SRRedawStackFeature >> update [
 	masked := newMasked.
 	clips := newClips select: [:c | c t notNil and: [c y notNil]].
 	^ true
+]
+
+{
+	#category : #visibility,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+}
+SRRedawStackFeature >> visibilityChanged [
+	"Runs inside the input traversal: the rebuild waits for the next frame."
+	view world ifNotNil: [:w | w addDeferredFrameMessage: [
+		view fitLift.
+		self relayout.
+		(view featureOf: SRRedawNotesFeature) ifNotNil: [:notes | notes relayout].
+		(view featureOf: SRRedawClipsFeature) ifNotNil: [:clipsFeature | clipsFeature relayout]]]
 ]
 
 {

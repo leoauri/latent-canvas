@@ -13,13 +13,13 @@ Class {
 
 {
 	#category : #shaders,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:54'
 }
 SRRedawLatentField class >> redawLatent [
 	<shaderSource: #redawLatent>
-	"Latent frames as columns. Texture rows are frames: the vector, its length, its movement, the page RGB."
+	"Latent frames as columns. Texture rows are frames: the vector, its length, its movement, the page RGB. Clip rows map world space onto a window's plate; zeros clip nothing."
 	^ {
-		#uniforms -> #(heightParams refs geometry style style2 order).
+		#uniforms -> #(heightParams refs geometry style style2 order clip).
 		#vert -> '#version 450
 
 layout(location = 0) in vec3 vertexPosition;
@@ -79,6 +79,7 @@ layout(location = 8) uniform vec4 geometry;
 layout(location = 9) uniform vec4 style;
 layout(location = 10) uniform vec4 style2;
 layout(location = 11) uniform vec4 order[32];
+layout(location = 43) uniform vec4 clip[3];
 layout(binding = 0) uniform sampler2D texture0;
 
 layout(location = 0) out vec4 finalColor;
@@ -97,6 +98,9 @@ vec3 diverge(float v)
 
 void main()
 {
+    vec4 cp = vec4(fragPosition, 1.0);
+    vec3 cq = vec3(dot(clip[0], cp), dot(clip[1], cp), dot(clip[2], cp));
+    if (any(greaterThan(abs(cq), vec3(0.5)))) discard;
     vec3 n = normalize(cross(dFdx(fragPosition), dFdy(fragPosition)));
     float light = 0.55 + 0.45 * abs(dot(n, normalize(vec3(0.3, 0.85, 0.4))));
     int frame = int(fragTexCoord.x);
@@ -147,31 +151,37 @@ SRRedawLatentField >> initialize [
 
 {
 	#category : #rendering,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:32'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:54'
 }
 SRRedawLatentField >> renderOn: aRenderer [
-	"On the Quest there is no transpiler: the shader must arrive in the shader cache."
-	| shader rlMaterial base |
+	"On the Quest there is no transpiler: the shader must arrive in the shader cache. In a window, strips off its plate are skipped and the shader cuts the ones across its edge."
+	| shader rlMaterial base portal |
 	(entries isEmpty or: [stats isNil]) ifTrue: [^ self].
 	(SRShader hasCachedShader: #redawLatent) ifFalse: [^ self].
 	shader := SRShader named: #redawLatent.
 	material ifNil: [material := SRMaterial new shader: shader; yourself].
 	rlMaterial := material internalMaterialFor: aRenderer.
 	style applyTo: shader stats: stats.
+	Raylib setShaderValueVShader: shader internalShader locIndex: (shader uniformLocAt: #clip) value: SRRedawCanvasPortal clip uniformType: 3 count: 3.
+	portal := SRRedawCanvasPortal active.
 	base := self globalTransform.
 	aRenderer withoutBackfaceCullingDo: [
-		entries do: [:each | | strip |
+		entries do: [:each | | strip transform |
 			strip := each key.
-			geometry
-				floatAt: 1 put: strip frameWidth asFloat;
-				floatAt: 5 put: style gap asFloat;
-				floatAt: 9 put: strip dims asFloat.
-			Raylib setShaderValueShader: shader internalShader locIndex: (shader uniformLocAt: #geometry) value: geometry uniformType: 3.
-			material albedoMap texture: strip texture internalTexture.
-			Raylib
-				drawMesh: strip mesh internalMesh
-				material: rlMaterial
-				transform: (base composedWithLocal: each value) asRlMatrix]].
+			transform := base composedWithLocal: each value.
+			(portal isNil or: [portal
+				showsCanvasRectFrom: (transform localPointToGlobal: 0 @ -5cm @ 0)
+				to: (transform localPointToGlobal: strip length @ 5cm @ 0)]) ifTrue: [
+					geometry
+						floatAt: 1 put: strip frameWidth asFloat;
+						floatAt: 5 put: style gap asFloat;
+						floatAt: 9 put: strip dims asFloat.
+					Raylib setShaderValueShader: shader internalShader locIndex: (shader uniformLocAt: #geometry) value: geometry uniformType: 3.
+					material albedoMap texture: strip texture internalTexture.
+					Raylib
+						drawMesh: strip mesh internalMesh
+						material: rlMaterial
+						transform: transform asRlMatrix]]].
 ]
 
 {

@@ -1,13 +1,13 @@
 "
-A RedawSession's canvas in XR: a flat plane in my XY plane, facing +z, centred on my origin, with page pixels mapped by metersPerPixel (time along +x at the page's default 100 px per second, the canvas' world y along -y).
+A RedawSession's canvas in XR: a flat plane facing +z, centred on the origin of my canvas space, with page pixels mapped by metersPerPixel (time along +x at the page's default 100 px per second, the canvas' world y along -y).
 
-What is drawn on it comes from features, each switched on and off on its own:
+What is drawn comes from features, each switched on and off on its own. The features drawn on the canvas live in my canvas space, which is not in the world tree: portals draw it, the one on the floor (my child, so at my place) and the one in an SRRedawCanvasWindow, panned, zoomed and cut to its plate. Either can be off, not both. The panes (layer stack, code changes) are my children in the world.
 
 	view := SRRedawSessionView link: '<invite link>'.
 	view openInFront.	""flat on the floor ahead of you""
 	view toggle: SRRedawCodeChangesFeature.
-	view disable: SRRedawNotesFeature.
-	view enable: SRRedawNotesFeature.
+	view toggleWindow.	""the canvas on a plate as well""
+	view toggleFloor.	""and only there""
 	view metersPerPixel: 1/1000; step: 0; layOnFloor.
 	view session close. view remove.
 
@@ -24,7 +24,10 @@ Class {
 		'metersPerPixel',
 		'blockHeight',
 		'transport',
-		'appliedLift'
+		'appliedLift',
+		'canvasSpace',
+		'floorPortal',
+		'windows'
 	],
 	#classVars : [
 		'InviteLink'
@@ -206,7 +209,7 @@ SRRedawSessionView class >> xrMenuOtherLink: aMenu [
 
 {
 	#category : #menus,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 11:34'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
 }
 SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 	"Changes to my children wait for the next frame: menu actions run inside the input traversal."
@@ -222,6 +225,16 @@ SRRedawSessionView >> addCustomMenuItemsTo: aMenu [
 	aMenu addItem: 'Controls' action: [self openTransportBeside: aMenu] keepOpen: false.
 	aMenu addItem: 'Latent view' action: [self openLatentPanelBeside: aMenu] keepOpen: false.
 	aMenu addItem: 'Lay canvas here' action: [self layOnFloor] keepOpen: false.
+	aMenu
+		addItem: [(self showsOnFloor ifTrue: ['[x] '] ifFalse: ['[ ] ']), 'Canvas on the floor']
+		action: [self toggleFloor]
+		keepOpen: false.
+	aMenu addItem: 'New map' action: [self newWindow] keepOpen: false.
+	aMenu addItem: 'Close all maps' action: [self closeWindow] keepOpen: false.
+	aMenu
+		addItem: [self isFlat ifTrue: ['Spread the layers'] ifFalse: ['Flatten the layers']]
+		action: [self toggleFlat]
+		keepOpen: true.
 	aMenu addSubmenuItemFor: #show filledBy: [:sub | self addFeatureItemsTo: sub].
 	aMenu addItem: 'Close' action: [self world ifNotNil: [:w | w addDeferredFrameMessage: [self close]]] keepOpen: false
 ]
@@ -284,6 +297,15 @@ SRRedawSessionView >> canvasLift [
 ]
 
 {
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> canvasSpace [
+	"Where the canvas features draw: outside the world tree, shown by portals (the floor, windows)."
+	^ canvasSpace ifNil: [canvasSpace := SRObject new name: 'Redaw canvas space'; yourself]
+]
+
+{
 	#category : #'page layout',
 	#'squeak_changestamp' : 'leo-MCPServer 11/19/2026 17:39'
 }
@@ -294,15 +316,37 @@ SRRedawSessionView >> clipHeight [
 
 {
 	#category : #opening,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
 }
 SRRedawSessionView >> close [
 	"Leaves the session too, unless another canvas shows it."
 	transport ifNotNil: [transport remove. transport := nil].
+	self windows do: [:each | each detachMarker. each remove].
 	features copy do: [:each | self disable: each class].
 	(self class allInstances anySatisfy: [:each | each ~~ self and: [each session == session and: [each world notNil]]])
 		ifFalse: [session ifNotNil: [session close]].
 	self remove
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> closeWindow [
+	"All maps."
+	self windows do: [:each | self closeWindow: each]
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> closeWindow: aWindow [
+	"The canvas has to show somewhere: without any map, on the floor."
+	self world ifNotNil: [:w | w addDeferredFrameMessage: [
+		aWindow detachMarker.
+		aWindow remove.
+		self windows isEmpty ifTrue: [self showOnFloor: true]]]
 ]
 
 {
@@ -328,26 +372,26 @@ SRRedawSessionView >> defaultFeatures [
 
 {
 	#category : #features,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:04'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
 }
 SRRedawSessionView >> disable: aFeatureClass [
 	(self featureOf: aFeatureClass) ifNotNil: [:feature |
 		features remove: feature.
 		[feature deactivate] on: Error do: [:e | e return: nil].
-		self removeChild: feature.
+		feature parent ifNotNil: [:p | p removeChild: feature].
 		pageBounds := nil]
 ]
 
 {
 	#category : #features,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:21'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
 }
 SRRedawSessionView >> enable: aFeatureClass [
 	| feature |
 	(self featureOf: aFeatureClass) ifNotNil: [:existing | ^ existing].
 	feature := aFeatureClass on: self.
 	features add: feature.
-	self addChild: feature.
+	(feature isOnCanvas ifTrue: [self canvasSpace] ifFalse: [self]) addChild: feature.
 	pageBounds := nil.
 	^ feature
 ]
@@ -383,7 +427,7 @@ SRRedawSessionView >> fitLift [
 
 {
 	#category : #initialization,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:21'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
 }
 SRRedawSessionView >> initialize [
 	super initialize.
@@ -394,7 +438,8 @@ SRRedawSessionView >> initialize [
 		drawWires: false;
 		color: (Color gray: 0.22);
 		yourself.
-	self addChild: plane.
+	self canvasSpace addChild: plane.
+	self addChild: (floorPortal := SRRedawCanvasPortal on: self).
 	self defaultFeatures do: [:each | self enable: each]
 ]
 
@@ -412,6 +457,14 @@ SRRedawSessionView >> isApp [
 }
 SRRedawSessionView >> isEnabled: aFeatureClass [
 	^ (self featureOf: aFeatureClass) notNil
+]
+
+{
+	#category : #layers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> isFlat [
+	^ self stack ifNil: [false] ifNotNil: [:stack | stack isFlat]
 ]
 
 {
@@ -444,6 +497,23 @@ SRRedawSessionView >> isRecordArmed [
 }
 SRRedawSessionView >> isRecording [
 	^ (self featureOf: SRRedawRecordFeature) ifNil: [false] ifNotNil: [:recorder | recorder isRecording]
+]
+
+{
+	#category : #layers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> isShown: aLayerKey [
+	"Whether a layer (its id, or #tour and #chat) is drawn; switched on the crosscut."
+	^ self stack ifNil: [true] ifNotNil: [:stack | stack isShown: aLayerKey]
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> isWindowOpen [
+	^ self windows notEmpty
 ]
 
 {
@@ -532,6 +602,26 @@ SRRedawSessionView >> metersPerPixel: aNumber [
 ]
 
 {
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> moveIntoCanvasSpace [
+	"Once, for a canvas made before there was a canvas space."
+	floorPortal ifNotNil: [^ self].
+	self canvasSpace addChild: plane.
+	features do: [:each | each isOnCanvas ifTrue: [self canvasSpace addChild: each]].
+	self addChild: (floorPortal := SRRedawCanvasPortal on: self).
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> newWindow [
+	self world ifNotNil: [:w | w addDeferredFrameMessage: [self openWindow]]
+]
+
+{
 	#category : #transport,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
 }
@@ -544,6 +634,15 @@ SRRedawSessionView >> nextTourStop [
 	stops isEmpty ifTrue: [^ self].
 	stops := stops asSet asSortedCollection.
 	playhead seek: (stops detect: [:t | t > (playhead cue + 0.01)] ifNone: [stops first])
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> noteError: anError [
+	"An object in canvas space failed to draw; it is skipped from now on."
+	self world ifNotNil: [:w | w log: 'Redaw canvas: ', anError description]
 ]
 
 {
@@ -586,6 +685,23 @@ SRRedawSessionView >> openTransportBeside: aMenu [
 ]
 
 {
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> openWindow [
+	"Another map, ahead of the player, the whole canvas fitted to it. Changes the world tree: between frames only."
+	| map taken |
+	taken := self windows collect: [:each | each number].
+	map := SRRedawCanvasWindow for: self.
+	map number: ((1 to: taken size + 1) detect: [:n | (taken includes: n) not]).
+	self world addChild: map.
+	map placeInFrontOf: self world camera.
+	map attachMarker.
+	windows add: map.
+	^ map
+]
+
+{
 	#category : #'page layout',
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 14:21'
 }
@@ -613,6 +729,14 @@ SRRedawSessionView >> pixelsPerSecond [
 ]
 
 {
+	#category : #playing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> playheadTime [
+	^ (self featureOf: SRRedawPlayheadFeature) ifNil: [0] ifNotNil: [:playhead | playhead time]
+]
+
+{
 	#category : #accessing,
 	#'squeak_changestamp' : 'leo-MCPServer 11/19/2026 17:39'
 }
@@ -629,6 +753,42 @@ SRRedawSessionView >> session: aRedawSession [
 	session isRunning ifFalse: [session start].
 	features do: [:each | each invalidate].
 	pageBounds := nil
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> showOnFloor: aBoolean [
+	"Changes the world tree: between frames only."
+	aBoolean = self showsOnFloor ifTrue: [^ self].
+	aBoolean
+		ifTrue: [self addChild: (floorPortal ifNil: [floorPortal := SRRedawCanvasPortal on: self])]
+		ifFalse: [floorPortal remove]
+]
+
+{
+	#category : #layers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> showsLatentClips [
+	^ self stack ifNil: [true] ifNotNil: [:stack | stack showsLatentLayer]
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> showsOnFloor [
+	^ floorPortal notNil and: [floorPortal parent == self]
+]
+
+{
+	#category : #layers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> stack [
+	^ self featureOf: SRRedawStackFeature
 ]
 
 {
@@ -660,6 +820,28 @@ SRRedawSessionView >> toggle: aFeatureClass [
 ]
 
 {
+	#category : #layers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:12'
+}
+SRRedawSessionView >> toggleFlat [
+	self stack ifNotNil: [:stack | stack toggleFlat]
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> toggleFloor [
+	"The canvas has to show somewhere: without the floor, in a map."
+	self world ifNotNil: [:w | w addDeferredFrameMessage: [
+		self showsOnFloor
+			ifTrue: [
+				self isWindowOpen ifFalse: [self openWindow].
+				self showOnFloor: false]
+			ifFalse: [self showOnFloor: true]]]
+]
+
+{
 	#category : #transport,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
 }
@@ -678,6 +860,15 @@ SRRedawSessionView >> toggleRecording [
 ]
 
 {
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> toggleWindow [
+	"Kept for the menu and remote of older canvases: opens another map."
+	self newWindow
+]
+
+{
 	#category : #transport,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:00'
 }
@@ -687,4 +878,21 @@ SRRedawSessionView >> transport [
 		transport := SRRedawTransport for: self.
 		self world addChild: transport].
 	^ transport
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> window [
+	^ self windows ifEmpty: [nil] ifNotEmpty: [:open | open last]
+]
+
+{
+	#category : #'canvas space',
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+}
+SRRedawSessionView >> windows [
+	"The maps open in my world, oldest first."
+	^ windows := (windows ifNil: [OrderedCollection new]) select: [:each | each world notNil]
 ]
