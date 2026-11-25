@@ -19,14 +19,26 @@
 //
 // Redundant changes (the base already has them, redundant.js) are never merged: a change waits for
 // its verdict, and the verdicts of what is staged with it, asking redundant.js to check them first.
+//
+// Base merges: when the base (live/ on disk) changes under this session's own version of files and
+// the two conflict (vfs.layerConflicts), the same queue merges the base in, before peers' changes:
+// an agent (scope "automerge:base") gets the files staged with conflict markers in overlay
+// 'automerge:base' (vfs.stageLayerMerge) and the Changes window's merge-by-intent brief. Its job is
+// keyed 'base:<doc>:<hash of the conflicting files>', so a held merge is tried again when the base
+// (or the session's version) moves on. It starts once the conflicts have held still for
+// BASE_SETTLE_MS (an editor or agent writing several files), and its apply is refused when the base
+// moved again meanwhile (it would mark the newer base change merged without having seen it).
 import { effect, computed, signal } from '@preact/signals';
-import { vfs, persist } from '@live/runtime';
+import { vfs, vfsVersion, persist } from '@live/runtime';
 import * as changes from './changes.js';
 import * as session from './session.js';
 import * as redundant from './redundant.js';
 import { registerExtension } from '../chat/extensions.js';
 
 export const SCOPE = 'automerge';
+export const BASE_SCOPE = 'automerge:base';
+const BASE_OVERLAY = 'automerge:base';
+const BASE_SETTLE_MS = 5000;
 const IDLE_MS = 4000;
 const ON_KEY = 'redaw.net.autoMerge';
 const JOBS_KEY = 'redaw.net.autoMerge.jobs';
@@ -104,7 +116,8 @@ export const awaitingVerdict = signal([]);
 /** The job running now, with its change: { change, job } or null. */
 export const current = computed(() => {
   const id = active.value;
-  return id ? { change: changes.published.value.find((c) => c.id === id) ?? { id, name: id, author: '?' }, job: jobs.value[id] ?? {} } : null;
+  const j = jobs.value[id] ?? {};
+  return id ? { change: changes.published.value.find((c) => c.id === id) ?? { id, name: j.name ?? id, author: j.name ? j.author ?? null : '?' }, job: j } : null;
 });
 
 export function toggleAutoMerge() {
@@ -162,11 +175,21 @@ This chat runs in the background: the user turned auto-merge on, so a change a p
 3. apply_changes with the change's name as label. The call waits until the user pauses (no input for a few seconds, playback stopped), so their work isn't interrupted. If it rolls back, fix and apply again; if it can't be made to work in a few tries, hold it back.
 4. End with one line: "Merged: …" (what it adds), or "Held back: …" (why). To hold back, just end your turn without applying. Don't try_changes, propose_bundle or add an onboarding_guide.`;
 
+const BASE_PROMPT = `# Auto-merge the base
+This chat runs in the background: the user turned auto-merge on, so when the base code (live/ on disk) changes under this session's own version of files and the two conflict, it is merged without their click. Nobody reads this chat while you work. The base is the user's own code: no need to review it for malice.
+
+1. Merge as the first message says, by intent. Where it says to ask the user (you can't tell whether a session edit is still needed, or the purposes conflict), hold the merge back instead and name the edit and what it was for: the user resolves it in the Changes window.
+2. apply_changes with a label that says what was merged ("merge base <what it changed> with session <what it kept>"). The call waits until the user pauses, so their work isn't interrupted. If it rolls back, fix and apply again; if it can't be made to work in a few tries, hold it back. If it says the base changed again, stop: the merge starts over on the new base.
+3. End with one line: "Merged: …" (what was kept from each side), or "Held back: …" (why). To hold back, just end your turn without applying. Don't try_changes, propose_bundle or add an onboarding_guide.`;
+
+/** What the running base merge staged: path -> the base it merged in (to refuse a stale apply). */
+let baseStaged = null;
+
 const unregister = registerExtension('automerge', {
-  label: (scope) => (scope === SCOPE ? 'Auto-merge' : null),
-  prompt: (scope) => (scope === SCOPE ? PROMPT : null),
+  label: (scope) => (scope === SCOPE || scope === BASE_SCOPE ? 'Auto-merge' : null),
+  prompt: (scope) => (scope === SCOPE ? PROMPT : scope === BASE_SCOPE ? BASE_PROMPT : null),
   beforeApply: async (scope, { session: s, signal }) => {
-    if (scope !== SCOPE) return;
+    if (scope !== SCOPE && scope !== BASE_SCOPE) return;
     const id = Object.keys(jobs.peek()).find((k) => jobs.peek()[k].sessionId === s?.id);
     if (id) setJob(id, { state: 'waiting' });
     try {
@@ -174,6 +197,8 @@ const unregister = registerExtension('automerge', {
     } finally {
       if (id) setJob(id, { state: 'reviewing' });
     }
+    if (scope === BASE_SCOPE && baseStaged && [...baseStaged].some(([path, src]) => vfs.readBase(path) !== src))
+      throw new Error('The base changed again while you merged. Stop here: auto-merge starts over on the new base.');
   },
 });
 
@@ -210,15 +235,86 @@ async function run(c) {
   } catch (e) {
     note = String(e?.message || e);
   } finally {
-    if (state === 'failed' && !autoMergeOn.peek()) retry(c.id); // switched off mid-way: try again when it's back on
-    else if (state === 'failed') {
-      const tries = (jobs.peek()[c.id]?.tries ?? 0) + 1;
-      setJob(c.id, { state, note, tries, retryAt: Date.now() + RETRY_MS[Math.min(tries, RETRY_MS.length) - 1] });
-    } else setJob(c.id, { state, note });
-    if (state === 'merged') retryFailed(); // the LLM works (again): what failed may go through now
-    if (jobs.peek()[c.id]) outcomes.value = [...outcomes.peek(), { id: c.id, name: c.name, author: c.author, state, note }].slice(-20);
-    if (active.peek() === c.id) active.value = null;
+    settle(c, state, note);
   }
+}
+
+/** Records how job `c.id` ended, and frees the queue. */
+function settle(c, state, note) {
+  if (state === 'failed' && !autoMergeOn.peek()) retry(c.id); // switched off mid-way: try again when it's back on
+  else if (state === 'failed') {
+    const tries = (jobs.peek()[c.id]?.tries ?? 0) + 1;
+    setJob(c.id, { state, note, tries, retryAt: Date.now() + RETRY_MS[Math.min(tries, RETRY_MS.length) - 1] });
+  } else setJob(c.id, { state, note });
+  if (state === 'merged') retryFailed(); // the LLM works (again): what failed may go through now
+  if (jobs.peek()[c.id]) outcomes.value = [...outcomes.peek(), { id: c.id, name: c.name, author: c.author, state, note }].slice(-20);
+  if (active.peek() === c.id) active.value = null;
+}
+
+// ---- base merges --------------------------------------------------------------------------------
+
+const hash = (str) => {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = (Math.imul(h, 33) ^ str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+};
+
+/** The job id for merging the base into this session's conflicting files now, or null when none conflict. */
+function baseJobId(doc) {
+  const list = vfs.layerConflicts();
+  if (!doc || !list.length) return null;
+  return `base:${doc}:${hash(list.map((c) => [c.path, c.baseNow ?? '', c.session ?? ''].join('\0')).join('\0'))}`;
+}
+
+/** The base merge for this session's conflicts now: { id, job } (job null: not started) or null. */
+export const baseJob = computed(() => {
+  vfsVersion.value;
+  const id = baseJobId(session.currentDoc.value);
+  return id ? { id, job: jobs.value[id] ?? null } : null;
+});
+
+async function runBase(id) {
+  active.value = id;
+  const doc = session.currentDoc.peek();
+  let state = 'failed', note = null, c = { id, name: 'the base', author: null };
+  try {
+    const { overlayId, conflicts: paths } = vfs.stageLayerMerge(BASE_OVERLAY);
+    baseStaged = new Map(paths.map((p) => [p, vfs.readBase(p)]));
+    c = { ...c, name: `the base into ${paths.join(', ')}` };
+    setJob(id, { state: 'reviewing', doc, note: null, name: c.name, author: c.author });
+    const [{ newSession, getSession }, { sendMessage }] = await Promise.all([import('../chat/store.js'), import('../chat/agent.js')]);
+    const sid = newSession(BASE_SCOPE, { overlayId, title: `Auto-merge ${c.name}` });
+    setJob(id, { sessionId: sid });
+    const s = getSession(sid);
+    await sendMessage(s, changes.baseMergeBrief(paths));
+    note = lastText(s);
+    const left = vfs.layerConflicts().map((x) => x.path);
+    if (session.currentDoc.peek() === doc && !paths.some((p) => left.includes(p))) state = 'merged';
+    else if (s.error.peek()) note = s.error.peek();
+    else state = 'held';
+  } catch (e) {
+    note = String(e?.message || e);
+  } finally {
+    baseStaged = null;
+    // The conflicts moved on meanwhile (the base or the session's version changed, the user resolved
+    // them, or another session opened): this job is moot, the one for the conflicts now takes over.
+    if (state !== 'merged' && baseJobId(doc) !== id) {
+      retry(id);
+      if (active.peek() === id) active.value = null;
+    } else settle(c, state, note);
+  }
+}
+
+// A base merge starts once the conflicts have held still for BASE_SETTLE_MS.
+let baseSeen = { id: null, at: 0 };
+let settleTimer = 0;
+function baseSettled(id) {
+  if (baseSeen.id !== id) {
+    baseSeen = { id, at: Date.now() };
+    clearTimeout(settleTimer);
+    if (id) settleTimer = setTimeout(() => (clock.value = Date.now()), BASE_SETTLE_MS + 50);
+  }
+  return !!id && Date.now() - baseSeen.at >= BASE_SETTLE_MS;
 }
 
 /** Stops the running auto-merge agent (its change stays for the user). */
@@ -277,6 +373,12 @@ const offRun = effect(() => {
   if (!autoMergeOn.value || session.status.value !== 'ready' || active.value) return;
   const all = jobs.value;
   clock.value; // look again when a failed job is due
+  // The base merges first: peers' changes then merge onto the session as it will be.
+  const bj = baseJob.value;
+  if (baseSettled(bj?.id ?? null) && (!bj.job || isDue(bj.job))) {
+    queueMicrotask(() => !active.peek() && autoMergeOn.peek() && baseJob.peek()?.id === bj.id && runBase(bj.id));
+    return;
+  }
   redundant.verdicts.value; // changes the base already has are left out (the Changes window folds them)
   const todo = changes.catchUpList.value.filter((c) => (!all[c.id] || canRetry(all[c.id])) && !redundant.isRedundant(c));
   if (!todo.length) return;
@@ -300,6 +402,7 @@ export function dispose() {
   offOff();
   offTimer();
   clearTimeout(retryTimer);
+  clearTimeout(settleTimer);
   offSettings.forEach((f) => f());
   offSave.forEach((f) => f());
   for (const t of INPUT_EVENTS) window.removeEventListener(t, onInput, { capture: true });
