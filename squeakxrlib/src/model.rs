@@ -334,10 +334,15 @@ impl Shared {
                     q = self.wake.wait(q).unwrap();
                 }
             };
-            let result = match input {
+            // A panic would leave the job running forever and take this worker with it.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match input {
                 Input::Latents(latents, rate) => self.model.decode_at_rate(&latents, rate, model_rate),
                 Input::Audio(audio, rate) => self.model.encode(&audio, rate, self.sample_rate),
-            }
+            }))
+            .unwrap_or_else(|p| {
+                let why = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()));
+                Err(anyhow!("the model panicked: {}", why.unwrap_or_default()))
+            })
             .map_err(|e| format!("{e:#}"));
             let mut q = self.queue.lock().unwrap();
             q.running.retain(|j| *j != id);
