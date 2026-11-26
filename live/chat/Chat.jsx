@@ -19,7 +19,7 @@ import {
 } from './store.js';
 import * as changes from '../net/changes.js';
 import { sendMessage, stop, EFFORTS } from './agent.js';
-import { pageUsage, addUsage, rateLimit } from './llm.js';
+import { pageUsage, addUsage, rateLimit, CACHE_TTLS } from './llm.js';
 import { approve, pendingBundle, showApprovalGuide, showingGuideOf } from './tools.js';
 import { requestTrial } from '../net/trials.js';
 import { dismissGuide } from '../ui/guide/guide.js';
@@ -281,6 +281,18 @@ function HeaderRows({ win, s }) {
           >
             {EFFORTS.map((e) => (
               <option value={e}>{e}</option>
+            ))}
+          </select>
+          <select
+            value={chat.cacheTtl.value}
+            title="prompt cache lifetime (1h survives longer pauses but costs more to write)"
+            onChange={(e) => {
+              chat.cacheTtl.value = e.currentTarget.value;
+              save('redaw.chat.cacheTtl', chat.cacheTtl.value);
+            }}
+          >
+            {CACHE_TTLS.map((t) => (
+              <option value={t}>cache {t}</option>
             ))}
           </select>
           <button onClick={() => (showSettings.value = !showSettings.value)}>Settings</button>

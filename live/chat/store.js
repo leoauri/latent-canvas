@@ -28,6 +28,8 @@ export const chat = {
   /** Saved conversations, newest first: { id, scope, overlayId?, title?, created, updated, changes: string[], preview }. */
   index: persist('chat.index', []),
   effort: persist('chat.effort', () => load('redaw.chat.effort', 'default')),
+  /** Prompt-cache TTL asked of the gateway: '5m' or '1h'. */
+  cacheTtl: persist('chat.cacheTtl', () => load('redaw.chat.cacheTtl', '1h')),
   /** Model override; empty means the configured default (OPENAI_MODEL). */
   model: persist('chat.model', () => load('redaw.chat.model', '')),
   apiKey: persist('chat.apiKey', () => load('redaw.apiKey', '')),

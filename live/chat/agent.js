@@ -7,7 +7,7 @@ import { dismissGuide } from '../ui/guide/guide.js';
 import { systemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
 import { whereNow, lastWhere, sessionChangeNote } from './whereabouts.js';
-import { APIError, endpoint, recordUsage, addUsage, recordRateLimit } from './llm.js';
+import { APIError, endpoint, recordUsage, addUsage, recordRateLimit, cacheOptions } from './llm.js';
 
 const MAX_STEPS = 60;
 export const EFFORTS = ['default', 'low', 'medium', 'high'];
@@ -68,6 +68,7 @@ async function loop(s, target, signal) {
       tools: toolDefs(),
     };
     if (EFFORTS.includes(chat.effort.value) && chat.effort.value !== 'default') body.reasoning_effort = chat.effort.value;
+    Object.assign(body, cacheOptions());
 
     let message;
     let frame = 0;

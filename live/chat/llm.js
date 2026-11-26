@@ -9,6 +9,13 @@ import { chat } from './store.js';
 // itself (cache_control sent by the page has no effect there) and reports reads and writes in
 // usage.prompt_tokens_details. What we must do is keep the prefix byte-stable (see agent.js).
 
+export const CACHE_TTLS = ['5m', '1h'];
+
+/** The request fields that ask for a prompt-cache TTL (1h unless the chat says 5m). claude-ai-proxy honours it; other gateways ignore it. */
+export function cacheOptions() {
+  return { prompt_cache_options: { ttl: chat.cacheTtl.value === '5m' ? '5m' : '1h' } };
+}
+
 /** Token usage of every request from this page since it loaded (all chats and background jobs). */
 export const pageUsage = persist('chat.pageUsage', null);
 
@@ -93,7 +100,7 @@ export async function complete(messages, { signal } = {}) {
   const res = await fetch(target.url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...target.headers },
-    body: JSON.stringify({ model: chat.model.value || env.model, max_completion_tokens: env.maxTokens, messages }),
+    body: JSON.stringify({ model: chat.model.value || env.model, max_completion_tokens: env.maxTokens, messages, ...cacheOptions() }),
     signal,
   });
   if (!res.ok) {
