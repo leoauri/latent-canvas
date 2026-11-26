@@ -3,7 +3,8 @@ Class {
 	#superclass : #TestCase,
 	#instVars : [
 		'view',
-		'window'
+		'window',
+		'received'
 	],
 	#category : #'Redaw-Tests'
 }
@@ -31,6 +32,32 @@ SRRedawCanvasWindowTest >> drag: aResizer by: aVector3 [
 ]
 
 {
+	#category : #helpers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindowTest >> pressOn: anObject [
+	"A trigger press on anObject in canvas space, through my window."
+	| point |
+	received := OrderedCollection new.
+	anObject addDependent: self.
+	point := window portal globalTransform localPointToGlobal: anObject translation.
+	window
+		startDrag: (SRInputEventButton new button: #trigger; pressed: true; point: point; yourself)
+		by: nil
+		along: (SRRay origin: point + (0 @ 1 @ 0) forward: 0 @ -1 @ 0).
+]
+
+{
+	#category : #helpers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindowTest >> release: anObject afterMoving: aBoolean [
+	aBoolean ifTrue: [(window instVarNamed: #drag) at: 4 put: true].
+	window endDrag.
+	anObject removeDependent: self.
+]
+
+{
 	#category : #running,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:24'
 }
@@ -45,6 +72,94 @@ SRRedawCanvasWindowTest >> resizerAt: aCorner [
 SRRedawCanvasWindowTest >> setUp [
 	view := SRRedawSessionView new.
 	window := SRRedawCanvasWindow for: view.
+]
+
+{
+	#category : #tests,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindowTest >> testAClickPlacesTheCueOnce [
+	| ground |
+	view canvasSpace addChild: (ground := SRRedawTestCueGround new translation: 1 @ 2 @ 0; yourself).
+	self pressOn: ground.
+	self release: ground afterMoving: false.
+	self assert: 1 equals: received size.
+]
+
+{
+	#category : #tests,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindowTest >> testAControlGetsAClickOnReleaseAndNothingFromADrag [
+	| control |
+	view canvasSpace addChild: (control := SRCube new translation: 1 @ 2 @ 0; yourself).
+	self pressOn: control.
+	self assert: received isEmpty.
+	self release: control afterMoving: false.
+	self assert: 1 equals: received size.
+	self pressOn: control.
+	self release: control afterMoving: true.
+	self assert: received isEmpty.
+]
+
+{
+	#category : #tests,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindowTest >> testADragPlacesTheCueWhereItStarted [
+	| ground |
+	view canvasSpace addChild: (ground := SRRedawTestCueGround new translation: 1 @ 2 @ 0; yourself).
+	self pressOn: ground.
+	self assert: 1 equals: received size.
+	self assert: (received first point - (1 @ 2 @ 0.5)) length < 1.0e-4.
+	self release: ground afterMoving: true.
+	self assert: 1 equals: received size.
+]
+
+{
+	#category : #tests,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:07'
+}
+SRRedawCanvasWindowTest >> testAFocusedMapUnderTheRayKeepsTheStickFromTurning [
+	| saved world avatar action before |
+	saved := SRAvatar turnStyle.
+	[SRAvatar turnStyle: #snap.
+	world := SRWorld new.
+	world addChild: window.
+	avatar := SRAvatar new.
+	action := SRSnapTurnAction new hand: avatar rightHand; yourself.
+	avatar rightHand instVarNamed: #firstIntersection put: (SRIntersectionResult new object: window portal; yourself).
+	avatar rightHand inputState joystick horizontal: 1.
+	window takeFocus.
+	before := avatar rotation.
+	action run: avatar rightHand inputState.
+	self assert: before equals: avatar rotation.
+	world keyboardFocus: nil.
+	avatar rightHand inputState joystick horizontal: 0.
+	action run: avatar rightHand inputState.
+	avatar rightHand inputState joystick horizontal: 1.
+	action run: avatar rightHand inputState.
+	self deny: before = avatar rotation]
+		ensure: [SRAvatar turnStyle: saved].
+]
+
+{
+	#category : #tests,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
+}
+SRRedawCanvasWindowTest >> testATriggerPressGivesTheMapFocus [
+	| world button |
+	world := SRWorld new.
+	world addChild: window.
+	button := (window instVarNamed: #buttons) detect: [:each | each label = 'Fit'].
+	self deny: window hasFocus.
+	window onButtonPress: (SRInputEventButton new
+		button: #trigger;
+		pressed: true;
+		point: (button globalTransform localPointToGlobal: 0 @ 0 @ 0);
+		yourself).
+	self assert: window hasFocus.
+	self assert: window holdsStick.
 ]
 
 {
@@ -165,6 +280,18 @@ SRRedawCanvasWindowTest >> testThePlateMovesWithTheWindow [
 
 {
 	#category : #tests,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindowTest >> testThePlaySignIsNoGroundForTheCue [
+	| playhead sign |
+	playhead := view featureOf: SRRedawPlayheadFeature.
+	playhead instVarNamed: #sign put: (sign := SRActionSign new size: 20cm @ 10cm @ 1cm; translation: 3 @ -1 @ 0; yourself).
+	self deny: (playhead redawPlacesCueAt: 3 @ -1 @ 0).
+	self assert: (playhead redawPlacesCueAt: 1 @ 2 @ 0).
+]
+
+{
+	#category : #tests,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:02'
 }
 SRRedawCanvasWindowTest >> testTheScaleKeepsADecimalBelowOneToTen [
@@ -174,4 +301,30 @@ SRRedawCanvasWindowTest >> testTheScaleKeepsADecimalBelowOneToTen [
 	self assert: window scaleText = '1:28'.
 	window instVarNamed: 'zoom' put: 1.5.
 	self assert: window scaleText = '1.5:1'.
+]
+
+{
+	#category : #tests,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:07'
+}
+SRRedawCanvasWindowTest >> testTheStickPansOnlyAFocusedMap [
+	| world stick before |
+	world := SRWorld new.
+	world addChild: window.
+	stick := [SRInputEventAnalog new axis: #joystick; value: 1 @ 0; yourself].
+	before := window center.
+	window onAnalogInput: stick value.
+	self assert: before equals: window center.
+	window takeFocus.
+	window instVarNamed: #lastAnalog put: Time millisecondClockValue - 20.
+	window onAnalogInput: stick value.
+	self assert: window center x > before x.
+]
+
+{
+	#category : #helpers,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindowTest >> update: anAspect with: anObject [
+	anAspect == #inputReceived ifTrue: [received add: anObject].
 ]

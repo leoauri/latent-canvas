@@ -124,6 +124,17 @@ SRRedawCanvasPortal >> canvasHitAt: aWorldPoint from: anOrigin [
 ]
 
 {
+	#category : #input,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:15'
+}
+SRRedawCanvasPortal >> canvasHitFor: anEvent [
+	| origin |
+	origin := self originOf: anEvent.
+	(anEvent point isNil or: [origin isNil]) ifTrue: [^ nil].
+	^ self canvasHitAt: anEvent point from: origin
+]
+
+{
 	#category : #rendering,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:53'
 }
@@ -174,17 +185,13 @@ SRRedawCanvasPortal >> collisionGeometry [
 
 {
 	#category : #input,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:06'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:15'
 }
-SRRedawCanvasPortal >> dispatch: anEvent [
-	"Hand anEvent to the canvas object under its point; answer whether there was one."
-	| origin hit |
-	origin := self originOf: anEvent.
-	hit := (anEvent point isNil or: [origin isNil]) ifFalse: [self canvasHitAt: anEvent point from: origin].
-	hit ifNil: [^ false].
-	hit object handleInput: (anEvent copy
-		target: hit object;
-		point: hit point;
+SRRedawCanvasPortal >> deliver: anEvent to: aHitOrNil [
+	aHitOrNil ifNil: [^ false].
+	aHitOrNil object handleInput: (anEvent copy
+		target: aHitOrNil object;
+		point: aHitOrNil point;
 		handled: false;
 		yourself).
 	^ true
@@ -192,7 +199,16 @@ SRRedawCanvasPortal >> dispatch: anEvent [
 
 {
 	#category : #input,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:06'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:15'
+}
+SRRedawCanvasPortal >> dispatch: anEvent [
+	"Hand anEvent to the canvas object under its point; answer whether there was one."
+	^ self deliver: anEvent to: (self canvasHitFor: anEvent)
+]
+
+{
+	#category : #input,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:07'
 }
 SRRedawCanvasPortal >> handleInput: anEvent [
 	"Events arrive with a point in the world; the canvas object under it gets them with the point in canvas space. In a window the trigger drags (see SRRedawCanvasWindow>>startDrag:) and the thumb stick pans and zooms."
@@ -200,7 +216,7 @@ SRRedawCanvasPortal >> handleInput: anEvent [
 	clipper ifNotNil: [
 		anEvent isAnalogEvent ifTrue: [^ clipper handleInput: anEvent].
 		(anEvent isButtonEvent and: [anEvent button == #trigger]) ifTrue: [
-			anEvent pressed ifTrue: [clipper startDrag: anEvent].
+			anEvent pressed ifTrue: [clipper takeFocus; startDrag: anEvent].
 			^ anEvent handled: true]].
 	(self dispatch: anEvent)
 		ifTrue: [anEvent handled: true]

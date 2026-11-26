@@ -163,6 +163,14 @@ SRRedawPlayheadFeature >> play [
 ]
 
 {
+	#category : #input,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:15'
+}
+SRRedawPlayheadFeature >> redawPlacesCueAt: aCanvasPoint [
+	^ sign isNil or: [(sign redawContains: aCanvasPoint) not]
+]
+
+{
 	#category : #updating,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 15:05'
 }

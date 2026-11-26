@@ -62,6 +62,14 @@ SRRedawLayersFeature >> openStack [
 
 {
 	#category : #updating,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
+}
+SRRedawLayersFeature >> refreshVisibility [
+	stack ifNotNil: [:each | each rebuild].
+]
+
+{
+	#category : #updating,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:52'
 }
 SRRedawLayersFeature >> relayout [

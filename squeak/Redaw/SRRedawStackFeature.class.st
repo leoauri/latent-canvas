@@ -685,7 +685,7 @@ SRRedawStackFeature >> update [
 
 {
 	#category : #visibility,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:13'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
 }
 SRRedawStackFeature >> visibilityChanged [
 	"Runs inside the input traversal: the rebuild waits for the next frame."
@@ -693,7 +693,8 @@ SRRedawStackFeature >> visibilityChanged [
 		view fitLift.
 		self relayout.
 		(view featureOf: SRRedawNotesFeature) ifNotNil: [:notes | notes relayout].
-		(view featureOf: SRRedawClipsFeature) ifNotNil: [:clipsFeature | clipsFeature relayout]]]
+		(view featureOf: SRRedawClipsFeature) ifNotNil: [:clipsFeature | clipsFeature relayout].
+		(view featureOf: SRRedawLayersFeature) ifNotNil: [:layersFeature | layersFeature refreshVisibility]]]
 ]
 
 {

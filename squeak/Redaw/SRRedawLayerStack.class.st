@@ -28,6 +28,30 @@ SRRedawLayerStack class >> shownKeys [
 ]
 
 {
+	#category : #building,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
+}
+SRRedawLayerStack >> addCheckbox: aBoolean at: y color: aColor [
+	"Whether the layer is drawn, the same switch as on the crosscut; it does not mute or bypass the layer."
+	| x |
+	x := self checkboxRight - 2.25cm.
+	self addChild: (SRCube new
+		drawWires: false;
+		ignoreCollision: true;
+		color: (Color gray: 0.85);
+		scale: 4cm @ 4cm @ 1cm;
+		position: x @ y @ (self depth / 2 + 5mm);
+		yourself).
+	self addChild: (SRCube new
+		drawWires: false;
+		ignoreCollision: true;
+		color: (aBoolean ifTrue: [aColor mixed: 0.45 with: Color black] ifFalse: [Color gray: 0.12]);
+		scale: (aBoolean ifTrue: [2.6cm] ifFalse: [3.2cm]) @ (aBoolean ifTrue: [2.6cm] ifFalse: [3.2cm]) @ 1cm;
+		position: x @ y @ (self depth / 2 + 1cm);
+		yourself).
+]
+
+{
 	#category : #menu,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:51'
 }
@@ -74,6 +98,22 @@ SRRedawLayerStack >> addDetailsFor: aLayer at: yStart [
 
 {
 	#category : #building,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:14'
+}
+SRRedawLayerStack >> addFlatToggle [
+	"The crosscut's Flatten / Spread: both read and switch the stack feature, which rebuilds both."
+	^ self addChild: (SRActionSign new
+		size: 11cm @ 4cm @ 1cm;
+		label: (view isFlat ifTrue: ['Spread'] ifFalse: ['Flatten']);
+		slabColor: (Color r: 0.15 g: 0.35 b: 0.6);
+		action: [view toggleFlat];
+		cursorMode: SRCursorMode pass;
+		position: (self width / 2 - 7cm) @ -2.9cm @ (self depth / 2 + 5mm);
+		yourself)
+]
+
+{
+	#category : #building,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:51'
 }
 SRRedawLayerStack >> addParam: anArray at: y color: aColor [
@@ -105,29 +145,33 @@ SRRedawLayerStack >> addParam: anArray at: y color: aColor [
 
 {
 	#category : #building,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:51'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
 }
 SRRedawLayerStack >> addSlabFor: aLayer at: y [
-	| selected slabHeight z |
+	| selected shown slabHeight z color |
 	selected := (self idOf: aLayer) = selectedId.
+	shown := self isShown: aLayer.
 	slabHeight := 6.5cm.
 	z := selected ifTrue: [3cm] ifFalse: [1.5cm].
+	color := self colorOf: aLayer selected: selected.
+	shown ifFalse: [color := color mixed: 0.3 with: (Color gray: 0.4)].
+	self switchesVisibility ifTrue: [self addCheckbox: shown at: y - (slabHeight / 2) color: (self colorOf: aLayer selected: true)].
 	self addChild: (SRCube new
 		drawWires: false;
 		ignoreCollision: true;
-		color: (self colorOf: aLayer selected: selected);
-		scale: (self width - 3cm) @ slabHeight @ 2cm;
-		position: 0 @ (y - (slabHeight / 2)) @ z;
+		color: color;
+		scale: (self width / 2 - 1.5cm - self checkboxRight - 0.5cm) @ slabHeight @ 2cm;
+		position: (self checkboxRight + 0.5cm + (self width / 2 - 1.5cm) / 2) @ (y - (slabHeight / 2)) @ z;
 		yourself).
-	self text: (aLayer at: 'name' ifAbsent: ['?']) at: y - 0.9cm x: 3cm z: z + 1cm + 1mm scale: 2.4cm color: (Color gray: 0.05).
-	self text: (self subtitleOf: aLayer) at: y - 4cm x: 3cm z: z + 1cm + 1mm scale: 1.5cm color: (Color gray: 0.25).
+	self text: (aLayer at: 'name' ifAbsent: ['?']) at: y - 0.9cm x: 8cm z: z + 1cm + 1mm scale: 2.4cm color: (Color gray: 0.05).
+	self text: (self subtitleOf: aLayer) at: y - 4cm x: 8cm z: z + 1cm + 1mm scale: 1.5cm color: (Color gray: 0.25).
 	rows add: {self idOf: aLayer. y. y - slabHeight}.
 	^ y - slabHeight - 0.7cm
 ]
 
 {
 	#category : #building,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:51'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:14'
 }
 SRRedawLayerStack >> build [
 	| y |
@@ -141,6 +185,7 @@ SRRedawLayerStack >> build [
 		yourself.
 	self addChild: backing.
 	y := self text: 'Layers     front ^' at: -1.5cm x: 2cm scale: 2.2cm color: Color white.
+	self switchesVisibility ifTrue: [self addFlatToggle].
 	y := y - 0.6cm.
 	layers reverseDo: [:each |
 		y := self addSlabFor: each at: y.
@@ -150,6 +195,14 @@ SRRedawLayerStack >> build [
 	backing
 		scale: self width @ height @ self depth;
 		position: 0 @ (height / -2) @ 0.
+]
+
+{
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
+}
+SRRedawLayerStack >> checkboxRight [
+	^ self left + 6cm
 ]
 
 {
@@ -262,6 +315,14 @@ SRRedawLayerStack >> isApp [
 ]
 
 {
+	#category : #testing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
+}
+SRRedawLayerStack >> isShown: aLayer [
+	^ view isNil or: [view isShown: (self idOf: aLayer)]
+]
+
+{
 	#category : #accessing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:51'
 }
@@ -312,17 +373,22 @@ SRRedawLayerStack >> number: aKey in: aString [
 
 {
 	#category : #input,
-	#'squeak_changestamp' : 'jl-MCPServer 11/23/2026 16:51'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:14'
 }
 SRRedawLayerStack >> onButtonPress: anEvent [
 	| local |
 	anEvent button == #trigger ifFalse: [^ self].
+	(self children
+		detect: [:each | (each isKindOf: SRActionSign) and: [each redawContains: anEvent point]]
+		ifNone: [nil]) ifNotNil: [:button | ^ button redawPress].
 	local := self globalTransform globalPointToLocal: anEvent point.
 	(functionRow notNil and: [local y <= functionRow first and: [local y >= functionRow second]])
 		ifTrue: [^ self later: [self toggleFunction]].
 	rows do: [:row |
-		(local y <= row second and: [local y >= row third])
-			ifTrue: [^ self later: [self select: row first]]]
+		(local y <= row second and: [local y >= row third]) ifTrue: [
+			^ (self switchesVisibility and: [local x <= self checkboxRight])
+				ifTrue: [view stack toggleLayer: row first]
+				ifFalse: [self later: [self select: row first]]]]
 ]
 
 {
@@ -431,6 +497,14 @@ SRRedawLayerStack >> subtitleOf: aLayer [
 	^ (aLayer includesKey: 'func')
 		ifTrue: ['audio <-> latent - function']
 		ifFalse: ['audio <-> latent - drop a model']
+]
+
+{
+	#category : #testing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:08'
+}
+SRRedawLayerStack >> switchesVisibility [
+	^ view notNil and: [view stack notNil]
 ]
 
 {

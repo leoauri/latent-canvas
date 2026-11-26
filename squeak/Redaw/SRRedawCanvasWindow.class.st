@@ -262,14 +262,14 @@ SRRedawCanvasWindow >> detachMarker [
 ]
 
 {
-	#category : #dragging,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:06'
+	#category : #input,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:15'
 }
 SRRedawCanvasWindow >> endDrag [
-	"Released without moving: the press was a click, for the canvas object under it."
+	"Released without moving: the press was a click, for the canvas object under it, unless #startDrag: already gave it to the cue."
 	| press |
 	press := drag second.
-	(drag at: 4) ifFalse: [portal dispatch: press].
+	((drag at: 4) not and: [press notNil]) ifTrue: [portal dispatch: press].
 	drag := nil.
 ]
 
@@ -338,6 +338,22 @@ SRRedawCanvasWindow >> followPlayhead [
 	x = center x ifTrue: [^ self].
 	center := x @ center y.
 	self layoutPortal.
+]
+
+{
+	#category : #testing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:06'
+}
+SRRedawCanvasWindow >> hasFocus [
+	^ self world notNil and: [self world keyboardFocus == self]
+]
+
+{
+	#category : #testing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:06'
+}
+SRRedawCanvasWindow >> holdsStick [
+	^ self hasFocus
 ]
 
 {
@@ -473,17 +489,17 @@ SRRedawCanvasWindow >> number: anInteger [
 
 {
 	#category : #input,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:11'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:06'
 }
 SRRedawCanvasWindow >> onAnalogInput: anEvent [
-	"Stick sideways pans along time, forward and back zooms about the point aimed at; the wheel zooms in steps."
+	"Once a trigger press gave me focus, the stick pans sideways along time and zooms forward and back, as the wheel does."
 	| dt value |
 	value := anEvent value.
 	anEvent axis == #wheel ifTrue: [| n |
 		n := value isNumber ifTrue: [value] ifFalse: [value y].
 		n isZero ifFalse: [self zoomBy: (1.2 raisedTo: n sign) at: anEvent point].
 		^ anEvent handled: true].
-	anEvent axis == #joystick ifFalse: [^ self].
+	(anEvent axis == #joystick and: [self hasFocus]) ifFalse: [^ self].
 	dt := self analogStep.
 	value x abs > 0.15 ifTrue: [
 		follow := false.
@@ -494,11 +510,12 @@ SRRedawCanvasWindow >> onAnalogInput: anEvent [
 
 {
 	#category : #input,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:06'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:06'
 }
 SRRedawCanvasWindow >> onButtonPress: anEvent [
 	"My buttons react at once; elsewhere on the plate the trigger drags."
 	anEvent button == #trigger ifFalse: [^ self].
+	self takeFocus.
 	(self children
 		detect: [:each | (each isKindOf: SRActionSign) and: [each redawContains: anEvent point]]
 		ifNone: [nil])
@@ -598,14 +615,14 @@ SRRedawCanvasWindow >> showLabel: aString on: aButton [
 
 {
 	#category : #stepping,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 15:02'
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:07'
 }
 SRRedawCanvasWindow >> showStatus [
 	| half left right text |
 	half := self size x / 2 / zoom.
 	left := (canvas pagePointFor: (center x - half) @ 0) x / canvas pixelsPerSecond.
 	right := (canvas pagePointFor: (center x + half) @ 0) x / canvas pixelsPerSecond.
-	text := self title, '  ', self scaleText, '  ', (SRRedawTransport clock: left), ' - ', (SRRedawTransport clock: right), (follow ifTrue: ['  follow'] ifFalse: ['']).
+	text := self title, '  ', self scaleText, '  ', (SRRedawTransport clock: left), ' - ', (SRRedawTransport clock: right), (follow ifTrue: ['  follow'] ifFalse: ['']), (self hasFocus ifTrue: ['  stick'] ifFalse: ['']).
 	text = display text ifFalse: [display text: text].
 	self showLabel: (canvas isPlaying ifTrue: ['Stop'] ifFalse: ['Play']) on: buttons first.
 	self showLabel: (canvas isRecording ifTrue: ['Stop rec'] ifFalse: [canvas isRecordArmed ifTrue: ['Armed'] ifFalse: ['Rec']]) on: buttons second.
@@ -629,15 +646,29 @@ SRRedawCanvasWindow >> snapResizers [
 ]
 
 {
-	#category : #dragging,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:06'
+	#category : #input,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
 }
 SRRedawCanvasWindow >> startDrag: anEvent [
-	"A trigger press on the plate or its canvas. Moving it pans; released where it began, it is a click for the canvas (see #endDrag)."
 	| hand |
 	hand := anEvent hand.
 	((hand isKindOf: SRHand) and: [hand cursor respondsTo: #redawRay]) ifFalse: [^ portal dispatch: anEvent].
-	drag := {hand. anEvent. self canvasPointOn: hand cursor redawRay. false}
+	self startDrag: anEvent by: hand along: hand cursor redawRay.
+]
+
+{
+	#category : #input,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+}
+SRRedawCanvasWindow >> startDrag: anEvent by: aHand along: aRay [
+	"A trigger press on the plate or its canvas. Moving it pans. On the cue's ground the press places the cue at once, so a hand that moves a little still cues where it pressed; anything else gets the press on release, and only if it did not move (see #endDrag)."
+	| press hit |
+	press := anEvent.
+	hit := portal canvasHitFor: anEvent.
+	(hit notNil and: [hit object redawPlacesCueAt: hit point]) ifTrue: [
+		portal deliver: anEvent to: hit.
+		press := nil].
+	drag := {aHand. press. self canvasPointOn: aRay. false}
 ]
 
 {
@@ -661,6 +692,14 @@ SRRedawCanvasWindow >> step: deltaTime [
 }
 SRRedawCanvasWindow >> stopFollowing [
 	follow := false.
+]
+
+{
+	#category : #input,
+	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:06'
+}
+SRRedawCanvasWindow >> takeFocus [
+	self world ifNotNil: [:w | w keyboardFocus: self].
 ]
 
 {
