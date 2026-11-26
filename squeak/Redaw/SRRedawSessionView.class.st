@@ -366,10 +366,10 @@ SRRedawSessionView >> computePageBounds [
 
 {
 	#category : #accessing,
-	#'squeak_changestamp' : 'MCPServer (SqueakXR) 11/24/2026 13:49'
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
 }
 SRRedawSessionView >> defaultFeatures [
-	^ {SRRedawClipsFeature. SRRedawNotesFeature. SRRedawLayersFeature. SRRedawStackFeature. SRRedawCodeChangesFeature. SRRedawPlayheadFeature. SRRedawAudioFeature. SRRedawRecordFeature}
+	^ {SRRedawClipsFeature. SRRedawNotesFeature. SRRedawPaintFeature. SRRedawLayersFeature. SRRedawStackFeature. SRRedawCodeChangesFeature. SRRedawPlayheadFeature. SRRedawAudioFeature. SRRedawRecordFeature}
 ]
 
 {

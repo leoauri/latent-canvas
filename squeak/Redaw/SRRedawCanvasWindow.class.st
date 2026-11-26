@@ -21,7 +21,8 @@ Class {
 		'buttons',
 		'resizers',
 		'number',
-		'marker'
+		'marker',
+		'painter'
 	],
 	#category : #'Redaw-XR',
 	#'squeak_changestamp' : '<historical>'
@@ -137,12 +138,14 @@ SRRedawCanvasWindow >> buttonRotation [
 
 {
 	#category : #'initialize-release',
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:27'
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
 }
 SRRedawCanvasWindow >> buttonSpecs [
 	^ {
 		{'Play'. [canvas ifNotNil: [canvas togglePlay]]}.
 		{'Rec'. [canvas ifNotNil: [canvas toggleRecording]]}.
+		{'Paint'. [self togglePaint]}.
+		{'Undo'. [self undoPaint]}.
 		{'-'. [self zoomBy: 1 / 1.5 at: nil]}.
 		{'+'. [self zoomBy: 1.5 at: nil]}.
 		{'Fit'. [self fit]}.
@@ -310,11 +313,12 @@ SRRedawCanvasWindow >> fitZoom [
 
 {
 	#category : #dragging,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:06'
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
 }
 SRRedawCanvasWindow >> followDrag [
 	"Runs every frame while the trigger is held: once the point under the ray has moved a centimetre on the plate, the canvas follows the ray."
 	| hand ray anchor point |
+	(painter notNil and: [painter isDrawing]) ifTrue: [^ painter follow].
 	drag ifNil: [^ self].
 	hand := drag first.
 	hand trigger isPressed ifFalse: [^ self endDrag].
@@ -397,6 +401,14 @@ SRRedawCanvasWindow >> isApp [
 }
 SRRedawCanvasWindow >> isFollowing [
 	^ follow
+]
+
+{
+	#category : #painting,
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
+}
+SRRedawCanvasWindow >> isPainting [
+	^ painter notNil
 ]
 
 {
@@ -538,6 +550,14 @@ SRRedawCanvasWindow >> overlapsWorldPoints: points [
 ]
 
 {
+	#category : #painting,
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
+}
+SRRedawCanvasWindow >> painter [
+	^ painter
+]
+
+{
 	#category : #viewing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 13:11'
 }
@@ -615,17 +635,18 @@ SRRedawCanvasWindow >> showLabel: aString on: aButton [
 
 {
 	#category : #stepping,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:07'
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
 }
 SRRedawCanvasWindow >> showStatus [
 	| half left right text |
 	half := self size x / 2 / zoom.
 	left := (canvas pagePointFor: (center x - half) @ 0) x / canvas pixelsPerSecond.
 	right := (canvas pagePointFor: (center x + half) @ 0) x / canvas pixelsPerSecond.
-	text := self title, '  ', self scaleText, '  ', (SRRedawTransport clock: left), ' - ', (SRRedawTransport clock: right), (follow ifTrue: ['  follow'] ifFalse: ['']), (self hasFocus ifTrue: ['  stick'] ifFalse: ['']).
+	text := self title, '  ', self scaleText, '  ', (SRRedawTransport clock: left), ' - ', (SRRedawTransport clock: right), (follow ifTrue: ['  follow'] ifFalse: ['']), (self isPainting ifTrue: ['  paint'] ifFalse: ['']), (self hasFocus ifTrue: ['  stick'] ifFalse: ['']).
 	text = display text ifFalse: [display text: text].
 	self showLabel: (canvas isPlaying ifTrue: ['Stop'] ifFalse: ['Play']) on: buttons first.
 	self showLabel: (canvas isRecording ifTrue: ['Stop rec'] ifFalse: [canvas isRecordArmed ifTrue: ['Armed'] ifFalse: ['Rec']]) on: buttons second.
+	buttons size > 2 ifTrue: [self showLabel: (self isPainting ifTrue: ['Stop paint'] ifFalse: ['Paint']) on: buttons third].
 ]
 
 {
@@ -658,11 +679,12 @@ SRRedawCanvasWindow >> startDrag: anEvent [
 
 {
 	#category : #input,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 19:16'
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
 }
 SRRedawCanvasWindow >> startDrag: anEvent by: aHand along: aRay [
-	"A trigger press on the plate or its canvas. Moving it pans. On the cue's ground the press places the cue at once, so a hand that moves a little still cues where it pressed; anything else gets the press on release, and only if it did not move (see #endDrag)."
+	"A trigger press on the plate or its canvas. Moving it pans. On the cue's ground the press places the cue at once, so a hand that moves a little still cues where it pressed; anything else gets the press on release, and only if it did not move (see #endDrag). In paint mode it starts a stroke instead."
 	| press hit |
+	painter ifNotNil: [^ painter start: aHand along: aRay].
 	press := anEvent.
 	hit := portal canvasHitFor: anEvent.
 	(hit notNil and: [hit object redawPlacesCueAt: hit point]) ifTrue: [
@@ -673,7 +695,7 @@ SRRedawCanvasWindow >> startDrag: anEvent by: aHand along: aRay [
 
 {
 	#category : #stepping,
-	#'squeak_changestamp' : 'jl-MCPServer 11/25/2026 14:54'
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
 }
 SRRedawCanvasWindow >> step: deltaTime [
 	"Runs in the world process: an error here must not reach a debugger."
@@ -683,6 +705,7 @@ SRRedawCanvasWindow >> step: deltaTime [
 	 self showStatus]
 		on: Error do: [:e |
 			drag := nil.
+			painter ifNotNil: [painter cancel].
 			display text: 'Window: ', e messageText]
 ]
 
@@ -716,6 +739,29 @@ SRRedawCanvasWindow >> title [
 }
 SRRedawCanvasWindow >> toggleFollow [
 	follow := follow not.
+]
+
+{
+	#category : #painting,
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
+}
+SRRedawCanvasWindow >> togglePaint [
+	"While painting, a trigger drag paints instead of panning; the stick and the wheel still pan and zoom."
+	painter ifNil: [
+		canvas ifNotNil: [canvas enable: SRRedawPaintFeature].
+		painter := SRRedawMapPainter on: self.
+		^ true].
+	painter finish.
+	painter := nil.
+	^ false
+]
+
+{
+	#category : #painting,
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
+}
+SRRedawCanvasWindow >> undoPaint [
+	^ canvas ifNotNil: [(canvas featureOf: SRRedawPaintFeature) ifNotNil: [:f | f undo]]
 ]
 
 {

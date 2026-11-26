@@ -251,6 +251,14 @@ RedawPeer >> link [
 ]
 
 {
+	#category : #accessing,
+	#'squeak_changestamp' : 'jl-MCPServer 11/26/2026 12:00'
+}
+RedawPeer >> name [
+	^ name
+]
+
+{
 	#category : #printing,
 	#'squeak_changestamp' : 'jl-MCPServer 11/19/2026 16:52'
 }
