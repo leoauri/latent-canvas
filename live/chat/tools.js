@@ -3,6 +3,7 @@
 // ('chat:<session id>', or the one the session was started on) and only run after apply_changes.
 import { vfs, loader, logs, runScript } from '@live/runtime';
 import { extensionTool, extensionToolDefs, beforeApply } from './extensions.js';
+import { systemPrompt } from './prompt.js';
 import { overlayIdOf, sessionTitle, saveSession, pushMessage } from './store.js';
 import { whereNow } from './whereabouts.js';
 import { requestTrial } from '../net/trials.js';
@@ -161,6 +162,11 @@ export const tools = [
     ['description', 'code'],
   ),
   custom(
+    'current_setup',
+    'The system prompt and tool definitions as they are now. This chat\'s own copies were captured when it started and may be outdated; call this only when the user explicitly asks about, or you need, something that may have changed since.',
+    { part: { type: 'string', enum: ['prompt', 'tools', 'both'], description: 'Default both.' } },
+  ),
+  custom(
     'read_console',
     'Read the page log (console output, uncaught errors, render errors) captured since boot. Pass since_id to read only newer entries.',
     {
@@ -212,6 +218,7 @@ const SPECS = {
   list_published: {},
   session_code: { path: 'string?' },
   eval_js: { description: 'string', code: 'string', timeout_ms: 'integer?' },
+  current_setup: { part: 'string?' },
   read_console: { since_id: 'integer?', limit: 'integer?', errors_only: 'boolean?' },
 };
 
@@ -272,6 +279,13 @@ export async function runTool(block, ctx = {}) {
         return proposeBundle(id, input, ctx.session);
       case 'list_published':
         return ok(id, listPublished());
+      case 'current_setup': {
+        const part = input.part ?? 'both';
+        const out = [];
+        if (part !== 'tools') out.push(`# System prompt (current)\n${systemPrompt(ctx.session?.scope?.value)}`);
+        if (part !== 'prompt') out.push(`# Tools (current)\n${JSON.stringify(toolDefs(), null, 1)}`);
+        return ok(id, out.join('\n\n'));
+      }
       case 'session_code':
         return ok(id, sessionCode(input.path && livePath(input.path)));
       case 'onboarding_guide':

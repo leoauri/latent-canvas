@@ -4,7 +4,7 @@
 import { env } from '@live/runtime';
 import { toolDefs, runTool, showApprovalGuide, pendingBundle, moduleMapOf } from './tools.js';
 import { dismissGuide } from '../ui/guide/guide.js';
-import { systemPrompt } from './prompt.js';
+import { frozenSystemPrompt } from './prompt.js';
 import { chat, pushMessage, queueOf } from './store.js';
 import { whereNow, lastWhere, sessionChangeNote } from './whereabouts.js';
 import { APIError, endpoint, recordUsage, addUsage, recordRateLimit, cacheOptions } from './llm.js';
@@ -54,18 +54,30 @@ export function stop(s) {
   s.controller.value?.abort();
 }
 
+/**
+ * The system prompt and tool list a chat sends, captured on its first request and then never changed: both sit
+ * before every message in the prompt cache, so any edit (a scope change, a new package, an extension tool, the
+ * agent editing its own prompt) would re-write the whole history. The prompt tells the agent the copy may be
+ * outdated and that current_setup fetches the live one. Kept on the session (it survives module reloads, not
+ * a page reload) and out of the stored messages.
+ */
+function prefixOf(s) {
+  return (s.prefix ??= { system: frozenSystemPrompt(s.scope?.value), tools: toolDefs() });
+}
+
 async function loop(s, target, signal) {
   let jsonRetries = 0;
   let usage = null; // requests since the last stored reply (a re-issued turn stores nothing)
   for (let step = 0; step < MAX_STEPS; step++) {
+    const prefix = prefixOf(s);
     const body = {
       model: chat.model.value || env.model,
       stream: true,
       stream_options: { include_usage: true },
       // Sent explicitly: a gateway's default cap (often ~4k) is far too low for whole-file edits.
       max_completion_tokens: env.maxTokens,
-      messages: [{ role: 'system', content: systemPrompt(s.scope?.value) }, ...toWire(s.messages.value)],
-      tools: toolDefs(),
+      messages: [{ role: 'system', content: prefix.system }, ...toWire(s.messages.value)],
+      tools: prefix.tools,
     };
     if (EFFORTS.includes(chat.effort.value) && chat.effort.value !== 'default') body.reasoning_effort = chat.effort.value;
     Object.assign(body, cacheOptions());

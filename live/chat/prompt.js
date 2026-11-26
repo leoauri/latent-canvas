@@ -1,6 +1,15 @@
-// System prompt. Keep it byte-stable within a session: it sits in the cached prefix.
+// System prompt. A chat sends a frozen copy of it (see frozenSystemPrompt and agent.js) so the cached prefix
+// never changes under it; systemPrompt itself is always the current text.
 import { loader } from '@live/runtime';
 import { scopePrompt } from './extensions.js';
+
+const FROZEN_NOTE = `# This setup is a snapshot
+This system prompt and your tool list were captured when this chat started and are kept unchanged for the rest of it, so the prompt cache stays valid. They may be outdated: the scope's instructions, the bundled packages, extension tools, even these instructions and your own tools can have changed since (for instance by edits to chat/prompt.js or chat/tools.js). If the user explicitly asks about or relies on one of these (a tool, a package or an instruction you don't have or doubt), call current_setup before answering and go by what it returns. Don't call it otherwise.`;
+
+/** The system prompt a chat is started with: the current text plus a note that it is frozen. */
+export function frozenSystemPrompt(scope) {
+  return `${systemPrompt(scope)}\n\n${FROZEN_NOTE}`;
+}
 
 export function systemPrompt(scope) {
   const scoped = scopePrompt(scope);
