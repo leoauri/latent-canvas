@@ -1,12 +1,13 @@
 // Audio files dropped on the canvas become latent clips, recorded the way live input is. The
 // file's audio enters the layer stack at the back, as a live input's would, and goes forward by the
-// rules of the live stream (models.js, recorder.js; stack.js `records` and `passesOn`):
+// rules of the live stream (models.js, recorder.js; stack.js `records`), but for pass-through:
 // - an operator inside whose masks the drop point lies runs its model on it if the model takes that
 //   kind (an encoder turns the audio into latents), or its layer function on latents (unless
 //   bypassed); otherwise it lets it pass;
 // - an armed latent recording layer records the latents reaching it into a clip of its own at the
-//   drop point (several armed layers each make one, a lane apart in stack order); a latent layer
-//   lets it go on only with pass-through on;
+//   drop point (several armed layers each make one, a lane apart in stack order);
+// - every latent layer lets it go on, pass-through on or off: a drop is for recording, so each armed
+//   layer gets its take (from the operators behind it), however the layers between are set to play;
 // - nothing reaches an audio output: the drop is never heard.
 // Unlike live recording this runs offline (models.js renderOffline): as fast as the models go, with
 // every frame, and without the transport playing. While it runs, `pendingDrops` holds the area the
@@ -15,7 +16,7 @@ import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
 import { engineOn } from '../../lib/engine.js';
-import { stack, records, passesOn } from './stack.js';
+import { stack, records } from './stack.js';
 import { runtimes, renderOffline } from './models.js';
 import { runLayer, tickLayer, hasTick } from './layerFunc.js';
 import { operatesAt } from '../timeline/layers.js';
@@ -102,11 +103,8 @@ function runFunc(l, s, at) {
   return { data, dim, rate: out[0].rate ?? s.rate };
 }
 
-/** The armed latent layers a drop can reach (none past a layer that stops it), back to front. */
-export function recordersFor(layers = stack.peek()) {
-  const stop = layers.findIndex((l) => !passesOn(l));
-  return (stop === -1 ? layers : layers.slice(0, stop + 1)).filter(records);
-}
+/** The armed latent layers a drop records into (all of them: pass-through doesn't stop it), back to front. */
+export const recordersFor = (layers = stack.peek()) => layers.filter(records);
 
 /** Audio drops in progress: [{ id, name, t, y (top edge), dur (s), lanes, lane (step, world y) }], shown as placeholders. */
 export const pendingDrops = persist('audioDrop.pending', []);
@@ -132,10 +130,7 @@ export async function clipsFromAudio(audio, at, onStep) {
   const sr = audioContext().sampleRate;
   const layers = [...stack.peek()];
   const recorders = recordersFor(layers);
-  if (!recorders.length) {
-    const stop = layers.find((l) => !passesOn(l));
-    throw new Error(stop && layers.some(records) ? `${stop.name} (pass-through off) stops it before any armed layer` : 'no latent recording layer is armed: arm one to record dropped audio');
-  }
+  if (!recorders.length) throw new Error('no latent recording layer is armed: arm one to record dropped audio');
   // Past the last layer that can record it, nothing more is needed (and nothing is ever heard).
   const end = layers.indexOf(recorders.at(-1)) + 1;
   const top = at.top ?? at.y - CLIP_HEIGHT / 2;
