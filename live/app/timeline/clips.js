@@ -70,6 +70,7 @@ const unbind = [
   shared('timeline.clips', clips, {
     kind: 'list',
     label: 'edit clips',
+    ids: ['layer'],
     keepLocal: (c) => c.recording || !hashes.value.has(c.data),
     valid: (c) =>
       ['t', 'y'].every((f) => Number.isFinite(c[f])) &&

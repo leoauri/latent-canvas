@@ -41,6 +41,7 @@ const unbind = [
   shared('timeline.layers', layers, {
     kind: 'list',
     label: 'edit masks',
+    ids: ['layerId'],
     seedFrom: () => db.get('kv', 'timeline.layers'),
     valid: (m) => ['t', 'dur', 'y', 'h'].every((f) => Number.isFinite(m[f])) && (m.layerId === null || typeof m.layerId === 'string'),
   }),
