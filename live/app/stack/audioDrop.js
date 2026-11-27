@@ -159,7 +159,7 @@ export async function clipsFromAudio(audio, at, onStep) {
       if (model.input.kind !== s.kind) continue; // passes, as in the live stream
       let input = s.data;
       if (s.kind === 'latent') {
-        if (s.dim !== model.input.channels) throw new Error(`the model on ${l.name} takes ${model.input.channels}-d latents, ${s.dim}-d reach it`);
+        if (s.dim !== model.input.dim) throw new Error(`the model on ${l.name} takes ${model.input.dim}-d latents, ${s.dim}-d reach it`);
         input = holdResample(s.data, s.dim, s.rate, model.rate);
       }
       onStep?.(l);

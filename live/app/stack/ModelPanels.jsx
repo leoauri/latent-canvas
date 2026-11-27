@@ -27,7 +27,7 @@ export function ModelPanel({ layer: l }) {
   const active = !!st && st.units > lastUnits.current;
   if (st) lastUnits.current = st.units;
   const link = links.value[l.id];
-  const side = (x) => (x.kind === 'audio' ? `audio (${x.samples} samples)` : `${x.channels}-d latent`);
+  const side = (x) => (x.kind === 'audio' ? `audio (${x.samples} samples)` : `${x.dim}-d latent${x.control ? ` (${x.channels} × ${x.samples} control)` : ''}`);
   return (
     <div class="model-panel">
       <div class="layer-param">

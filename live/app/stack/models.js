@@ -201,7 +201,7 @@ export async function renderOffline(layerId, data, opts) {
   if (rt?.status !== 'ready') throw new Error(`no model is ready on layer ${layerId} (${rt?.status ?? 'none'})`);
   const { model } = rt;
   const r = await model.render(data, opts);
-  return { ...r, dim: model.output.kind === 'latent' ? model.output.channels : model.input.channels, rate: model.rate, sampleRate: model.sampleRate };
+  return { ...r, dim: model.output.kind === 'latent' ? model.output.channels : model.input.dim, rate: model.rate, sampleRate: model.sampleRate };
 }
 
 export function detachModel(layerId) {
@@ -477,13 +477,13 @@ function consumerOf(l, src, kind) {
     // The model's voice re-blocks (and resamples) audio itself.
     if (want === 'audio') return modelVoices(l, model, (push) => (msg) => push(msg.data, msg.start));
     const dim = runtimes.value[src.id]?.model?.output.channels;
-    if (dim !== undefined && dim !== model.input.channels) return { error: `the model takes ${model.input.channels}-d latents, ${src.name} makes ${dim}-d` };
+    if (dim !== undefined && dim !== model.input.dim) return { error: `the model takes ${model.input.dim}-d latents, ${src.name} makes ${dim}-d` };
     // From clips the width is per clip: frames of another width are skipped, and reported.
     return modelVoices(l, model, (push) => {
       const zoh = holdResample(model.hop, push);
       return (msg) => {
-        if (msg.dim === model.input.channels) return zoh(msg);
-        const text = `skipping ${msg.dim}-d frames from ${src.name}: the model takes ${model.input.channels}-d`;
+        if (msg.dim === model.input.dim) return zoh(msg);
+        const text = `skipping ${msg.dim}-d frames from ${src.name}: the model takes ${model.input.dim}-d`;
         if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
       };
     });
