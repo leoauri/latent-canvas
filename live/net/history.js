@@ -9,6 +9,7 @@
 // Both write forward (a new change everyone receives); nothing is rewound. Entries persist
 // per document in IndexedDB (only this page's, at most MAX).
 import { signal } from '@preact/signals';
+import { Automerge } from '@automerge/automerge-repo';
 import { persist } from '@live/runtime';
 import * as db from '../lib/db.js';
 import { handle, currentDoc, trialEnded } from './session.js';
@@ -65,6 +66,8 @@ export function record({ label, origin, keys, before, after, coalesce, undoes })
 }
 
 const noBig = (_k, x) => (typeof x === 'bigint' ? Number(x) : x); // see shared.js
+/** An order entry (text or scalar string) as a string. */
+const str = (x) => (Automerge.isImmutableString(x) ? x.val : String(x));
 const same = (a, b) => JSON.stringify(a, noBig) === JSON.stringify(b, noBig);
 const plain = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v, noBig)));
 const find = (id) => entries.value.find((e) => e.id === id);
@@ -132,7 +135,11 @@ function writePaths(paths, values, label, origin, undoes) {
         }
         const last = p.at(-1);
         if (v === undefined) delete o[last];
-        else if (!same(o[last], v)) o[last] = v;
+        else if (last === 'order' && Array.isArray(v)) {
+          // Order entries are ids: scalar strings, as shared.js writes them (not text, an op per character).
+          const ids = v.map(str);
+          if (!same([...(o[last] ?? [])].map(str), ids)) o[last] = ids.map((x) => new Automerge.ImmutableString(x));
+        } else if (!same(o[last], v)) o[last] = v;
       });
     },
     { message: JSON.stringify({ label, origin }) },

@@ -28,7 +28,7 @@
 //   flushed every FLUSH_MS and labelled after the key.
 //
 // Document layout: state[key] = { items: { id: entity }, order: [id] } for lists, a plain map for maps.
-// Order entries and id fields may be text or scalar strings (older peers and documents): both read alike.
+// Order entries and id fields are written as scalar strings; text ones (older documents) read alike.
 import { Automerge } from '@automerge/automerge-repo';
 import { handle } from './session.js';
 import * as db from '../lib/db.js';
@@ -550,8 +550,7 @@ function writeInto(b, s, v) {
  * Turns the document's order list into `ids` by deleting and inserting single entries around the
  * longest common subsequence: adding an entity is one insert, moving one a delete and an insert.
  * Rewriting the list instead costs ops for every entry each time, and two peers' concurrent
- * rewrites leave both copies. New entries are text, not scalars: older code reads only text
- * entries there (it would lose the order of scalar ones).
+ * rewrites leave both copies. New entries are scalar strings: an id is never edited in place.
  */
 function editOrder(list, ids) {
   const want = [...new Set(ids)];
@@ -576,7 +575,7 @@ function editOrder(list, ids) {
   let k = 0;
   y.forEach((id, j) => {
     if (kept[k] === id) k++;
-    else list.insertAt(a + j, id);
+    else list.insertAt(a + j, new Automerge.ImmutableString(id));
   });
 }
 
