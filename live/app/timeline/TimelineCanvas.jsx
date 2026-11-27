@@ -424,9 +424,10 @@ export default function TimelineCanvas() {
         (err) => showDropError(`Clip not added: ${err.message || err}`),
       );
     };
-    // Audio files are recorded through the stack (stack/audioDrop.js): each armed layer it reaches
-    // records a clip, a lane apart, and each file goes below the lanes of the one before. Each shows
-    // the areas it will fill as soon as it is decoded; they go through the stack one after the other.
+    // Audio files are recorded through the stack (stack/audioDrop.js): each armed layer, whatever
+    // the pass-through of the layers between, records a clip, a lane apart, and each file goes below
+    // the lanes of the one before. Each shows the areas it will fill as soon as it is decoded; they
+    // go through the stack one after the other.
     const dropAudioFiles = async (files, at, v) => {
       const audio = files.filter(isAudioFile);
       if (!audio.length) return showDropError(`“${files[0]?.name ?? 'file'}” is not an audio file: drop models on the layer stack`);
