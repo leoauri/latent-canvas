@@ -26,15 +26,26 @@ const basename = (p) => String(p).split(/[\\/]/).pop();
 
 /**
  * Model files by name -> what the model needs. Takes a `*.anira.json` (anira 2.x, upgraded by
- * anira) or a `*.model.json` (3.x), its model file(s), and an optional `*.meta.json`
- * ({ latent_channels, quantum, sample_rate, ... }).
+ * anira) or a `*.model.json` (3.x), its model file(s), and an optional meta file (`*.meta.json`,
+ * or `*_meta.json` / `meta.json`, such as an `export_meta.json`).
+ *
+ * The meta contract (every key optional):
+ * - `sample_rate`: the model's own audio rate (audio is resampled to and from the context's).
+ * - `model`: a display name for the layer.
+ * - `control`: an array naming the channels of the streamed input, in order, when that input is a
+ *   control tensor (channels x samples per unit) rather than mono audio. Its length must equal the
+ *   input's channel extent. Channels named `time_s` are filled by the host (seconds since the
+ *   voice's first unit, per sample); every other channel is fed from the latent frame reaching the
+ *   model, in order, held over the unit's samples. The model then takes latents of `input.dim`
+ *   (the fed channels) at one frame per unit, beside `input.channels` (the tensor's width).
+ * - Others (`latent_channels`, `quantum`, ...) are kept on `model.meta` and not read here.
  * @param {Map<string, Blob>} files
  */
 export async function describeModel(files) {
   const names = [...files.keys()];
   const configName = names.find((n) => /\.model\.json$/i.test(n)) ?? names.find((n) => /\.anira\.json$/i.test(n));
   if (!configName) throw new Error(`no model config (*.anira.json or *.model.json) among: ${names.join(', ') || 'no files'}`);
-  const metaName = names.find((n) => /\.meta\.json$/i.test(n));
+  const metaName = names.find((n) => /(^|[._])meta\.json$/i.test(n));
   const meta = metaName ? JSON.parse(await files.get(metaName).text()) : {};
   return { configName, configText: await files.get(configName).text(), meta };
 }
@@ -65,13 +76,17 @@ function upgradeStatePairs(text, config) {
 
 /**
  * A streamed tensor's side: 'audio' (mono, `samples` per unit) or 'latent' (`channels` wide, one
- * frame per unit).
+ * frame per unit). An input named channel by channel by meta.control is 'latent' too: one frame of
+ * `dim` values per unit, written into the control tensor (see describeModel).
  */
-function sideOf(spec, which) {
+function sideOf(spec, which, control) {
   const ax = {};
   for (const [name, n] of spec.axes ?? []) ax[name] = n;
   const channels = ax.channel ?? 1, samples = ax.time ?? 1;
-  if (samples === 1) return { kind: 'latent', channels, samples };
+  if (samples === 1) return { kind: 'latent', channels, samples, dim: channels };
+  // A control input (meta.control names its channels): the host fills `time_s`, the other channels
+  // are one latent frame (`dim` wide) held over the unit's samples.
+  if (which === 'input' && control?.length === channels) return { kind: 'latent', channels, samples, control, dim: control.filter((n) => n !== 'time_s').length };
   if (channels !== 1) throw new Error(`${which}: ${channels}-channel audio is not supported (mono only)`);
   return { kind: 'audio', channels, samples };
 }
@@ -79,8 +94,8 @@ function sideOf(spec, which) {
 /**
  * Loads a model and prepares handlers for it at `sampleRate`, one per voice (a stateful model
  * needs its own state per stream, and so its own handler).
- * The result's `input` / `output` say what flows on each side: { kind, channels, samples } per
- * unit. A voice's push(Float32Array(channels * samples), start) takes one input unit
+ * The result's `input` / `output` say what flows on each side: { kind, channels, samples, dim } per
+ * unit (`dim`: a latent side's frame width; `control`: a control input's channel names). A voice's push(Float32Array(channels * samples), start) takes one input unit
  * (channel-major); its outputs carry the `start` pushed with the input unit they answer.
  * `onStatus(text)` says what it is waiting for while it loads.
  */
@@ -106,12 +121,14 @@ export async function createStreamModel({ files, sampleRate, onStatus }) {
   const [outSpec, ...moreOut] = streamed(v3.outputs ?? []);
   if (!inSpec || !outSpec) throw new Error('the model needs a streamed input and a streamed output');
   if (moreIn.length || moreOut.length) throw new Error('models with several streamed inputs or outputs are not supported yet');
-  const input = sideOf(inSpec, 'input'), output = sideOf(outSpec, 'output');
-  if (input.kind === output.kind) throw new Error(`${input.kind} to ${output.kind} models are not supported yet (only encoders and decoders)`);
+  const input = sideOf(inSpec, 'input', Array.isArray(meta.control) ? meta.control : null), output = sideOf(outSpec, 'output');
+  if (input.kind === output.kind && !input.control) throw new Error(`${input.kind} to ${output.kind} models are not supported yet (only encoders, decoders and control models)`);
+  if (Array.isArray(meta.control) && !input.control) throw new Error(`meta.control names ${meta.control.length} channels, the model's input has ${input.channels}`);
+  if (input.control && !input.dim) throw new Error('meta.control names no channel the latents feed (every one is time_s)');
   // The model runs at its own rate inside; its audio is resampled to and from the context's.
   const modelRate = meta.sample_rate || sampleRate;
   const ratio = sampleRate / modelRate; // context frames per model sample
-  const hop = input.kind === 'audio' ? input.samples : output.samples; // audio samples per latent frame
+  const hop = input.samples > 1 ? input.samples : output.samples; // audio samples per latent frame
   const inSlot = v3.inputs.indexOf(inSpec), outSlot = v3.outputs.indexOf(outSpec);
 
   // ONNX models run on the ONNX Runtime Web engine of anira's worker module (several threads per
@@ -255,7 +272,16 @@ export async function createStreamModel({ files, sampleRate, onStatus }) {
     voice.push = (data, start) => {
       if (!onOutput) return false;
       h = heap(m);
-      h.HEAPF32.set(data.length === inN ? data : data.subarray(0, inN), inData / 4);
+      if (input.control) {
+        // time_s: seconds since the voice's first unit, running on through the unit's samples.
+        voice.t0 ??= start;
+        const t = (start - voice.t0) / sampleRate, o = inData / 4;
+        let k = 0;
+        for (const [c, name] of input.control.entries()) {
+          const x = name === 'time_s' ? null : data[k++];
+          for (let i = 0; i < input.samples; i++) h.HEAPF32[o + c * input.samples + i] = x ?? t + i / modelRate;
+        }
+      } else h.HEAPF32.set(data.length === inN ? data : data.subarray(0, inN), inData / 4);
       const st = m._anira_handler_push_data(native, inT, inSlot);
       if (st < 0) return (fail('push', st), false);
       voice.lastPush = performance.now();
@@ -269,6 +295,7 @@ export async function createStreamModel({ files, sampleRate, onStatus }) {
     voice.begin = (fn) => {
       m._anira_handler_reset(native);
       pending = [];
+      voice.t0 = null;
       seed = lat;
       onOutput = fn;
     };
@@ -390,8 +417,9 @@ export async function createStreamModel({ files, sampleRate, onStatus }) {
       const units = []; // [unit, start]
       if (input.kind === 'audio') audioIn((u, start) => units.push([u, start]))(data, 0);
       else {
-        const n = Math.floor(data.length / input.channels);
-        for (let i = 0; i < n; i++) units.push([data.subarray(i * input.channels, (i + 1) * input.channels), Math.round(i * unitFrames)]);
+        const w = input.dim;
+        const n = Math.floor(data.length / w);
+        for (let i = 0; i < n; i++) units.push([data.subarray(i * w, (i + 1) * w), Math.round(i * unitFrames)]);
       }
       // Results are polled: anira has no non-blocking completion signal. Its waiting pop
       // (anira_handler_pop_data_wait) blocks the calling thread, and handlers run on the page's
