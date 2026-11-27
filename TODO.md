@@ -1,0 +1,22 @@
+- [ ] Display remaining LLM key quota?
+- [ ] Show moving dots on minimap
+- [ ] Rule, don't let scroll edit knobs. This destroys settings when you're moving around
+- [ ] Make layer editing move the playback head.
+- [ ] Do we use anira Process wait for the offline path?
+- [ ] The scroll bar in the layer stack gets in the way of the remove layer X
+- [ ] What I can't reach: the audio worklet's own timing, CPU load inside the inference threads, and the browser's performance profiler.
+- [ ] Think about layer editing to be a bit more elegant/not get in the way
+- [ ] Can the agent get screenshots?
+- [ ] Probably also the auto-merges which judged to be redundant moved into redundant tab
+- [ ] Restore window position when scrolled and background reload happens. Scan for any view state that gets lost on automatic reloads
+- [ ] ● Make dropped audio decode to all armed latent layers ignoring passthrough
+- [ ] Have a record button
+- [ ] Make parallel tracks make sense for current zoom level when recording starts
+- [ ] Hovering a latent recording layer makes other layers' clips grey out
+- [ ] ● Editing the LLM key, then including it in the link still includes the old key... or, it didn't accept the new key because the one was set in the settings...
+- [ ] iPhone fix - layer stack disappear when touch canvas
+- [ ] Port "changes window: merged peer changes in a foldout"
+- [ ] Port "keep unflushed local edits on remote changes"
+- [ ] Page reload retains window and button scroll positions
+- [ ] ● Pre-bake the pre-bake
+- [ ] scroll overflowing buttons in agent window
