@@ -138,7 +138,7 @@ export function dispose() {
 // Space starts playback unless the user is typing text. Checkboxes, buttons, sliders etc. don't count:
 // clicking one leaves it focused, and space must still reach playback.
 const NOT_TEXT = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'color', 'file', 'image']);
-const isTyping = (el) => {
+export const isTyping = (el) => {
   if (el?.closest?.('textarea, [contenteditable]:not([contenteditable="false"])')) return true;
   return el?.tagName === 'INPUT' && !NOT_TEXT.has(el.type);
 };

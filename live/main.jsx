@@ -8,6 +8,7 @@ import { AssetsPill } from './net/AssetsWindow.jsx';
 import { ChangesPill } from './net/ChangesWindow.jsx';
 import { EnginePill } from './app/EnginePill.jsx';
 import { FollowPill } from './app/FollowPill.jsx';
+import { RecordPill } from './app/RecordPill.jsx';
 import { PrebakePill } from './app/PrebakePill.jsx';
 import { PreviewFrame } from './app/PreviewFrame.jsx';
 import { Guide } from './ui/guide/Guide.jsx';
@@ -24,6 +25,7 @@ export default function App() {
       <div class="net-pills">
         <TouchPills />
         <EnginePill />
+        <RecordPill />
         <FollowPill />
         <PrebakePill />
         <AssetsPill />
