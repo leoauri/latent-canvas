@@ -197,7 +197,8 @@ connected, undo recent actions, switch between sessions or join one from a link.
   earlier change with that change's id (`follows`). A bubble over the pill announces new changes.
   Each change shows what it follows or builds on and who has incorporated it.
   The Changes window lists only these named bundles, each with its guide: the ones waiting for
-  approval, your own (`net/bundles.js`) and your peers'. There is no manual publishing. Your
+  approval, your own (`net/bundles.js`) and your peers' (new ones listed; the ones you merged or
+  dismissed in a folded section under them). There is no manual publishing. Your
   bundles remember on this machine whether you publish them. A published bundle lives in the
   session document like tracks, so every peer has it, including peers who join later. **Unpublish**
   removes it from the session; peers who applied it keep it. **Publish again** restores it under

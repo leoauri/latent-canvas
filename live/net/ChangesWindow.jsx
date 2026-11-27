@@ -3,7 +3,8 @@
 // bundles (bundles.js), each published or not, which you can toggle; then your peers' bundles
 // published in the open session (changes.js). Incoming ones can be reviewed, previewed
 // (merge conflicts), tried live (which shows their guide in place), applied, handed to an agent to
-// adapt, or dismissed. Nothing runs without a click. Bundles are only published by approving what a
+// adapt, or dismissed; the ones you merged or dismissed fold up below the new ones, so you can see what
+// you incorporated. Nothing runs without a click. Bundles are only published by approving what a
 // chat's agent proposed (propose_bundle); there is no manual publishing here.
 // Above all that: files where the base (live/ on disk) changed under this session's own version
 // and the two conflict (vfs layers), to resolve by taking the base, keeping the session's version,
@@ -65,7 +66,6 @@ function ChangesBody() {
   useEffect(() => {
     if (incoming.some((c) => !seen.peek().has(c.id))) seen.value = new Set([...seen.peek(), ...incoming.map((c) => c.id)]);
   }, [incoming]);
-  const [showAll, setShowAll] = useState(false);
   const trial = vfs.trial;
   const trialChange = trial?.overlayId.startsWith('peer:') ? list.find((c) => c.id === trial.overlayId.slice(5)) : null;
   const [trialMsg, setTrialMsg] = useState(null);
@@ -81,7 +81,10 @@ function ChangesBody() {
   const mineIds = new Set(bundles.bundles.value.map((b) => b.id));
   redundant.verdicts.value; // re-render on new verdicts
   // In the order auto-merge takes them: what a change builds on first, then by time.
-  const shown = changes.causalOrder((showAll ? list : incoming).filter((c) => !mineIds.has(c.id) && !redundant.isRedundant(c)));
+  const others = list.filter((c) => !mineIds.has(c.id) && !redundant.isRedundant(c));
+  const incomingIds = new Set(incoming.map((c) => c.id));
+  const shown = changes.causalOrder(others.filter((c) => incomingIds.has(c.id)));
+  const past = others.filter((c) => !incomingIds.has(c.id) && c.author !== changes.myName.value);
   const ready = session.status.value === 'ready';
 
   return (
@@ -104,10 +107,7 @@ function ChangesBody() {
 
       <section>
         <label class="net-label">
-          <span class="net-grow">{showAll ? 'From peers' : 'New from peers'}</span>
-          <label class="net-check">
-            <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.currentTarget.checked)} /> show all
-          </label>
+          <span class="net-grow">New from peers</span>
         </label>
         {ready && shown.some((c) => !changes.isApplied(c)) && (
         <p class="net-warn">
@@ -124,9 +124,22 @@ function ChangesBody() {
             ))}
           </ul>
         ) : (
-          <p class="net-muted">{showAll ? 'Nothing published in this session yet.' : 'Nothing new from your peers.'}</p>
+          <p class="net-muted">Nothing new from your peers.</p>
         )}
       </section>
+
+      {ready && past.length > 0 && (
+        <section class="net-past-changes">
+          <details class="net-codefold">
+            <summary class="net-muted">{past.length} merged or dismissed</summary>
+            <ul class="net-list net-change-list">
+              {past.map((c) => (
+                <ChangeItem key={c.id} c={c} trial={trial} />
+              ))}
+            </ul>
+          </details>
+        </section>
+      )}
 
       <BaseConflicts />
       <ReadySection />
