@@ -70,7 +70,7 @@ export function RecordPanel({ layer: l }) {
   const through = l.passThrough !== false;
   return (
     <div class="layer-param">
-      <button class={l.armed ? 'audio-on' : ''} title="Record the latent stream reaching this layer while playing" onClick={() => toggleArm(l.id)}>
+      <button class={l.armed ? 'audio-on' : ''} title="Record the latent stream reaching this layer while playing with Rec on" onClick={() => toggleArm(l.id)}>
         {l.armed ? 'Armed' : 'Arm'}
       </button>
       <button

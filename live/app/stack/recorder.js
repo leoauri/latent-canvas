@@ -1,9 +1,11 @@
-// Latent recording: an armed latent layer records, while the transport plays, the latent stream
-// reaching it (from the nearest producer behind it, app/stack/models.js) into new clips, one per
+// Latent recording: while the transport plays and recording is armed (recordArmed: the Rec pill,
+// or R), an armed latent layer records the latent stream reaching it (from the nearest producer
+// behind it, app/stack/models.js) into new clips, one per
 // voice of the stream, each placed where its voice is on the timeline (for a live input: the
 // playhead, at the input dot).
 // Clips grow on the timeline while they record and are saved when the recording ends (stop,
-// disarm, or the source going away).
+// disarm, recording disarmed, or the source going away). Arming recording while playing starts
+// recording there.
 import { effect } from '@preact/signals';
 import { persist } from '@live/runtime';
 import { audioContext } from '../../lib/audio.js';
@@ -34,6 +36,14 @@ const UPDATE_EVERY = 4; // frames between redraws of a growing clip
  */
 /** @type {import('@preact/signals').Signal<Record<string, Recording>>} by latent layer id */
 export const recordings = persist('recorder.recordings', {});
+
+/**
+ * Whether recording is armed: armed latent layers record only while it is on and the transport
+ * plays. A transport control, so per machine and not saved, like playing (Playhead.jsx).
+ * Dropped audio (audioDrop.js) doesn't need it.
+ */
+export const recordArmed = persist('recorder.recordArmed', false);
+export const toggleRecordArm = () => (recordArmed.value = !recordArmed.peek());
 
 /** The layer whose latents reach latent layer `l`, or null (nothing, or audio, reaches it). */
 export function latentSourceOf(l) {
@@ -110,7 +120,7 @@ function end(id) {
 }
 
 const stopEffect = effect(() => {
-  const on = playing.value;
+  const on = playing.value && recordArmed.value;
   const recs = recordings.peek();
   const want = new Map();
   for (const l of stack.value) {

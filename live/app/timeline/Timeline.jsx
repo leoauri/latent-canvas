@@ -25,7 +25,7 @@ export default function Timeline() {
           ? `${n} clips · Drag: move · Alt+drag: copy · ⌘/Ctrl+D: duplicate · Delete: remove`
           : sel
             ? `${sel.length} samples × ${sel.dim} dims @ ${sel.rate} Hz · ${duration(sel).toFixed(2)} s · Alt+drag: copy · ⌘/Ctrl+D: duplicate`
-            : 'Drag: move · Alt+drag: lasso (+Shift: add) · Click: place playhead · Space: play · Pinch: zoom · Shift+Space: agent chat (again, when empty: new chat)'}
+            : 'Drag: move · Alt+drag: lasso (+Shift: add) · Click: place playhead · Space: play · R: arm recording · Pinch: zoom · Shift+Space: agent chat (again, when empty: new chat)'}
       </div>
     </div>
   );

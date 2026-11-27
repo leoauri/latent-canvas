@@ -209,7 +209,7 @@ export default function LayerStack() {
               </button>
               <button
                 class={`stack-arm${l.armed ? ' stack-arm-on' : ''}${recordings.value[l.id] ? ' stack-arm-rec' : ''}`}
-                title={recordings.value[l.id] ? 'Recording' : l.armed ? 'Armed: records while playing. Click to disarm' : 'Arm: record the latent stream reaching this layer while playing'}
+                title={recordings.value[l.id] ? 'Recording' : l.armed ? 'Armed: records while playing with Rec on. Click to disarm' : 'Arm: record the latent stream reaching this layer while playing with Rec on'}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => toggleArm(l.id)}
               >
