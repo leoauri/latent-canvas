@@ -119,7 +119,12 @@ export function producedKind(l) {
       return src && producedKind(src) === 'latent' ? 'latent' : null;
     }
     const rt = runtimes.value[l.id];
-    return rt?.status === 'ready' ? rt.model.output.kind : null;
+    if (rt?.status !== 'ready') return null;
+    // A stream the model doesn't take (audio reaching a latent-in model, or the reverse) passes
+    // through it unchanged, as in dropped audio (audioDrop.js): the layer then makes that kind.
+    const src = producerBehind(l);
+    const inKind = src && producedKind(src);
+    return inKind && inKind !== rt.model.input.kind ? inKind : rt.model.output.kind;
   }
   // A latent layer sends its clips while playing, and with pass-through on (the default) also the
   // latents reaching it. Recording (armed) is separate: it records what reaches it either way.
@@ -473,7 +478,7 @@ function consumerOf(l, src, kind) {
   if (l.type === 'operator') {
     const model = runtimes.value[l.id]?.model;
     const want = model.input.kind;
-    if (kind !== want) return { error: `the model takes ${want === 'audio' ? 'audio' : 'latents'}, but ${kind === 'audio' ? 'audio' : 'latents'} reach it from ${src.name}` };
+    if (kind !== want) return { handler: (msg) => emit(l.id, msg) }; // not for it: passes through unchanged (see producedKind)
     // The model's voice re-blocks (and resamples) audio itself.
     if (want === 'audio') return modelVoices(l, model, (push) => (msg) => push(msg.data, msg.start));
     const dim = runtimes.value[src.id]?.model?.output.channels;
