@@ -7,8 +7,9 @@
 //   node scripts/peer.mjs '<invite link>'      or PEER_LINK='<invite link>'
 //
 // PEER_PORT (default 5180) is where it serves the app, on 127.0.0.1 only. PEER_PROFILE (default
-// .peer/profile) is the browser profile; keep it, it is the peer's copy of the session. Exits when
-// the page or browser crashes, so a supervisor (systemd) restarts it.
+// .peer/profile) is the browser profile; keep it, it is the peer's copy of the session. PEER_NAME is
+// the name the others see (Session window, cursors, changes it publishes); unset, it keeps its own.
+// Exits when the page or browser crashes, so a supervisor (systemd) restarts it.
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { preview } from 'vite';
@@ -39,6 +40,8 @@ const exit = (code, why) => {
 let stopping = false;
 ctx.on('close', () => stopping || exit(1, 'browser closed'));
 
+// The name lives in the page's localStorage: set it before the page's code reads it.
+if (process.env.PEER_NAME) await ctx.addInitScript((n) => localStorage.setItem('redaw.net.name', n), process.env.PEER_NAME);
 const page = ctx.pages()[0] ?? (await ctx.newPage());
 page.on('console', (m) => log(`[${m.type()}]`, m.text()));
 page.on('pageerror', (e) => log('[pageerror]', e.stack || e.message));
