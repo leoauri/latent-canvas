@@ -78,6 +78,11 @@
   flex-direction: column;
   max-height: 50vh;
   overflow-y: auto;
+  /* Overlay scrollbars (macOS default) take no layout space and are drawn over the cards' right edge,
+     where the remove × sits: keep that edge 16px clear of the list's. Reaching into the panel's own
+     padding keeps the cards nearly as wide; classic scrollbars just take their width from this. */
+  margin-right: -6px;
+  padding-right: 10px;
 }
 .stack-gap {
   height: 3px;
