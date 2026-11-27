@@ -267,9 +267,38 @@ function fromDoc(b, d) {
   // Entities in the document this page can't show yet (decode pending, no previous version): not
   // in the signal, but they mustn't look deleted to writeInto.
   b.loading = new Set();
+  // Local edits not flushed yet (within FLUSH_MS) would be lost by taking the document's version:
+  // keep the locally changed fields (and local adds/removes) so the pending flush writes them.
+  const docIds = new Set(enc.map((e) => e.id));
+  const edits = new Map();
+  const removed = new Set();
+  if (dirty.has(b.key) && prevSeen) {
+    for (const p of prevList) {
+      if (p?.id == null || b.keepLocal(p)) continue;
+      const was = prevSeen.get(String(p.id));
+      const now = clean(plain(clean(b.encode(p))));
+      for (const f of b.local) delete now[f];
+      if (!was) {
+        if (!docIds.has(p.id)) edits.set(p.id, null);
+        continue;
+      }
+      const fields = Object.keys({ ...now, ...was }).filter((f) => !same(now[f], was[f]));
+      if (fields.length) edits.set(p.id, Object.fromEntries(fields.map((f) => [f, now[f]])));
+    }
+    for (const id of prevSeen.keys()) if (!prevById.has(id)) removed.add(id);
+  }
   const out = [];
   for (const e of enc) {
+    if (removed.has(e.id)) continue;
     const prev = prevById.get(e.id);
+    const mine = edits.get(e.id);
+    if (mine) {
+      const was = prevSeen.get(String(e.id));
+      seen.set(e.id, { ...e, ...Object.fromEntries(Object.keys(mine).map((f) => [f, was[f]])) });
+      const v = b.decode(e, prev);
+      out.push({ ...prev, ...(v?.then ? null : v), ...mine });
+      continue;
+    }
     // Unchanged entity: keep the local object as is (identity matters to caches and memos).
     if (prev && prevSeen && same(prevSeen.get(e.id), e)) {
       out.push(prev);
@@ -305,6 +334,7 @@ function fromDoc(b, d) {
     }
     if (v) out.push({ ...v, ...local });
   }
+  for (const [id, f] of edits) if (f === null) out.push(prevById.get(id));
   // Entities that exist only here (keepLocal) stay, after the shared ones.
   for (const e of prevList) if (b.keepLocal(e) && !seen.has(e.id)) out.push(e);
   // Shared entities changed here that can't be written yet (keepLocal, e.g. a clip whose new
