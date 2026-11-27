@@ -21,10 +21,14 @@
 // - A key missing from the document is seeded from the local value (or `seedFrom()`) when the session adopts local
 //   state (the first session on this machine), else the signal is reset to `empty()`. So a local
 //   module introducing new shared state just starts writing it; peers without that code ignore it.
+// - `ids: ['field', …]`: fields holding ids (as `id` always does), stored as scalar strings (see
+//   toDocField). Only for fields that no code reads from the document itself (all reads go
+//   through shared()): older code comparing a raw document value with a string would miss them.
 // - Changes are grouped into actions (history.js): act(label, fn) names one; otherwise edits are
 //   flushed every FLUSH_MS and labelled after the key.
 //
 // Document layout: state[key] = { items: { id: entity }, order: [id] } for lists, a plain map for maps.
+// Order entries and id fields may be text or scalar strings (older peers and documents): both read alike.
 import { Automerge } from '@automerge/automerge-repo';
 import { handle } from './session.js';
 import * as db from '../lib/db.js';
@@ -74,6 +78,18 @@ const toDoc = (v) => {
   }
   return v;
 };
+// Ids are short but written once per entity, field and order entry: as text each costs an op per
+// character (~36 for a uuid). Never edited in place, they're stored as scalars. Fields with other
+// strings stay as they were (text below LONG): older code reads some of them straight from the
+// document (a layer's `type`, a clip's `dataHash`) and wouldn't recognise a scalar there.
+const toDocField = (b, f, v) => (b.ids.has(f) && typeof v === 'string' ? new Automerge.ImmutableString(v) : toDoc(v));
+const toDocEntity = (b, e) => {
+  const out = {};
+  for (const f in e) out[f] = toDocField(b, f, e[f]);
+  return out;
+};
+/** A string read from the document (text or scalar), else null. */
+const str = (x) => (typeof x === 'string' ? x : Automerge.isImmutableString(x) ? x.val : null);
 const clean = (o) => {
   const out = {};
   for (const k in o) if (o[k] !== undefined && typeof o[k] !== 'function') out[k] = o[k];
@@ -83,7 +99,7 @@ const clean = (o) => {
 /**
  * @param {string} key
  * @param {import('@preact/signals').Signal} sig
- * @param {{ kind?: 'list'|'map', local?: string[], encode?: (e:any)=>any, decode?: (e:any, prev:any)=>any, keepLocal?: (e:any)=>boolean, empty?: () => any, seedFrom?: () => any, label?: string }} [opts]
+ * @param {{ kind?: 'list'|'map', local?: string[], ids?: string[], encode?: (e:any)=>any, decode?: (e:any, prev:any)=>any, keepLocal?: (e:any)=>boolean, empty?: () => any, seedFrom?: () => any, label?: string }} [opts]
  * @returns {() => void} unbind
  */
 export function shared(key, sig, opts = {}) {
@@ -92,6 +108,7 @@ export function shared(key, sig, opts = {}) {
     sig,
     kind: opts.kind ?? (Array.isArray(sig.value) ? 'list' : 'map'),
     local: new Set(opts.local ?? []),
+    ids: new Set(['id', ...(opts.ids ?? [])]),
     encode: opts.encode ?? ((e) => e),
     decode: opts.decode ?? ((e) => e),
     empty: opts.empty ?? (() => (Array.isArray(sig.value) ? [] : {})),
@@ -235,7 +252,10 @@ function readDoc(b, d) {
   const order = Array.isArray(s.order) ? s.order : [];
   const ids = [];
   const seenIds = new Set();
-  for (const id of order) if (typeof id === 'string' && items[id] && !seenIds.has(id)) (ids.push(id), seenIds.add(id));
+  for (const x of order) {
+    const id = str(x);
+    if (id !== null && items[id] && !seenIds.has(id)) (ids.push(id), seenIds.add(id));
+  }
   for (const id of Object.keys(items).sort()) if (!seenIds.has(id)) ids.push(id); // concurrently added
   const out = [];
   for (const id of ids) {
@@ -267,9 +287,38 @@ function fromDoc(b, d) {
   // Entities in the document this page can't show yet (decode pending, no previous version): not
   // in the signal, but they mustn't look deleted to writeInto.
   b.loading = new Set();
+  // Local edits not flushed yet (within FLUSH_MS) would be lost by taking the document's version:
+  // keep the locally changed fields (and local adds/removes) so the pending flush writes them.
+  const docIds = new Set(enc.map((e) => e.id));
+  const edits = new Map();
+  const removed = new Set();
+  if (dirty.has(b.key) && prevSeen) {
+    for (const p of prevList) {
+      if (p?.id == null || b.keepLocal(p)) continue;
+      const was = prevSeen.get(String(p.id));
+      const now = clean(plain(clean(b.encode(p))));
+      for (const f of b.local) delete now[f];
+      if (!was) {
+        if (!docIds.has(p.id)) edits.set(p.id, null);
+        continue;
+      }
+      const fields = Object.keys({ ...now, ...was }).filter((f) => !same(now[f], was[f]));
+      if (fields.length) edits.set(p.id, Object.fromEntries(fields.map((f) => [f, now[f]])));
+    }
+    for (const id of prevSeen.keys()) if (!prevById.has(id)) removed.add(id);
+  }
   const out = [];
   for (const e of enc) {
+    if (removed.has(e.id)) continue;
     const prev = prevById.get(e.id);
+    const mine = edits.get(e.id);
+    if (mine) {
+      const was = prevSeen.get(String(e.id));
+      seen.set(e.id, { ...e, ...Object.fromEntries(Object.keys(mine).map((f) => [f, was[f]])) });
+      const v = b.decode(e, prev);
+      out.push({ ...prev, ...(v?.then ? null : v), ...mine });
+      continue;
+    }
     // Unchanged entity: keep the local object as is (identity matters to caches and memos).
     if (prev && prevSeen && same(prevSeen.get(e.id), e)) {
       out.push(prev);
@@ -305,6 +354,7 @@ function fromDoc(b, d) {
     }
     if (v) out.push({ ...v, ...local });
   }
+  for (const [id, f] of edits) if (f === null) out.push(prevById.get(id));
   // Entities that exist only here (keepLocal) stay, after the shared ones.
   for (const e of prevList) if (b.keepLocal(e) && !seen.has(e.id)) out.push(e);
   // Shared entities changed here that can't be written yet (keepLocal, e.g. a clip whose new
@@ -478,9 +528,9 @@ function writeInto(b, s, v) {
     for (const f of b.local) delete enc[f];
     const prev = prevSeen.get(id);
     const cur = s.items[id];
-    if (!cur) s.items[id] = toDoc(enc);
+    if (!cur) s.items[id] = toDocEntity(b, enc);
     else {
-      for (const f in enc) if (!same(enc[f], prev?.[f]) && !same(enc[f], cur[f])) cur[f] = toDoc(enc[f]);
+      for (const f in enc) if (!same(enc[f], prev?.[f]) && !same(enc[f], cur[f])) cur[f] = toDocField(b, f, enc[f]);
       // Only fields this page had and dropped are deleted; unknown ones are left alone.
       if (prev) for (const f in prev) if (!(f in enc) && f in cur) delete cur[f];
     }
@@ -490,10 +540,44 @@ function writeInto(b, s, v) {
   // Held entities the document has keep their place in it.
   const order = [...new Set(all.filter((e) => !b.keepLocal(e) || s.items[String(e.id)]).map((e) => String(e.id)))]; // two peers can add the same id
   // Ids a peer added that this page hasn't seen yet keep their place after ours.
-  const unseen = [...(s.order ?? [])].filter((id) => !order.includes(id) && s.items[id] && ((!prevSeen.has(id) && !held.has(id)) || b.loading?.has(id)));
-  if (!same([...(s.order ?? [])], [...order, ...unseen])) s.order = [...order, ...unseen];
+  const unseen = [...(s.order ?? [])].map(str).filter((id) => id !== null && !order.includes(id) && s.items[id] && ((!prevSeen.has(id) && !held.has(id)) || b.loading?.has(id)));
+  editOrder(s.order, [...order, ...unseen]);
   // Entities a peer added that this page hasn't seen yet stay (they're in items, appended on read).
   b.seen = new Map(readDoc(b, { state: { [b.key]: s } }).map((e) => [String(e.id), e]));
+}
+
+/**
+ * Turns the document's order list into `ids` by deleting and inserting single entries around the
+ * longest common subsequence: adding an entity is one insert, moving one a delete and an insert.
+ * Rewriting the list instead costs ops for every entry each time, and two peers' concurrent
+ * rewrites leave both copies. New entries are text, not scalars: older code reads only text
+ * entries there (it would lose the order of scalar ones).
+ */
+function editOrder(list, ids) {
+  const want = [...new Set(ids)];
+  const cur = [...list].map(str);
+  // Usually only a few entries change: compare just the part between a common prefix and suffix.
+  let a = 0, e = cur.length, f = want.length;
+  while (a < e && a < f && cur[a] === want[a]) a++;
+  while (e > a && f > a && cur[e - 1] === want[f - 1]) (e--, f--);
+  const x = cur.slice(a, e), y = want.slice(a, f);
+  if (!x.length && !y.length) return;
+  const lcs = Array.from({ length: x.length + 1 }, () => new Int32Array(y.length + 1));
+  for (let i = x.length - 1; i >= 0; i--)
+    for (let j = y.length - 1; j >= 0; j--) lcs[i][j] = x[i] === y[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const keep = new Array(x.length).fill(false);
+  for (let i = 0, j = 0; i < x.length && j < y.length; ) {
+    if (x[i] === y[j]) (keep[i] = true), i++, j++;
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) i++;
+    else j++;
+  }
+  for (let i = x.length - 1; i >= 0; i--) if (!keep[i]) list.deleteAt(a + i);
+  const kept = x.filter((_, i) => keep[i]);
+  let k = 0;
+  y.forEach((id, j) => {
+    if (kept[k] === id) k++;
+    else list.insertAt(a + j, id);
+  });
 }
 
 /**
