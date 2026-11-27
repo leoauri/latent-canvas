@@ -5,10 +5,13 @@
 // body (only while expanded), resize corners. Drag by the header; Alt+left-drag moves and
 // Alt+right-drag resizes from anywhere in the window; double-click the header to collapse;
 // pointer-down raises; the rect is clamped to the viewport. Alt+W closes the focused window (the one
-// holding keyboard focus, else the topmost).
+// holding keyboard focus, else the topmost). Scroll positions of everything scrolling inside it are
+// remembered per window and come back after a reload (scrollMemory.js).
 import { signal } from '@preact/signals';
+import { useRef, useEffect } from 'preact/hooks';
 import { persist } from '@live/runtime';
-import { windows, getWindow, updateWindow, closeWindow, focusWindow, topWindow, saveWindows } from './windows.js';
+import { windows, getWindow, updateWindow, closeWindow, focusWindow, topWindow, saveWindows, windowScroll, saveWindowScroll } from './windows.js';
+import { rememberScroll } from './scrollMemory.js';
 import './window.css';
 
 export const MIN_W = 280;
@@ -74,6 +77,12 @@ function MissingKind({ win }) {
  */
 export function FloatingWindow({ win, title, header, headerRows, children, class: cls = '', noDrag, closeTitle = 'Close window' }) {
   const collapsed = win.collapsed;
+  const ref = useRef(null);
+  // Re-armed on expand: the body is new then and gets its saved positions back.
+  useEffect(() => {
+    if (collapsed) return;
+    return rememberScroll(ref.current, windowScroll(win.id), (map) => saveWindowScroll(win.id, map));
+  }, [win.id, collapsed]);
   const r = clampRect(win.rect);
   const style = {
     left: `${r.x}px`,
@@ -85,6 +94,7 @@ export function FloatingWindow({ win, title, header, headerRows, children, class
   const passive = `button, select, input, textarea, a${noDrag ? `, ${noDrag}` : ''}`;
   return (
     <aside
+      ref={ref}
       class={`window ${cls}${collapsed ? ' window-collapsed' : ''}`}
       style={style}
       data-window={win.id}
