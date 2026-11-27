@@ -13,7 +13,9 @@
 // A verdict is keyed by the hashes of the base files the change touches (sig), so a change is
 // judged again only when one of those files changes. Cheap checks first: every edit already in the
 // base, or the same edits as a newer change. The rest go to the chat's LLM endpoint, one at a time,
-// once the base has been quiet for QUIET_MS (so a promotion in progress isn't judged half-written).
+// once the base has been quiet for QUIET_MS (so a promotion in progress isn't judged half-written),
+// and only while auto-merge is on: it's auto-merge that needs them, and they spend tokens. With it
+// off, the cheap checks still run and fold what they can.
 // An answer that can't be used skips that change for RETRY_MS; only an endpoint or network error
 // pauses the whole queue. A check in flight survives this module being reloaded: the new instance
 // takes over its request (globalThis.__redundantInflight) instead of sending it again.
@@ -33,6 +35,16 @@ const MAX_FILE_CHARS = 80_000;
 export const verdicts = persist('net.redundant', {});
 const unbind = db.sync(verdicts, 'net.redundant');
 export const checking = signal(null);
+
+// Auto-merge's switch (automerge.js, which imports this module, so it can't be imported back):
+// the same persisted signal, read from the same localStorage key if this module loads first.
+const autoMergeOn = persist('net.autoMerge.on', () => {
+  try {
+    return JSON.parse(localStorage.getItem('redaw.net.autoMerge')) ?? false;
+  } catch {
+    return false;
+  }
+});
 export const lastError = signal(null);
 
 const hash = (s) => vfs.hash(s ?? null);
@@ -207,6 +219,13 @@ export function retryNow() {
 
 function update() {
   const todo = unchecked();
+  if (!autoMergeOn.peek()) {
+    // Auto-merge off: the cheap checks above are all that runs; agent checks wait until it's on.
+    clearTimeout(timer);
+    timer = 0;
+    pendingKey = '';
+    return;
+  }
   const key = todo.map((c) => `${c.id}:${sigOf(c)}`).join(',');
   if (!todo.length) {
     // Only skipped ones left: look again when the first skip runs out.
@@ -231,6 +250,7 @@ async function run() {
     for (let c; (c = unchecked().find((x) => !tried.has(x.id))); ) {
       tried.add(c.id);
       if (stopped) return;
+      if (!autoMergeOn.peek()) break; // switched off meanwhile
       checking.value = c.id;
       try {
         await agentCheck(c);
@@ -261,6 +281,7 @@ const offEffect = effect(() => {
   bundles.bundles.value;
   session.currentDoc.value;
   session.status.value;
+  autoMergeOn.value;
   queueMicrotask(() => !stopped && update());
 });
 
