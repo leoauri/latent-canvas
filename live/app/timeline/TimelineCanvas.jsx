@@ -12,6 +12,8 @@ import { isAssetDrag, assetOf, assetKind, clipFromAsset } from '../assetDrag.js'
 import { seek } from './Playhead.jsx';
 import { isAudioFile, decodeAudioFile, clipsFromAudio, recordersFor, pendingDrops, showPending } from '../stack/audioDrop.js';
 import { audioContext } from '../../lib/audio.js';
+import { readDrop } from '../stack/models.js';
+import * as blobs from '../../net/blobs.js';
 
 // Message over the timeline, above the pill row (the HUD has no error slot). A note (`ms` 0) stays
 // until removed. Errors also go to the console (the app log agents read), and a click dismisses them.
@@ -401,7 +403,8 @@ export default function TimelineCanvas() {
     };
 
     // Latent assets dragged from the assets window become clips where they are dropped. So do audio
-    // files from the OS, once the layer stack has carried them to a latent recording layer.
+    // files from the OS, once the layer stack has carried them to a latent recording layer. Any other
+    // file (a model, a folder's files) goes to the assets: dropping something here is never an error.
     const offStack = (e) => !e.target.closest?.('.stack');
     const isFileDrag = (e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
     const onAssetOver = (e) => {
@@ -414,7 +417,11 @@ export default function TimelineCanvas() {
       e.preventDefault();
       const [px, py] = local(e);
       const v = view.value;
-      if (!isAssetDrag(e)) return dropAudioFiles([...e.dataTransfer.files], { t: xToTime(px, v), y: screenToWorldY(py, v) }, v);
+      if (!isAssetDrag(e)) {
+        const at = { t: xToTime(px, v), y: screenToWorldY(py, v) };
+        // readDrop takes the entries now, inside the event, and reads a dropped folder's own files.
+        return readDrop(e.dataTransfer).then(({ files }) => dropFiles([...files.values()], at, v), (err) => showDropError(`Not added: ${err.message || err}`));
+      }
       const a = assetOf(e.dataTransfer);
       const at = { t: xToTime(px, v), y: screenToWorldY(py, v) - CLIP_HEIGHT / 2 / v.ys };
       if (assetKind(a) !== 'clip') return showDropError(`“${a?.name ?? 'file'}” is not clip data: drop models on the layer stack`);
@@ -428,9 +435,22 @@ export default function TimelineCanvas() {
     // the pass-through of the layers between, records a clip, a lane apart, and each file goes below
     // the lanes of the one before. Each shows the areas it will fill as soon as it is decoded; they
     // go through the stack one after the other.
-    const dropAudioFiles = async (files, at, v) => {
+    const dropFiles = (files, at, v) => {
       const audio = files.filter(isAudioFile);
-      if (!audio.length) return showDropError(`“${files[0]?.name ?? 'file'}” is not an audio file: drop models on the layer stack`);
+      const rest = files.filter((f) => !isAudioFile(f));
+      if (rest.length) addAssets(rest);
+      if (audio.length) dropAudioFiles(audio, at, v);
+    };
+    const addAssets = async (files) => {
+      const what = files.length === 1 ? `“${files[0].name}”` : `${files.length} files`;
+      try {
+        for (const f of files) await blobs.put(f, { name: f.name, type: f.type || null });
+        showDropError(`${what} added to Assets`, 4000, 'note');
+      } catch (err) {
+        showDropError(`${what} not added to Assets: ${err.message || err}`);
+      }
+    };
+    const dropAudioFiles = async (audio, at, v) => {
       const lane = LANE / v.ys, lanes = Math.max(1, recordersFor().length);
       const sr = audioContext().sampleRate;
       const drops = audio.map((file, i) => {
