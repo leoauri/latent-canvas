@@ -26,6 +26,10 @@
 // yet, or gone) keeps its place and rect; the <Windows /> host shows a small placeholder for it
 // that can be moved and closed. z is compact (1..n) across all kinds, so windows never climb past
 // fixed UI above them (e.g. the chat's "+" button).
+//
+// Scroll positions inside each window are saved too, apart from the list ('redaw.windows.scroll',
+// window id -> scrollMemory.js map), so scrolling doesn't re-render every window. FloatingWindow
+// saves and restores them; nothing per kind.
 import { signal } from '@preact/signals';
 import { persist } from '@live/runtime';
 
@@ -66,6 +70,26 @@ const state = persist('ui.windows', () => {
   }
   return { list: signal(list), fresh };
 }).value;
+
+// window id -> saved scroll map; entries of windows no longer open are dropped on load.
+const SCROLL_KEY = 'redaw.windows.scroll';
+const scrolls = persist('ui.windowScroll', () => {
+  const all = load(SCROLL_KEY) ?? {};
+  const open = new Set(state.list.value.map((w) => w.id));
+  const kept = Object.fromEntries(Object.entries(all).filter(([id]) => open.has(id)));
+  save(SCROLL_KEY, kept);
+  return kept;
+}).value;
+
+/** A window's saved scroll positions (a scrollMemory.js map). */
+export const windowScroll = (id) => scrolls[id] ?? {};
+
+export function saveWindowScroll(id, map) {
+  if (!getWindow(id)) return; // closed meanwhile
+  if (Object.keys(map).length) scrolls[id] = map;
+  else delete scrolls[id];
+  save(SCROLL_KEY, scrolls);
+}
 
 /** Every open window, all kinds (a signal; read .value in a component to re-render on changes). */
 export const windows = state.list;
@@ -114,6 +138,10 @@ export function openWindow(kind, props = {}, { rect = {}, collapsed = false } = 
 /** Closes a window; the others keep compact z. */
 export function closeWindow(id) {
   setWindows(compact(windows.value.filter((w) => w.id !== id)));
+  if (id in scrolls) {
+    delete scrolls[id];
+    save(SCROLL_KEY, scrolls);
+  }
 }
 
 /** Raises a window above all others, of every kind; z stays 1..n. */

@@ -13,7 +13,23 @@ import { PrebakePill } from './app/PrebakePill.jsx';
 import { PreviewFrame } from './app/PreviewFrame.jsx';
 import { Guide } from './ui/guide/Guide.jsx';
 import { TouchPills } from './app/TouchPills.jsx';
+import { rememberScroll, storedScroll } from './ui/scrollMemory.js';
+import { useRef, useEffect } from 'preact/hooks';
 import './main.css';
+
+// The pill row keeps its sideways scroll across reloads.
+function PillRow({ children }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const [saved, save] = storedScroll('redaw.pills.scroll');
+    return rememberScroll(ref.current, saved, save);
+  }, []);
+  return (
+    <div class="net-pills" ref={ref}>
+      {children}
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -22,7 +38,7 @@ export default function App() {
         <Workspace />
       </main>
       <Windows />
-      <div class="net-pills">
+      <PillRow>
         <TouchPills />
         <EnginePill />
         <RecordPill />
@@ -32,7 +48,7 @@ export default function App() {
         <ChangesPill />
         <SessionPill />
         <SummonPill />
-      </div>
+      </PillRow>
       <Chat />
       <PreviewFrame />
       <Guide />
