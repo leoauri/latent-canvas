@@ -1,27 +1,27 @@
 - [ ] Display remaining LLM key quota?
-- [ ] Show moving dots on minimap
+- [x] 🏴‍☠️ Show moving dots on minimap
 - [ ] Rule, don't let scroll edit knobs. This destroys settings when you're moving around
 - [ ] Make layer editing move the playback head.
 - [ ] Do we use anira Process wait for the offline path?
-- [ ] The scroll bar in the layer stack gets in the way of the remove layer X
+- [x] 🏴‍☠️ The scroll bar in the layer stack gets in the way of the remove layer X
 - [ ] What I can't reach: the audio worklet's own timing, CPU load inside the inference threads, and the browser's performance profiler.
 - [ ] Think about layer editing to be a bit more elegant/not get in the way
 - [ ] Can the agent get screenshots?
 - [ ] Probably also the auto-merges which judged to be redundant moved into redundant tab
 - [ ] Restore window position when scrolled and background reload happens. Scan for any view state that gets lost on automatic reloads
-- [ ] ● Make dropped audio decode to all armed latent layers ignoring passthrough
-- [ ] Have a record button
+- [x] 🏴‍☠️ ● Make dropped audio decode to all armed latent layers ignoring passthrough
+- [x] 🏴‍☠️ Have a record arm button (toggled with letter r on keyboard), so recording only takes place when session is also armed. Arming while playing also starts recording from that moment.
 - [ ] Make parallel tracks make sense for current zoom level when recording starts
 - [ ] Hovering a latent recording layer makes other layers' clips grey out
 - [ ] ● Editing the LLM key, then including it in the link still includes the old key... or, it didn't accept the new key because the one was set in the settings...
 - [ ] iPhone fix - layer stack disappear when touch canvas
-- [ ] Port "changes window: merged peer changes in a foldout"
-- [ ] ● Port "keep unflushed local edits on remote changes"
-- [ ] Page reload retains window and button scroll positions
+- [x] 🏴‍☠️ Port "changes window: merged peer changes in a foldout"
+- [x] 🏴‍☠️ ● Port "keep unflushed local edits on remote changes"
+- [x] 🏴‍☠️ Page reload retains window and button scroll positions
 - [ ] ● Pre-bake the pre-bake
 - [ ] scroll overflowing buttons in agent window
 - [ ] Redundancy check retries forever without an LLM key: the Pi logs a 401 every 5 min since Nov 24 (net/redundant.js RETRY_MS). Stop after an auth error until the key changes; skip with ?engine=off
-- [ ] ● Doc bloat: ids, layerId and order entries are stored as collaborative text (an op per character, ~36 per id), and adding an entity rewrites the whole order list (writeInto). One peer made 92k ops in 50 min, doc ~0.5 MB. Store short strings as scalars, edit order by insert/delete
+- [x] 🏴‍☠️ ● Doc bloat: ids, layerId and order entries are stored as collaborative text (an op per character, ~36 per id), and adding an entity rewrites the whole order list (writeInto). One peer made 92k ops in 50 min, doc ~0.5 MB. Store short strings as scalars, edit order by insert/delete
 - [ ] Long-lived (background) tabs drop and rejoin every ~15–20 min overnight ("disconnected for 10s", room.js): check whether the timeout is too strict for throttled tabs
 - [ ] Document the shared-doc format for non-browser clients (SqueakXR): ids and order entries are plain strings, edit single entries rather than whole containers, {label, origin} change messages. Only after base follows it (doc bloat item)
-- [ ] Base supports latent-to-latent control models: a model whose streamed input is a control tensor (see session bundle "Latent-to-latent control models (timbres score)", lib/streamModel.js + app/stack/models.js); port the general mechanism, not the score model's specifics
+- [x] 🏴‍☠️ Base supports latent-to-latent control models: a model whose streamed input is a control tensor (see session bundle "Latent-to-latent control models (timbres score)", lib/streamModel.js + app/stack/models.js); port the general mechanism, not the score model's specifics
