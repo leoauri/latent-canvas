@@ -17,6 +17,8 @@ class MeshAdapter extends NetworkAdapter {
     this.byRepo = new Map();
     this.offs = [];
     this.ready = false;
+    // Repo messages through the mesh (diag.js); `unrouted`: sends to a repo peer with no mesh peer.
+    this.stats = { sent: 0, recv: 0, lastSent: 0, lastRecv: 0, unrouted: 0 };
     this.readyPromise = new Promise((r) => (this.markReady = r));
   }
   isReady() {
@@ -55,6 +57,8 @@ class MeshAdapter extends NetworkAdapter {
       if (!m.reply) this.hello(meshId, true);
       this.emit('peer-candidate', { peerId: m.peerId, peerMetadata: m.meta || {} });
     } else if (m?.type === 'msg' && m.msg && this.byMesh.has(meshId)) {
+      this.stats.recv++;
+      this.stats.lastRecv = Date.now();
       this.emit('message', m.msg);
     }
   }
@@ -67,7 +71,10 @@ class MeshAdapter extends NetworkAdapter {
   }
   send(message) {
     const meshId = this.byRepo.get(message.targetId);
-    if (meshId) room.send(meshId, 'sync', cbor.encode({ type: 'msg', msg: message }));
+    if (!meshId) return void this.stats.unrouted++;
+    room.send(meshId, 'sync', cbor.encode({ type: 'msg', msg: message }));
+    this.stats.sent++;
+    this.stats.lastSent = Date.now();
   }
   disconnect() {
     this.offs.forEach((f) => f());
@@ -87,6 +94,10 @@ export const repo = new Repo({
   peerId: `redaw-${room.selfId}`,
   sharePolicy: async (_peerId, documentId) => !documentId || offered.has(documentId),
 });
+
+/** Sync traffic through the mesh since this module loaded (diag.js). */
+export const loadedAt = Date.now();
+export const syncStats = () => ({ ...adapter.stats, peers: adapter.byMesh.size });
 
 /** Tell the repo the share policy changed (call after editing `offered`). */
 export function offeredChanged() {

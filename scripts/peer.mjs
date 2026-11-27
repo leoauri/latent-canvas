@@ -70,6 +70,26 @@ const status = () =>
       };
     })
     .then((s) => log('status', JSON.stringify(s)), (e) => log('status failed', e.message));
+
+// Every peer's diagnostics (net/diag.js: do its edits reach the document, does it sync), and this
+// page's own for comparison (heads that differ for long mean documents that don't converge).
+const diag = () =>
+  page
+    .evaluate(() => {
+      const get = (p) => globalThis.__redaw?.runtime.loader.get(p);
+      const self = get('net/diag.js')?.report();
+      const others = Object.entries(get('net/presence.js')?.others.value ?? {}).map(([id, p]) => ({ id: id.slice(0, 8), name: p.name, diag: p.state?.diag ?? null }));
+      return { self, others };
+    })
+    .then(
+      ({ self, others }) => {
+        log('diag self', JSON.stringify(self));
+        for (const p of others) log('diag', p.id, JSON.stringify(p.name), p.diag ? JSON.stringify(p.diag) : '(no report: older code or another client)');
+      },
+      (e) => log('diag failed', e.message),
+    );
+setTimeout(diag, 20000);
+setInterval(diag, 60000);
 setTimeout(status, 15000);
 setInterval(status, 60000);
 

@@ -9,6 +9,7 @@ import { whereNow } from './whereabouts.js';
 import { requestTrial } from '../net/trials.js';
 import { checkGuide, showGuide, dismissGuide, validateGuide, activeGuide } from '../ui/guide/guide.js';
 import * as history from '../net/history.js';
+import * as shared from '../net/shared.js';
 import * as changes from '../net/changes.js';
 import * as bundles from '../net/bundles.js';
 
@@ -234,6 +235,25 @@ export function workspaceOf(session) {
 
 /** ctx: { session } of the chat running the tool. */
 export async function runTool(block, ctx = {}) {
+  const before = { dropped: shared.stats.dropped, errors: shared.stats.errors };
+  const result = await runToolInner(block, ctx);
+  // Edits are written to the session document on a short timer: wait for it, then tell the agent if
+  // any of this call's shared edits never reached the document (they'd silently stay local).
+  await new Promise((r) => setTimeout(r, 60));
+  const s = shared.stats;
+  const lost = s.dropped - before.dropped;
+  const failed = s.errors - before.errors;
+  if (!lost && !failed) return result;
+  const note = [
+    'WARNING: shared state edits during this call were not written to the session document, so peers will not get them.',
+    lost ? `${lost} edit(s) not written (last: ${s.lastDropped?.key}: ${s.lastDropped?.why}).` : '',
+    failed ? `${failed} document write(s) failed (last: ${s.lastError?.keys?.join(', ')}: ${s.lastError?.message}).` : '',
+  ].filter(Boolean).join(' ');
+  const content = Array.isArray(result.content) ? [...result.content, { type: 'text', text: note }] : `${result.content ?? ''}\n\n${note}`;
+  return { ...result, content };
+}
+
+async function runToolInner(block, ctx) {
   const { id, name, input } = block;
   try {
     const fs = workspaceOf(ctx.session);

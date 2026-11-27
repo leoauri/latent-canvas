@@ -8,6 +8,7 @@
 //   prefetch.js fetches every file the open session references, as soon as it is referenced
 //   changes.js  published code changes: plan, try, apply, adapt
 //   presence.js ephemeral per-peer state (cursors, selection), never stored
+//   diag.js     whether edits reach the document and it syncs, reported to peers as presence
 export * as room from './room.js';
 export * as docs from './docs.js';
 export * as session from './session.js';
@@ -17,4 +18,5 @@ export * as blobs from './blobs.js';
 export * as prefetch from './prefetch.js';
 export * as changes from './changes.js';
 export * as presence from './presence.js';
+export * as diag from './diag.js';
 import './undoKeys.js';

@@ -32,6 +32,22 @@ import * as history from './history.js';
 
 const FLUSH_MS = 40;
 
+/**
+ * Whether local edits reach the document (diag.js reports these to peers). `dropped`: edits made
+ * while a session is open that were never written (the binding wasn't attached to the open
+ * document); `errors`: document writes that threw.
+ */
+export const stats = { loadedAt: Date.now(), writes: 0, lastWrite: null, dropped: 0, lastDropped: null, errors: 0, lastError: null };
+const warnedDrop = new Map(); // key -> last warning time
+function dropped(key, why) {
+  stats.dropped++;
+  stats.lastDropped = { at: Date.now(), key, why };
+  const now = Date.now();
+  if (now - (warnedDrop.get(key) ?? 0) < 10000) return;
+  warnedDrop.set(key, now);
+  console.warn(`shared: edit of ${key} not written to the document: ${why}`);
+}
+
 /** @type {Map<string, Binding>} */
 const bindings = new Map();
 const dirty = new Set();
@@ -97,7 +113,13 @@ export function shared(key, sig, opts = {}) {
     // Our own write from the document isn't an edit. `applying` alone can't tell: a write made
     // inside an effect (attach runs in handle.subscribe) notifies only after the effect, when
     // `applying` is false again; so the value setSignal wrote is recognised by identity too.
-    if (applying || v === b.fromDocValue || !b.attachedTo) return;
+    if (applying || v === b.fromDocValue) return;
+    if (!b.attachedTo) {
+      // Before a session is open nothing is shared; with one open, the document's value will
+      // replace this edit when the binding attaches.
+      if (handle.peek()) dropped(key, 'not attached to the open document');
+      return;
+    }
     dirty.add(key);
     clearTimeout(timer);
     timer = setTimeout(flush, FLUSH_MS);
@@ -385,10 +407,12 @@ let flushing = false;
 /** Writes pending local edits to the document as one change labelled `label`. */
 export function flush(label, origin = 'local') {
   clearTimeout(timer);
+  for (const k of dirty) if (!bindings.get(k)?.attachedTo) dropped(k, bindings.has(k) ? 'detached before writing' : 'unbound before writing');
   const keys = [...dirty].filter((k) => bindings.get(k)?.attachedTo);
   dirty.clear();
   if (!keys.length) return null;
   const h = bindings.get(keys[0]).attachedTo;
+  for (const k of keys) if (bindings.get(k).attachedTo !== h) dropped(k, 'attached to a different document');
   const before = h.heads();
   flushing = true;
   try {
@@ -404,12 +428,21 @@ export function flush(label, origin = 'local') {
       },
       { message: JSON.stringify({ label: label ?? (keys.length === 1 ? bindings.get(keys[0]).label : `edit ${keys.join(', ')}`), origin }) },
     );
+  } catch (err) {
+    // The edits stay in the signals; marking them dirty again retries them with the next edit.
+    stats.errors++;
+    stats.lastError = { at: Date.now(), keys, message: String(err?.message ?? err).slice(0, 200) };
+    console.error(`shared: writing ${keys.join(', ')} to the document failed`, err);
+    for (const k of keys) dirty.add(k);
+    return null;
   } finally {
     flushing = false;
   }
   for (const k of keys) checkDrift(bindings.get(k));
   const after = h.heads();
   if (same(before, after)) return null;
+  stats.writes++;
+  stats.lastWrite = { at: Date.now(), key: keys.join(',') };
   return history.record({ label: label ?? keys.map((k) => bindings.get(k).label).join(', '), origin, keys, before, after, coalesce: !label });
 }
 
@@ -485,6 +518,8 @@ export function act(label, fn, { origin = 'local' } = {}) {
 }
 
 export const sharedKeys = () => [...bindings.keys()];
+/** True while this page writes its own edits to the document (a change event then isn't remote). */
+export const writing = () => flushing;
 /** Debugging: a binding's internals. */
 export const binding = (key) => bindings.get(key);
 
