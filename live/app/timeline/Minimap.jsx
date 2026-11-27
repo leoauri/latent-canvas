@@ -1,6 +1,9 @@
 // A small overview of where the clips are (top left): every clip, masks over that area, the
-// playhead, and the part currently in view as a rectangle (cut off where it reaches past the clips). Drag the rectangle (or press anywhere
+// playhead, everyone's cursor as a dot in their colour, and the part currently in view as a rectangle (cut off where it reaches past the clips). Drag the rectangle (or press anywhere
 // to centre the view there, then drag) to move around.
+// The dots follow presence state as it arrives (a peer's cursor every THROTTLE_MS in net/presence.js), not
+// Presence.jsx's interpolation: at this scale steps of a few px read as movement, and the map redraws (at
+// most once a frame) only when something changes rather than every frame.
 // Coordinates: (t, y * r) with r = ys / pps. Zoom scales both axes together, so r never changes
 // and the overview looks the same at any zoom.
 import { useEffect, useRef } from 'preact/hooks';
@@ -11,6 +14,10 @@ import { layers as masks, masked } from './layers.js';
 import { time } from './Playhead.jsx';
 import { stack, stackLayerColor } from '../stack/stack.js';
 import { bitmap } from './TimelineCanvas.jsx';
+import { persist } from '@live/runtime';
+import * as presence from '../../net/presence.js';
+
+const myCursor = persist('presence.cursor', null);
 
 const W = 200, H = 120, PAD = 6; // px
 const MAX_STRETCH = 8;
@@ -74,6 +81,17 @@ export default function Minimap() {
       const px = X(time.value);
       ctx.fillStyle = css.getPropertyValue('--playhead').trim() || '#ff5a36';
       ctx.fillRect(Math.round(px) - 0.5, 0, 1, H);
+
+      // Everyone's cursor (ours included) as a dot, kept inside the box.
+      const dot = (c, color) => {
+        if (!c || !Number.isFinite(c.t) || !Number.isFinite(c.y)) return;
+        ctx.beginPath();
+        ctx.arc(Math.min(W - 2, Math.max(2, X(c.t))), Math.min(H - 2, Math.max(2, Y(c.y))), 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      };
+      if (presence.show.value) for (const p of Object.values(presence.others.value)) dot(p.state.cursor, p.color);
+      dot(myCursor.value, presence.myColor);
 
       // The view, kept at least a sliver inside the box: off the content, it waits at the nearest edge.
       const E = 3, clamp = (a, lo, hi) => Math.min(hi, Math.max(lo, a));
@@ -139,7 +157,7 @@ export default function Minimap() {
     const resize = new ResizeObserver(() => ((hostW = host.clientWidth), (hostH = host.clientHeight), draw()));
     resize.observe(host);
     const stopEffect = effect(() => {
-      view.value, clips.value, masks.value, masked.value, stack.value, time.value;
+      view.value, clips.value, masks.value, masked.value, stack.value, time.value, presence.others.value, presence.show.value, myCursor.value;
       schedule();
     });
 
