@@ -16,7 +16,12 @@
 - [ ] ● Editing the LLM key, then including it in the link still includes the old key... or, it didn't accept the new key because the one was set in the settings...
 - [ ] iPhone fix - layer stack disappear when touch canvas
 - [ ] Port "changes window: merged peer changes in a foldout"
-- [ ] Port "keep unflushed local edits on remote changes"
+- [ ] ● Port "keep unflushed local edits on remote changes"
 - [ ] Page reload retains window and button scroll positions
 - [ ] ● Pre-bake the pre-bake
 - [ ] scroll overflowing buttons in agent window
+- [ ] Redundancy check retries forever without an LLM key: the Pi logs a 401 every 5 min since Nov 24 (net/redundant.js RETRY_MS). Stop after an auth error until the key changes; skip with ?engine=off
+- [ ] ● Doc bloat: ids, layerId and order entries are stored as collaborative text (an op per character, ~36 per id), and adding an entity rewrites the whole order list (writeInto). One peer made 92k ops in 50 min, doc ~0.5 MB. Store short strings as scalars, edit order by insert/delete
+- [ ] Long-lived (background) tabs drop and rejoin every ~15–20 min overnight ("disconnected for 10s", room.js): check whether the timeout is too strict for throttled tabs
+- [ ] Document the shared-doc format for non-browser clients (SqueakXR): ids and order entries are plain strings, edit single entries rather than whole containers, {label, origin} change messages. Only after base follows it (doc bloat item)
+- [ ] Base supports latent-to-latent control models: a model whose streamed input is a control tensor (see session bundle "Latent-to-latent control models (timbres score)", lib/streamModel.js + app/stack/models.js); port the general mechanism, not the score model's specifics
