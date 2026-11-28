@@ -486,11 +486,13 @@ function consumerOf(l, src, kind) {
     // From clips the width is per clip: frames of another width are skipped, and reported.
     return modelVoices(l, model, (push) => {
       const zoh = holdResample(model.hop, push);
-      return (msg) => {
+      // Keeps the hold's stop and busy, so its timer ends with the voice.
+      const feed = (msg) => {
         if (msg.dim === model.input.dim) return zoh(msg);
         const text = `skipping ${msg.dim}-d frames from ${src.name}: the model takes ${model.input.dim}-d`;
         if (warnings.peek()[l.id] !== text) setIn(warnings, l.id, text);
       };
+      return Object.assign(feed, { stop: zoh.stop, busy: zoh.busy });
     });
   }
   if (l.type === 'audio-out') {
